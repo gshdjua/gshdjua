@@ -1,0 +1,26 @@
+# Generated dependencies and build output
+vue-login/node_modules/
+vue-login/dist/
+springboot-web-demo/target/
+rag-service/.venv/
+
+# Local Python files
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local credentials and generated vector indexes
+**/.env
+.env
+rag-service/data/*.faiss
+rag-service/data/*.json
+
+# User-uploaded private media. Keep only the empty directory marker.
+music/*
+!music/.gitkeep
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
