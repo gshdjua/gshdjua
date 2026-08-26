@@ -77,6 +77,16 @@ AI 会话、消息和当前歌曲上下文保存在 MySQL。用户重新登录�
 
 系统还包含歌曲上传、封面与歌词、多类型标签、评论点赞、头像昵称、自建歌单、顺序或随机播放、每日推荐和播放统计。AI 助手直接使用这些业务数据，而不是一个与系统分离的聊天页面。
 
+## 系统部分截图
+
+### AI 歌库智能助手
+
+![AI 歌库智能助手](docs/images/ai-music-assistant.png)
+
+### 首页与每日推荐
+
+![首页与每日推荐](docs/images/home-daily-recommendations.png)
+
 ## 安装与使用
 
 推荐使用 Docker 部署。新电脑只需要安装 Docker Desktop，不需要分别安装 JDK、Maven、Node.js、Python 和 MySQL。
@@ -205,5 +215,4 @@ npm run serve
 | 普通用户 | `user` | `123456` |
 
 默认账号仅用于演示，正式部署前应修改密码。
-
 
