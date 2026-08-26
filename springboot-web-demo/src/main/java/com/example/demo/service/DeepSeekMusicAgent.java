@@ -313,7 +313,7 @@ public class DeepSeekMusicAgent {
         messages.add(message("system", "当用户询问歌曲是否来自某部动漫、影视或游戏时，先直接给出“是”“不是”或“无法确认”的结论，再补充已知出处；不要改为介绍整个歌库，也不要回避问题。"));
         messages.add(message("system", "本地检索证据用于确认歌库是否收录、歌曲名称、歌手、类型、出处和简介。只有证据中出现的歌曲才能说成歌库已收录；没有证据必须明确说本地未找到。发行时间等未写入证据的公开背景信息仍需谨慎回答，不得编造。"));
         messages.add(message("system", "如果本地上下文明确写着未找到足够可靠的歌曲记录，说明候选未通过置信度阈值。此时必须拒绝依据本地歌库给出具体歌曲结论，并说明“本地歌库未检索到足够可靠的证据”，可以建议用户补充准确歌名、歌手、类型或出处。禁止用模型猜测填补本地检索结果。"));
-        messages.add(message("system", "凡是依据本地歌库证据得出的歌曲、歌手、类型、出处或简介结论，都必须在对应句末标注证据编号，例如 [S1]。只能使用上下文中实际存在的编号，禁止编造编号。公开背景知识若不来自本地证据，应明确写为公开背景信息，不得伪装成本地证据。"));
+        messages.add(message("system", "本地证据编号和检索方式仅供内部推理使用。面向用户回答时不得输出 [S1] 等证据编号，不得展示候选证据列表、融合分数、检索来源或检索方式。只使用与问题直接相关的歌曲证据组织自然、详细的回答，忽略仅因语义相似而召回但不匹配明确歌名、歌手或出处的候选。公开背景知识若不来自本地证据，应明确写为公开背景信息，不得伪装成本地事实。"));
         messages.add(message("system", "当用户要求推荐时，先说明推荐依据，再逐首列出“歌名 - 歌手”，并在有证据时补充类型、出处和一句简介。只介绍本地证据中的歌曲；出处未填写时要明确标注，不能自行猜测。用户说“别的、其他、再来、换一些”时，严禁重复对话中已经推荐的歌曲。"));
         appendConversationHistory(messages, history);
         messages.add(message("user", "用户问题：" + message + "\n\n本地歌库提供的最小歌曲元数据：\n" + evidenceContext.getPrompt()));
@@ -352,16 +352,17 @@ public class DeepSeekMusicAgent {
     }
 
     private String ensureEvidenceReferences(String answer, EvidenceContext evidenceContext) {
-        if (answer == null || answer.trim().isEmpty() || evidenceContext.getReferences().isEmpty()) {
-            return answer == null ? "" : answer;
-        }
-        if (!shouldShowEvidenceReferences(answer)) return answer.trim();
-        if (answer.contains("本地证据来源：")) return answer;
-        StringBuilder referencedAnswer = new StringBuilder(answer.trim()).append("\n\n本地证据来源：\n");
-        for (String reference : evidenceContext.getReferences()) {
-            referencedAnswer.append(reference).append("\n");
-        }
-        return referencedAnswer.toString().trim();
+        return sanitizeUserFacingAnswer(answer);
+    }
+
+    String sanitizeUserFacingAnswer(String answer) {
+        if (answer == null || answer.trim().isEmpty()) return "";
+        String visibleAnswer = answer;
+        int evidenceBlockIndex = visibleAnswer.indexOf("本地证据来源：");
+        if (evidenceBlockIndex >= 0) visibleAnswer = visibleAnswer.substring(0, evidenceBlockIndex);
+        visibleAnswer = visibleAnswer.replaceAll("\\s*\\[S\\d+\\]", "");
+        visibleAnswer = visibleAnswer.replaceAll("(?m)^.*检索方式[:：].*(?:\\R|$)", "");
+        return visibleAnswer.trim();
     }
 
     boolean shouldShowEvidenceReferences(String answer) {

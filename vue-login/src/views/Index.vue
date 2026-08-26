@@ -54,7 +54,7 @@
               <h2 class="section-title">🎵 每日推荐</h2>
               <p>为你随机挑选 {{ dailyRecommendations.length }} 首音乐</p>
             </div>
-            <button class="refresh-recommendations" @click="refreshDailyRecommendations" :disabled="audioList.length === 0" title="换一批推荐音乐">
+            <button class="refresh-recommendations" @click="refreshDailyRecommendations(true)" :disabled="audioList.length === 0" title="换一批推荐音乐">
               <span>↻</span> 刷新推荐
             </button>
           </div>
@@ -455,7 +455,7 @@ export default {
       return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
     },
     async initializeDailyRecommendations() {
-      const expectedCount = Math.min(10, this.audioList.length)
+      const expectedCount = Math.min(12, this.audioList.length)
       try {
         const savedRecommendation = JSON.parse(localStorage.getItem(this.dailyRecommendationStorageKey()))
         if (savedRecommendation && savedRecommendation.date === this.todayKey() && Array.isArray(savedRecommendation.audioIds)) {
@@ -467,27 +467,29 @@ export default {
           }
         }
       } catch (err) {}
-      await this.refreshDailyRecommendations()
+      await this.refreshDailyRecommendations(false)
     },
-    async refreshDailyRecommendations() {
+    async refreshDailyRecommendations(excludeCurrent = false) {
       let personalizedSongs = []
       try {
-        const res = await request.get('/user/recommendations', { params: { limit: 10 } })
+        const res = await request.get('/user/recommendations', { params: { limit: 20 } })
         if (res.data.code === 200 && Array.isArray(res.data.data)) personalizedSongs = res.data.data
       } catch (err) {}
 
-      if (personalizedSongs.length) {
-        this.dailyRecommendations = personalizedSongs
-      } else {
-      const shuffled = this.audioList.slice()
-      for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      const recommendationLimit = Math.min(12, this.audioList.length)
+      const uniqueSongs = new Map()
+      personalizedSongs.concat(this.audioList).forEach(audio => uniqueSongs.set(audio.id, audio))
+      const pool = Array.from(uniqueSongs.values())
+      for (let index = pool.length - 1; index > 0; index -= 1) {
         const randomIndex = Math.floor(Math.random() * (index + 1))
-        const temporaryAudio = shuffled[index]
-        shuffled[index] = shuffled[randomIndex]
-        shuffled[randomIndex] = temporaryAudio
+        const temporaryAudio = pool[index]
+        pool[index] = pool[randomIndex]
+        pool[randomIndex] = temporaryAudio
       }
-      this.dailyRecommendations = shuffled.slice(0, 10)
-      }
+      const currentIds = excludeCurrent ? new Set(this.dailyRecommendations.map(audio => audio.id)) : new Set()
+      const freshSongs = pool.filter(audio => !currentIds.has(audio.id))
+      const previousSongs = pool.filter(audio => currentIds.has(audio.id))
+      this.dailyRecommendations = freshSongs.concat(previousSongs).slice(0, recommendationLimit)
       localStorage.setItem(this.dailyRecommendationStorageKey(), JSON.stringify({
         date: this.todayKey(),
         audioIds: this.dailyRecommendations.map(audio => audio.id)
@@ -499,7 +501,7 @@ export default {
       const nextMidnight = new Date(now)
       nextMidnight.setHours(24, 0, 1, 0)
       this.dailyRefreshTimer = setTimeout(() => {
-        this.refreshDailyRecommendations()
+        this.refreshDailyRecommendations(false)
         this.scheduleMidnightRecommendationRefresh()
       }, nextMidnight.getTime() - now.getTime())
     },
