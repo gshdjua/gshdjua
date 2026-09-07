@@ -22,6 +22,10 @@
           <span class="nav-icon">🧪</span>
           <span>检索评测</span>
         </div>
+        <div class="nav-item" :class="{active: currentMenu === 'llmCost'}" @click="openLlmCostEvaluation">
+          <span class="nav-icon">🪙</span>
+          <span>LLM 成本评测</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <button class="back-btn" @click="$router.push('/index')">
@@ -341,6 +345,117 @@
           </div>
         </template>
       </section>
+
+      <section v-if="currentMenu==='llmCost'" class="evaluation-dashboard">
+        <div class="evaluation-hero llm-cost-hero">
+          <div>
+            <p class="evaluation-eyebrow">LLM COST LAB</p>
+            <h2>LLM 调用成本评测</h2>
+            <p>使用独立题库检查模型路由、动态证据数量、Token 消耗、响应耗时和预估费用。</p>
+          </div>
+          <div class="evaluation-actions">
+            <label class="llm-cost-mode"><input v-model="llmCostRealCall" type="checkbox" :disabled="llmCostRunning" /> 真实调用 DeepSeek</label>
+            <button class="evaluation-run-btn" :disabled="llmCostRunning || !llmCostCases.length" @click="runLlmCostEvaluation">
+              {{ llmCostRunning ? '评测运行中…' : '▶ 开始成本评测' }}
+            </button>
+            <button class="evaluation-export-btn" :disabled="llmCostRunning" @click="showLlmCostDataset = !showLlmCostDataset">
+              {{ showLlmCostDataset ? '收起题库' : '管理题库' }}
+            </button>
+            <button class="evaluation-add-btn" :disabled="llmCostRunning" @click="openLlmCostCaseDialog()">＋ 新增成本题</button>
+            <button v-if="llmCostSummary" class="evaluation-export-btn" @click="downloadLlmCostReport">导出JSON</button>
+          </div>
+        </div>
+
+        <div class="llm-cost-settings">
+          <label>官方价格方案
+            <select v-model="llmCostPricePreset" @change="applyLlmCostPricePreset">
+              <option value="flash-peak">V4 Flash 高峰（保守估算）</option>
+              <option value="flash-offpeak">V4 Flash 闲时</option>
+              <option value="pro-peak">V4 Pro 高峰</option>
+              <option value="pro-offpeak">V4 Pro 闲时</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <label>输入价格（元/百万 Token）<input v-model.number="llmCostInputPrice" type="number" min="0" step="0.01" @input="llmCostPricePreset='custom'" /></label>
+          <label>输出价格（元/百万 Token）<input v-model.number="llmCostOutputPrice" type="number" min="0" step="0.01" @input="llmCostPricePreset='custom'" /></label>
+          <small>预设按缓存未命中价格计算。模拟模式不会调用模型；真实模式会产生实际 API 消耗，价格可能调整，请以 DeepSeek 官方页面为准。</small>
+        </div>
+
+        <div v-if="llmCostLoading" class="evaluation-state">正在加载成本测试集…</div>
+        <div v-else-if="llmCostError" class="evaluation-state error">{{ llmCostError }}</div>
+        <template v-else>
+          <div class="evaluation-progress-card">
+            <div class="evaluation-progress-head">
+              <span>{{ llmCostRunning ? '正在评测' : llmCostSummary ? '评测完成' : '等待开始' }}</span>
+              <strong>{{ llmCostProgress }} / {{ llmCostCases.length }}</strong>
+            </div>
+            <div class="evaluation-progress-track"><div :style="{width: llmCostProgressPercent + '%'}"></div></div>
+            <small v-if="llmCostCurrentCase">当前：{{ llmCostCurrentCase.id }} · {{ llmCostCurrentCase.question }}</small>
+          </div>
+
+          <div v-if="showLlmCostDataset" class="evaluation-dataset-panel">
+            <div class="evaluation-panel-head"><div><p>COST DATASET</p><h3>成本测试集管理</h3></div><span>{{ llmCostCases.length }} 题</span></div>
+            <div class="evaluation-dataset-table-wrap">
+              <table class="evaluation-table evaluation-dataset-table">
+                <thead><tr><th>ID</th><th>类别</th><th>问题</th><th>期望意图</th><th>证据上限</th><th>模型调用</th><th>操作</th></tr></thead>
+                <tbody><tr v-for="item in llmCostCases" :key="item.id">
+                  <td><strong>{{ item.id }}</strong></td><td>{{ item.category }}</td>
+                  <td class="evaluation-question-cell" :title="item.question">{{ item.question }}</td>
+                  <td>{{ item.expected_intent }}</td><td>{{ item.expected_evidence_count }}</td>
+                  <td>{{ item.expected_model_call ? '是' : '否' }}</td>
+                  <td><div class="evaluation-row-actions"><button @click="openLlmCostCaseDialog(item)">编辑</button><button class="danger" @click="deleteLlmCostCase(item)">删除</button></div></td>
+                </tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div v-if="llmCostSummary" class="evaluation-metrics llm-cost-metrics">
+            <div class="evaluation-metric"><span>模型调用次数</span><strong>{{ llmCostSummary.modelCalls }}</strong><small>其余问题由本地逻辑回答</small></div>
+            <div class="evaluation-metric"><span>本地绕过率</span><strong>{{ formatPercent(llmCostSummary.localBypassRate) }}</strong><small>未消耗外部模型 Token</small></div>
+            <div class="evaluation-metric"><span>输入 Token</span><strong>{{ llmCostSummary.inputTokens }}</strong><small>{{ llmCostRealCall ? 'API 实际值优先' : '提示词估算值' }}</small></div>
+            <div class="evaluation-metric"><span>输出 Token</span><strong>{{ llmCostSummary.outputTokens }}</strong><small>{{ llmCostRealCall ? 'API 实际值优先' : '按测试题预算' }}</small></div>
+            <div class="evaluation-metric"><span>平均 Token/题</span><strong>{{ formatDecimal(llmCostSummary.averageTokens) }}</strong><small>输入与输出合计</small></div>
+            <div class="evaluation-metric"><span>平均 Token/模型调用</span><strong>{{ formatDecimal(llmCostSummary.averageTokensPerModelCall) }}</strong><small>排除本地零 Token 问题</small></div>
+            <div class="evaluation-metric"><span>规则通过率</span><strong>{{ formatPercent(llmCostSummary.passRate) }}</strong><small>{{ llmCostSummary.passedCases }}/{{ llmCostSummary.totalCases }} 题通过</small></div>
+            <div class="evaluation-metric primary"><span>预估总费用</span><strong>{{ formatLlmCost(llmCostSummary.estimatedCost) }}</strong><small>{{ hasLlmTokenPrice() ? '根据上方价格计算' : '请先填写输入、输出价格' }}</small></div>
+          </div>
+
+          <div v-if="llmCostResults.length" class="evaluation-panel">
+            <div class="evaluation-panel-head"><div><p>CASE DETAILS</p><h3>逐题成本明细</h3></div><span>{{ llmCostResults.length }} 条</span></div>
+            <div class="evaluation-table-wrap llm-cost-result-table">
+              <table class="evaluation-table">
+                <thead><tr><th>ID</th><th>问题</th><th>意图</th><th>证据（实际/上限）</th><th>调用模型</th><th>输入</th><th>输出</th><th>总计</th><th>耗时</th><th>费用</th></tr></thead>
+                <tbody><tr v-for="item in llmCostResults" :key="item.id" :class="{'llm-cost-mismatch': !item.passed}">
+                  <td><strong>{{ item.id }}</strong></td><td class="evaluation-question-cell" :title="item.question">{{ item.question }}</td>
+                  <td>{{ item.intent }}</td><td :title="`系统动态预算：${item.plannedEvidenceTopK}`">{{ item.evidenceCount }}/{{ item.expectedEvidenceLimit }}</td>
+                  <td>{{ item.modelRequired ? (item.actualUsage ? '真实' : '模拟') : '本地' }}</td>
+                  <td>{{ item.inputTokens }}</td><td>{{ item.outputTokens }}</td><td>{{ item.totalTokens }}</td>
+                  <td>{{ item.elapsedMs }}ms</td><td>{{ formatLlmCost(item.estimatedCost) }}</td>
+                </tr></tbody>
+              </table>
+            </div>
+          </div>
+        </template>
+      </section>
+
+      <div class="dialog-overlay" v-if="showLlmCostCaseDialog" @click.self="closeLlmCostCaseDialog">
+        <div class="dialog-card evaluation-case-dialog">
+          <div class="dialog-header"><div><span class="evaluation-dialog-kicker">LLM COST CASE</span><h3>{{ editingLlmCostCaseId ? `编辑成本题 ${editingLlmCostCaseId}` : '新增成本测试题' }}</h3></div><button class="dialog-close" @click="closeLlmCostCaseDialog">✕</button></div>
+          <div class="dialog-body evaluation-case-form">
+            <div class="evaluation-form-grid">
+              <div class="dialog-form-group"><label>类别</label><input v-model.trim="llmCostCaseForm.category" maxlength="50" /></div>
+              <div class="dialog-form-group"><label>期望意图</label><select v-model="llmCostCaseForm.expectedIntent"><option v-for="intent in llmCostIntents" :key="intent" :value="intent">{{ intent }}</option></select></div>
+            </div>
+            <div class="dialog-form-group"><label>用户问题 <em>*</em></label><textarea v-model.trim="llmCostCaseForm.question" maxlength="500"></textarea></div>
+            <div class="evaluation-form-grid">
+              <div class="dialog-form-group"><label>证据上限</label><input v-model.number="llmCostCaseForm.expectedEvidenceCount" type="number" min="0" max="12" /><small class="form-hint">实际证据可少于此数量，不会为了凑数加入低质量候选。</small></div>
+              <div class="dialog-form-group"><label>预期输出 Token</label><input v-model.number="llmCostCaseForm.expectedOutputTokens" type="number" min="1" max="4000" /></div>
+            </div>
+            <label class="evaluation-negative-toggle"><input v-model="llmCostCaseForm.expectedModelCall" type="checkbox" /><span><strong>预期调用外部模型</strong><small>关闭表示该问题应该完全由本地逻辑回答。</small></span></label>
+          </div>
+          <div class="dialog-footer"><button class="btn-cancel" @click="closeLlmCostCaseDialog">取消</button><button class="btn-confirm" :disabled="llmCostCaseSaving || !llmCostCaseForm.question" @click="saveLlmCostCase">{{ llmCostCaseSaving ? '保存中…' : '保存测试题' }}</button></div>
+        </div>
+      </div>
 
       <div class="dialog-overlay" v-if="showEvaluationCaseDialog" @click.self="closeEvaluationCaseDialog">
         <div class="dialog-card evaluation-case-dialog">
@@ -692,15 +807,22 @@ export default {
         category: '', question: '', expectedAnswer: '', expectedAudioIds: [],
         mustInclude: '', mustNotInclude: '', negative: false,
         evaluationMode: 'standard', expectedResultCount: 3
-      }
+      },
+      llmCostCases: [], llmCostResults: [], llmCostSummary: null,
+      llmCostProgress: 0, llmCostCurrentCase: null, llmCostRunning: false,
+      llmCostLoading: false, llmCostError: '', llmCostRealCall: false,
+      llmCostPricePreset: 'flash-peak', llmCostInputPrice: 3, llmCostOutputPrice: 9, showLlmCostDataset: false,
+      showLlmCostCaseDialog: false, editingLlmCostCaseId: null, llmCostCaseSaving: false,
+      llmCostIntents: ['AUTO', 'SONG_METADATA', 'GENERAL', 'RECOMMENDATION', 'SOURCE_QUERY', 'GENRE_QUERY', 'LIBRARY_QUERY', 'FAVORITES'],
+      llmCostCaseForm: { category: '', question: '', expectedIntent: 'AUTO', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true }
     }
   },
   computed: {
     menuTitle() {
-      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测' }[this.currentMenu] || '管理后台'
+      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测' }[this.currentMenu] || '管理后台'
     },
     menuIcon() {
-      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪' }[this.currentMenu] || '🎵'
+      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙' }[this.currentMenu] || '🎵'
     },
     canSaveLyrics() {
       return this.lyricEditorLines.length > 0 && this.lyricEditorLines.every(line => line.time !== null)
@@ -711,6 +833,9 @@ export default {
     },
     evaluationFailures() {
       return this.evaluationResults.filter(item => item.scorable && !item.passed)
+    },
+    llmCostProgressPercent() {
+      return this.llmCostCases.length ? Math.round(this.llmCostProgress / this.llmCostCases.length * 100) : 0
     }
   },
   mounted() {
@@ -718,6 +843,148 @@ export default {
     this.loadFullAudioList();
   },
   methods: {
+    applyLlmCostPricePreset() {
+      const prices = {
+        'flash-peak': [3, 9], 'flash-offpeak': [1.5, 4.5],
+        'pro-peak': [9, 27], 'pro-offpeak': [4.5, 13.5]
+      }
+      if (!prices[this.llmCostPricePreset]) return
+      const selectedPrice = prices[this.llmCostPricePreset]
+      this.llmCostInputPrice = selectedPrice[0]
+      this.llmCostOutputPrice = selectedPrice[1]
+    },
+    async openLlmCostEvaluation() {
+      this.currentMenu = 'llmCost'
+      if (!this.llmCostCases.length) await this.loadLlmCostCases()
+    },
+    async loadLlmCostCases() {
+      this.llmCostLoading = true
+      this.llmCostError = ''
+      try {
+        const res = await request.get('/admin/llm-cost-evaluation/cases')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '成本测试集加载失败')
+        this.llmCostCases = res.data.data || []
+      } catch (error) {
+        this.llmCostError = error.response?.data?.msg || error.message || '成本测试集加载失败'
+      } finally { this.llmCostLoading = false }
+    },
+    emptyLlmCostCaseForm() {
+      return { category: '', question: '', expectedIntent: 'AUTO', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true }
+    },
+    openLlmCostCaseDialog(testCase = null) {
+      this.editingLlmCostCaseId = testCase?.id || null
+      this.llmCostCaseForm = testCase ? {
+        category: testCase.category || '', question: testCase.question || '',
+        expectedIntent: testCase.expected_intent || 'AUTO',
+        expectedEvidenceCount: Number(testCase.expected_evidence_count ?? 3),
+        expectedOutputTokens: Number(testCase.expected_output_tokens ?? 300),
+        expectedModelCall: Boolean(testCase.expected_model_call)
+      } : this.emptyLlmCostCaseForm()
+      this.showLlmCostCaseDialog = true
+    },
+    closeLlmCostCaseDialog() {
+      if (this.llmCostCaseSaving) return
+      this.showLlmCostCaseDialog = false
+      this.editingLlmCostCaseId = null
+      this.llmCostCaseForm = this.emptyLlmCostCaseForm()
+    },
+    async saveLlmCostCase() {
+      if (this.llmCostCaseSaving || !this.llmCostCaseForm.question.trim()) return
+      const payload = {
+        category: this.llmCostCaseForm.category || '未分类', question: this.llmCostCaseForm.question,
+        expected_intent: this.llmCostCaseForm.expectedIntent,
+        expected_evidence_count: this.llmCostCaseForm.expectedEvidenceCount,
+        expected_output_tokens: this.llmCostCaseForm.expectedOutputTokens,
+        expected_model_call: this.llmCostCaseForm.expectedModelCall
+      }
+      this.llmCostCaseSaving = true
+      try {
+        const res = this.editingLlmCostCaseId
+          ? await request.put(`/admin/llm-cost-evaluation/cases/${this.editingLlmCostCaseId}`, payload)
+          : await request.post('/admin/llm-cost-evaluation/cases', payload)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '保存失败')
+        await this.loadLlmCostCases()
+        this.llmCostSummary = null
+        this.llmCostResults = []
+        this.closeLlmCostCaseDialog()
+      } catch (error) { alert(error.response?.data?.msg || error.message || '保存失败') }
+      finally { this.llmCostCaseSaving = false }
+    },
+    async deleteLlmCostCase(testCase) {
+      if (this.llmCostRunning || !confirm(`确定删除 ${testCase.id}“${testCase.question}”吗？`)) return
+      try {
+        const res = await request.delete(`/admin/llm-cost-evaluation/cases/${testCase.id}`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '删除失败')
+        await this.loadLlmCostCases()
+        this.llmCostSummary = null
+        this.llmCostResults = []
+      } catch (error) { alert(error.response?.data?.msg || error.message || '删除失败') }
+    },
+    async runLlmCostEvaluation() {
+      if (this.llmCostRunning || !this.llmCostCases.length) return
+      if (this.llmCostRealCall && !confirm('真实调用会逐题请求 DeepSeek 并产生 API 费用，确定继续吗？')) return
+      this.llmCostRunning = true
+      this.llmCostError = ''
+      this.llmCostProgress = 0
+      this.llmCostResults = []
+      this.llmCostSummary = null
+      try {
+        for (const testCase of this.llmCostCases) {
+          this.llmCostCurrentCase = testCase
+          const res = await request.post('/admin/llm-cost-evaluation/evaluate', {
+            question: testCase.question, history: testCase.history || [],
+            expectedOutputTokens: testCase.expected_output_tokens || 300,
+            realCall: this.llmCostRealCall,
+            inputPricePerMillion: this.llmCostInputPrice,
+            outputPricePerMillion: this.llmCostOutputPrice,
+            userId: Number(localStorage.getItem('userId')) || null
+          }, { timeout: this.llmCostRealCall ? 60000 : 30000 })
+          if (res.data.code !== 200) throw new Error(`${testCase.id}: ${res.data.msg || '成本评测失败'}`)
+          const item = res.data.data
+          const intentPassed = testCase.expected_intent === 'AUTO' || testCase.expected_intent === item.intent
+          const evidenceLimit = Number(testCase.expected_evidence_count)
+          const evidenceCount = Number(item.evidenceCount)
+          const evidencePassed = evidenceLimit === 0 ? evidenceCount === 0 : evidenceCount > 0 && evidenceCount <= evidenceLimit
+          const callPassed = Boolean(testCase.expected_model_call) === Boolean(item.modelRequired)
+          this.llmCostResults.push({ ...item, id: testCase.id, category: testCase.category, question: testCase.question, expectedEvidenceLimit: evidenceLimit, passed: intentPassed && evidencePassed && callPassed })
+          this.llmCostProgress++
+        }
+        this.buildLlmCostSummary()
+      } catch (error) { this.llmCostError = error.response?.data?.msg || error.message || '成本评测运行失败' }
+      finally { this.llmCostCurrentCase = null; this.llmCostRunning = false }
+    },
+    buildLlmCostSummary() {
+      const total = this.llmCostResults.length
+      const sum = key => this.llmCostResults.reduce((value, item) => value + Number(item[key] || 0), 0)
+      const modelCalls = this.llmCostResults.filter(item => item.modelRequired).length
+      this.llmCostSummary = {
+        totalCases: total, modelCalls,
+        localBypassRate: total ? (total - modelCalls) / total : 0,
+        inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), totalTokens: sum('totalTokens'),
+        averageTokens: total ? sum('totalTokens') / total : 0,
+        averageTokensPerModelCall: modelCalls ? sum('totalTokens') / modelCalls : 0,
+        estimatedCost: sum('estimatedCost'),
+        passedCases: this.llmCostResults.filter(item => item.passed).length,
+        passRate: total ? this.llmCostResults.filter(item => item.passed).length / total : 0
+      }
+    },
+    hasLlmTokenPrice() {
+      return Number(this.llmCostInputPrice) > 0 || Number(this.llmCostOutputPrice) > 0
+    },
+    formatLlmCost(value) {
+      return this.hasLlmTokenPrice() ? `¥${Number(value || 0).toFixed(6)}` : '未配置价格'
+    },
+    downloadLlmCostReport() {
+      if (!this.llmCostSummary) return
+      const report = { generatedAt: new Date().toISOString(), mode: this.llmCostRealCall ? 'real' : 'simulation', prices: { input: this.llmCostInputPrice, output: this.llmCostOutputPrice }, summary: this.llmCostSummary, cases: this.llmCostResults }
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `llm-cost-evaluation-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+      link.click()
+      URL.revokeObjectURL(url)
+    },
     async openEvaluation() {
       this.currentMenu = 'evaluation'
       if (!this.evaluationCases.length) await this.loadEvaluationCases()
@@ -1441,7 +1708,8 @@ export default {
 .evaluation-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(320px,.65fr); gap: 16px; }.evaluation-panel { overflow: hidden; border: 1px solid #e9e5f4; border-radius: 15px; background: #fff; }.evaluation-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 17px 19px; border-bottom: 1px solid #efecf6; }.evaluation-panel-head p { color: #8c70ca; }.evaluation-panel-head h3 { margin: 0; font-size: 16px; }.evaluation-panel-head > span { padding: 4px 9px; border-radius: 99px; color: #7657bd; background: #f0ebfb; font-size: 11px; }
 .evaluation-table-wrap { overflow: auto; max-height: 430px; }.evaluation-table { width: 100%; border-collapse: collapse; }.evaluation-table th, .evaluation-table td { padding: 11px 14px; border-bottom: 1px solid #f0edf6; font-size: 12px; text-align: left; }.evaluation-table th { position: sticky; top: 0; color: #8a8295; background: #faf9fc; }.evaluation-table td:not(:first-child) { font-variant-numeric: tabular-nums; }
 .evaluation-empty { display: grid; min-height: 180px; place-items: center; color: #9e97aa; font-size: 13px; }.evaluation-failures { overflow-y: auto; max-height: 430px; padding: 12px; }.evaluation-failures article { margin-bottom: 10px; padding: 12px; border: 1px solid #f0dbe0; border-radius: 11px; background: #fff9fa; }.evaluation-failures article:last-child { margin-bottom: 0; }.evaluation-failures article div { display: flex; align-items: center; gap: 8px; }.evaluation-failures article strong { color: #c04b61; font-size: 12px; }.evaluation-failures article span { padding: 2px 6px; border-radius: 99px; color: #98717a; background: #f8e8eb; font-size: 9px; }.evaluation-failures p { margin: 7px 0; color: #544b5e; font-size: 12px; line-height: 1.45; }.evaluation-failures small { color: #9b8690; font-size: 10px; }
+.llm-cost-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.llm-cost-mode { display: inline-flex !important; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.32); border-radius: 9px; color: #fff !important; background: rgba(255,255,255,.1); white-space: nowrap; }.llm-cost-mode input { accent-color: #a889ee; }.llm-cost-settings { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 16px; padding: 14px 18px; border: 1px solid #e6e0f3; border-radius: 14px; background: #fff; }.llm-cost-settings label { display: grid; gap: 6px; color: #625978; font-size: 11px; }.llm-cost-settings input { width: 150px; padding: 8px 10px; border: 1px solid #ded7ec; border-radius: 8px; }.llm-cost-settings small { flex: 1; color: #928aa1; line-height: 1.5; }.llm-cost-result-table { max-height: 520px; }.llm-cost-result-table table { min-width: 1050px; }.llm-cost-mismatch { background: #fff8f9; }.llm-cost-mismatch td:first-child strong { color: #ca5365; }.llm-cost-metrics .evaluation-metric strong { font-size: 24px; }
 @media (max-width: 800px) { .statistics-dashboard { padding: 18px; }.stats-toolbar { align-items: flex-start; flex-direction: column; }.stats-kpis { grid-template-columns: 1fr; }.song-bar-chart { overflow-x: auto; }.song-bar-chart .bar-column { min-width: 84px; }.daily-chart-wrap { overflow-x: auto; }.daily-bar-chart { min-width: 600px; } }
 @media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions { justify-content: flex-start; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions { justify-content: flex-start; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; } }
 </style>

@@ -118,6 +118,14 @@ class EntityQueryParserTest {
     }
 
     @Test
+    void leavesSongCharacteristicsQuestionForMetadataAnswering() {
+        StructuredEntityQuery query = parser.parse("Good knows这首歌有什么特点？");
+
+        assertFalse(query.isStrict());
+        assertFalse(query.hasEntity());
+    }
+
+    @Test
     void parsesExactCollectionCountAsStructuredFact() {
         StructuredEntityQuery query = parser.parse("哪些歌曲当前收藏数是0？");
 

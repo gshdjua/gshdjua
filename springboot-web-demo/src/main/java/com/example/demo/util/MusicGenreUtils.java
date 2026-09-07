@@ -49,6 +49,15 @@ public final class MusicGenreUtils {
         return false;
     }
 
+    public static boolean containsAll(String value, Collection<String> requiredGenres) {
+        Set<String> actualGenres = normalizedSet(value);
+        if (requiredGenres == null || requiredGenres.isEmpty()) return true;
+        for (String requiredGenre : requiredGenres) {
+            if (requiredGenre == null || !actualGenres.contains(requiredGenre.trim().toLowerCase(Locale.ROOT))) return false;
+        }
+        return true;
+    }
+
     private static Set<String> normalizedSet(String value) {
         Set<String> result = new LinkedHashSet<>();
         for (String genre : split(value)) result.add(genre.toLowerCase(Locale.ROOT));

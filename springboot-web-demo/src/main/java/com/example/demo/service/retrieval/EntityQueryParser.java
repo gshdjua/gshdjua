@@ -67,6 +67,9 @@ public class EntityQueryParser {
     }
 
     private boolean hasStrictSignal(String question) {
+        if (containsAny(question, "有什么特点", "有什么特色", "有什么背景", "有什么故事", "有什么含义")) {
+            return containsAny(question, "是否收录", "本地收录", "歌库收录", "歌库里有", "本地有", "存在吗", "找得到");
+        }
         return containsAny(question, "有没有", "有无", "是否有", "是否收录", "本地收录", "歌库里有",
                 "本地有", "存在吗", "找得到", "有哪些", "有什么");
     }

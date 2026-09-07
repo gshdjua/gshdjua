@@ -14,8 +14,9 @@ MusicHub 是一个集音乐管理、在线播放、个性化推荐和 AI 歌库�
 | 大语言模型 | DeepSeek OpenAI 兼容 API | 根据本地证据组织自然语言回答 |
 | 混合检索 | SQL、关键词 RAG、向量 RAG、加权 RRF | 精确检索、语义召回、融合和去重 |
 | 二阶段排序 | Metadata Rerank | 结合歌名、歌手、类型、出处和简介重新排序 |
-| 回答治理 | 实体校验、低置信度拒答、证据引用 | 降低误召回、答非所问和模型幻觉 |
+| 回答治理 | 实体校验、低置信度拒答、动态证据预算 | 降低误召回、答非所问、无关证据和模型幻觉 |
 | 检索评测 | Hit@K、Recall@K、MRR、Top-1、拒答准确率 | 量化检索、排序和拒答效果 |
+| 成本评测 | 模拟/真实 Token、模型绕过率、费用估算 | 评估动态证据压缩和本地路由的成本收益 |
 | 部署 | Docker Compose、Nginx | 编排 Vue、Spring Boot、MySQL 和向量服务 |
 
 ## AI 调用链
@@ -27,15 +28,15 @@ Vue AI 歌库助手
    ↓
 Spring Boot 意图识别与实体解析
    ↓
-SQL 精确检索 + 关键词检索 + FAISS 向量检索
+类型与实体硬约束 → SQL 精确检索 + 关键词检索 + FAISS 向量检索
    ↓
 加权 RRF 融合去重 → 元数据 Rerank → 置信度与实体校验
    ↓
-本地证据 + 历史对话 + 当前歌曲上下文
+按意图动态压缩的本地证据 + 历史对话 + 当前歌曲上下文
    ↓
 DeepSeek 组织回答
    ↓
-回答文本 + 歌曲卡片 + 本地证据
+面向用户的纯文本回答 + 歌曲卡片
 ```
 
 ## 相比类似项目的优势
@@ -50,6 +51,8 @@ DeepSeek 组织回答
 - 关键词检索负责同义词、别名和字段包含关系。
 - 向量 RAG 负责“轻松的动漫歌”“类似某首歌”等模糊问题。
 - 加权 RRF 将多路结果融合，并按歌曲 ID 去重。
+
+系统会区分“轻音乐”和“轻松”：前者是必须满足的歌曲类型，后者是用于排序的听感语义。“动漫类型的轻音乐”会按多类型交集筛选，只有同时具有“动漫”和“轻音乐”标签的歌曲才会进入结果，向量相似度不能绕过类型条件。
 
 相比只使用关键词或只使用向量数据库的项目，该方案兼顾事实准确性和语义召回能力。
 
@@ -67,11 +70,11 @@ AI 会话、消息和当前歌曲上下文保存在 MySQL。用户重新登录�
 
 ### 6. 检索效果可以量化评估
 
-管理后台可以维护测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。修改检索权重、Rerank 或拒答阈值后，可以用统一测试集比较优化前后的效果。
+管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。独立的 LLM 成本评测支持模拟或真实调用，统计输入/输出 Token、本地绕过率、平均调用成本和规则通过率。修改检索权重、Rerank、拒答阈值或证据预算后，可以使用统一题库比较优化效果。
 
 ### 7. 本地数据与外部模型解耦
 
-歌曲文件、用户数据、FAISS 索引和检索逻辑保存在本地。DeepSeek 只由 Java 后端调用，API Key 不会发送到浏览器。未配置 DeepSeek 时，系统仍可使用本地规则和检索能力。
+歌曲文件、用户数据、FAISS 索引和检索逻辑保存在本地。DeepSeek 只由 Java 后端调用，API Key 不会发送到浏览器。歌库统计、收藏查询、歌手歌曲列表等问题直接由本地逻辑回答；需要模型时再按意图发送最少量证据。未配置 DeepSeek 时，系统仍可使用本地规则和检索能力。
 
 ### 8. AI 与完整音乐业务结合
 
@@ -113,10 +116,12 @@ Copy-Item .env.docker.example .env
 MYSQL_ROOT_PASSWORD=请修改为自己的数据库密码
 OPENAI_API_KEY=填写自己的DeepSeek_API_Key
 OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
+OPENAI_MODEL=deepseek-v4-flash
 ```
 
 `OPENAI_API_KEY` 可以暂时留空，此时系统仍能使用本地查询和部分规则回答。不要把真实 `.env` 上传到 GitHub。
+
+Docker 会将根目录的 `evaluation/` 挂载到后端容器，因此检索测试集和 LLM 成本测试集都可以在管理后台新增、修改和删除，并在容器重启后保留。
 
 #### 3. 启动系统
 
@@ -175,7 +180,7 @@ MUSICHUB_DB_PASSWORD=数据库密码
 ```dotenv
 OPENAI_API_KEY=填写自己的DeepSeek_API_Key
 OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_MODEL=deepseek-chat
+OPENAI_MODEL=deepseek-v4-flash
 ```
 
 #### 4. 启动全部服务
@@ -216,3 +221,15 @@ npm run serve
 
 默认账号仅用于演示，正式部署前应修改密码。
 
+## Docker 部署检查
+
+可以在项目根目录执行以下命令检查 Compose 配置：
+
+```powershell
+docker compose config --quiet
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+如果提示无法连接 `docker_engine`，请先启动 Docker Desktop，等待状态变为 Running 后再执行。首次构建会下载 Maven、Node、Python、MySQL、Nginx、嵌入模型及相关依赖，因此需要联网并可能耗时较长。

@@ -40,9 +40,16 @@ public class MusicLibraryAgent {
         if (intent == AssistantIntent.RECOMMENDATION) {
             Audio seedSong = findMentionedSong(message, songs);
             List<Audio> recommendations = getRecommendationsForQuery(message, userId, 3);
-            return recommendations.isEmpty() ? "歌库中暂时没有更多未收藏的歌曲可推荐。"
-                    : isAnimeMoodRecommendation(message)
-                    ? "我按动画出处筛选，并以“" + moodLabel(message) + "”的听感进行语义排序推荐："
+            List<String> requestedGenres = queryUnderstandingService.requestedGenres(message);
+            return recommendations.isEmpty() ? requestedGenres.isEmpty()
+                    ? "歌库中暂时没有更多未收藏的歌曲可推荐。"
+                    : "歌库中暂时没有同时属于“" + String.join(" + ", requestedGenres) + "”类型的未收藏歌曲。"
+                    : !requestedGenres.isEmpty()
+                    ? "我按歌曲类型“" + String.join(" + ", requestedGenres) + "”筛选"
+                    + (isMoodRecommendation(message) ? "，并以“" + moodLabel(message) + "”的听感排序" : "") + "推荐："
+                    + readableSongList(recommendations, 3) + "。"
+                    : isMoodRecommendation(message)
+                    ? "我按“" + moodLabel(message) + "”的听感和歌曲资料进行语义排序推荐："
                     + readableSongList(recommendations, 3) + "。"
                     : seedSong == null
                     ? "我按你的收藏和播放偏好推荐：" + readableSongList(recommendations, 3) + "。"
@@ -128,8 +135,12 @@ public class MusicLibraryAgent {
                     .collect(Collectors.toList());
             return sourceSongs.subList(0, Math.min(Math.max(1, limit), sourceSongs.size()));
         }
-        if (isAnimeMoodRecommendation(message)) {
-            return getAnimeMoodRecommendations(message, songs, limit, excludedIds);
+        List<String> requestedGenres = queryUnderstandingService.requestedGenres(message);
+        if (!requestedGenres.isEmpty()) {
+            return getGenreConstrainedRecommendations(message, songs, limit, excludedIds, requestedGenres);
+        }
+        if (isMoodRecommendation(message)) {
+            return getMoodRecommendations(message, songs, limit, excludedIds);
         }
         Audio seedSong = findMentionedSong(message, songs);
         if (seedSong == null) return personalizedRecommendationService.recommend(userId, limit).stream()
@@ -178,34 +189,48 @@ public class MusicLibraryAgent {
         return musicRagRetriever.retrieve(message, null, 6);
     }
 
-    private List<Audio> getAnimeMoodRecommendations(String message, List<Audio> songs, int limit, Set<Integer> excludedIds) {
-        Map<Integer, Audio> recommendations = new LinkedHashMap<>();
-        for (Audio song : vectorRagClient.search(queryUnderstandingService.normalize(message), 20)) {
-            if (isAnimeSong(song) && !excludedIds.contains(song.getId())) recommendations.put(song.getId(), song);
-        }
+    private List<Audio> getMoodRecommendations(String message, List<Audio> songs, int limit, Set<Integer> excludedIds) {
+        Map<Integer, Integer> semanticRanks = semanticRanks(message, excludedIds);
 
-        List<Audio> remainingAnimeSongs = songs.stream()
-                .filter(this::isAnimeSong)
+        List<Audio> candidates = songs.stream()
                 .filter(song -> !excludedIds.contains(song.getId()))
-                .filter(song -> !recommendations.containsKey(song.getId()))
                 .sorted(Comparator.comparingInt((Audio song) -> moodKeywordScore(song, message)).reversed()
+                        .thenComparingInt(song -> semanticRanks.getOrDefault(song.getId(), Integer.MAX_VALUE))
                         .thenComparing((Audio song) -> song.getCollectCount() == null ? 0 : song.getCollectCount(), Comparator.reverseOrder())
                         .thenComparing(Audio::getUploadTime, Comparator.nullsLast(Comparator.reverseOrder())))
                 .collect(Collectors.toList());
-        for (Audio song : remainingAnimeSongs) recommendations.put(song.getId(), song);
-        return new ArrayList<>(recommendations.values())
-                .subList(0, Math.min(Math.max(1, limit), recommendations.size()));
+        return candidates.subList(0, Math.min(Math.max(1, limit), candidates.size()));
     }
 
-    private boolean isAnimeMoodRecommendation(String message) {
+    private List<Audio> getGenreConstrainedRecommendations(String message, List<Audio> songs, int limit,
+                                                            Set<Integer> excludedIds, List<String> requestedGenres) {
+        Map<Integer, Integer> semanticRanks = semanticRanks(message, excludedIds);
+        List<Audio> candidates = songs.stream()
+                .filter(song -> !excludedIds.contains(song.getId()))
+                .filter(song -> MusicGenreUtils.containsAll(song.getGenre(), requestedGenres))
+                .sorted(Comparator.comparingInt((Audio song) -> isMoodRecommendation(message) ? moodKeywordScore(song, message) : 0).reversed()
+                        .thenComparingInt(song -> semanticRanks.getOrDefault(song.getId(), Integer.MAX_VALUE))
+                        .thenComparing((Audio song) -> song.getCollectCount() == null ? 0 : song.getCollectCount(), Comparator.reverseOrder())
+                        .thenComparing(Audio::getUploadTime, Comparator.nullsLast(Comparator.reverseOrder())))
+                .collect(Collectors.toList());
+        return candidates.subList(0, Math.min(Math.max(1, limit), candidates.size()));
+    }
+
+    private Map<Integer, Integer> semanticRanks(String message, Set<Integer> excludedIds) {
+        Map<Integer, Integer> ranks = new LinkedHashMap<>();
+        int rank = 0;
+        for (Audio song : vectorRagClient.search(queryUnderstandingService.normalize(message), 20)) {
+            if (!excludedIds.contains(song.getId())) ranks.putIfAbsent(song.getId(), rank++);
+        }
+        for (Audio song : musicRagRetriever.retrieve(message, null, 20)) {
+            if (!excludedIds.contains(song.getId())) ranks.putIfAbsent(song.getId(), rank++);
+        }
+        return ranks;
+    }
+
+    private boolean isMoodRecommendation(String message) {
         String normalized = queryUnderstandingService.normalize(message);
-        return containsAny(normalized, "动画", "番剧", "动漫", "番")
-                && containsAny(normalized, "轻松", "治愈", "舒缓", "欢快", "热血", "伤感", "悲伤", "安静");
-    }
-
-    private boolean isAnimeSong(Audio song) {
-        String source = song.getSource() == null ? "" : song.getSource().toLowerCase(Locale.ROOT);
-        return containsAny(source, "动画", "动漫", "番剧", "anime");
+        return containsAny(normalized, "轻松", "治愈", "舒缓", "欢快", "热血", "伤感", "悲伤", "安静");
     }
 
     private int moodKeywordScore(Audio song, String message) {
@@ -213,10 +238,13 @@ public class MusicLibraryAgent {
                 + (song.getIntroduction() == null ? "" : song.getIntroduction())).toLowerCase(Locale.ROOT);
         String normalized = queryUnderstandingService.normalize(message);
         int score = 0;
-        if (normalized.contains("轻松") && containsAny(text, "轻松", "治愈", "舒缓", "欢快", "日常", "明快")) score += 20;
-        if (normalized.contains("治愈") && containsAny(text, "治愈", "温柔", "舒缓", "宁静")) score += 20;
+        if (normalized.contains("轻松") && containsAny(text, "轻松", "轻音乐", "纯音乐", "钢琴", "治愈", "舒缓", "欢快", "日常", "明快", "放松", "温柔", "宁静")) score += 20;
+        if (normalized.contains("治愈") && containsAny(text, "治愈", "温柔", "舒缓", "宁静", "轻音乐", "钢琴")) score += 20;
+        if (normalized.contains("舒缓") && containsAny(text, "舒缓", "宁静", "温柔", "轻音乐", "纯音乐", "钢琴", "放松")) score += 20;
         if (normalized.contains("欢快") && containsAny(text, "欢快", "明快", "活泼", "轻快")) score += 20;
-        if (normalized.contains("安静") && containsAny(text, "安静", "宁静", "舒缓", "纯音乐")) score += 20;
+        if (normalized.contains("热血") && containsAny(text, "热血", "激昂", "摇滚", "燃")) score += 20;
+        if (containsAny(normalized, "伤感", "悲伤") && containsAny(text, "伤感", "悲伤", "忧郁", "抒情")) score += 20;
+        if (normalized.contains("安静") && containsAny(text, "安静", "宁静", "舒缓", "轻音乐", "纯音乐", "钢琴")) score += 20;
         return score;
     }
 
@@ -312,6 +340,16 @@ public class MusicLibraryAgent {
 
     private String readableGenreReply(List<Audio> songs, String normalizedQuestion) {
         if (songs.isEmpty()) return "歌库目前没有歌曲，因此还没有可统计的音乐类型。";
+        List<String> requestedGenres = queryUnderstandingService.requestedGenres(normalizedQuestion);
+        if (!requestedGenres.isEmpty()) {
+            List<Audio> matches = songs.stream()
+                    .filter(song -> MusicGenreUtils.containsAll(song.getGenre(), requestedGenres))
+                    .collect(Collectors.toList());
+            return matches.isEmpty()
+                    ? "歌库中没有同时属于“" + String.join(" + ", requestedGenres) + "”类型的歌曲。"
+                    : "歌库中同时属于“" + String.join(" + ", requestedGenres) + "”类型的歌曲有 " + matches.size() + " 首："
+                    + readableSongList(matches, 6) + "。";
+        }
         Map<String, List<Audio>> songsByGenre = new LinkedHashMap<>();
         for (Audio song : songs) {
             for (String genre : MusicGenreUtils.splitOrOther(song.getGenre())) {

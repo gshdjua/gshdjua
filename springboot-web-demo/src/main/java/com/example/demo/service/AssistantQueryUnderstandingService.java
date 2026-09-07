@@ -3,11 +3,19 @@ package com.example.demo.service;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class AssistantQueryUnderstandingService {
+
+    private static final String[] DIRECT_GENRES = {
+            "流行", "摇滚", "电子", "嘻哈", "r&b", "民谣", "爵士", "古典", "原声", "轻音乐"
+    };
 
     private final Map<String, String> synonyms = new LinkedHashMap<>();
 
@@ -53,8 +61,16 @@ public class AssistantQueryUnderstandingService {
 
     public AssistantIntent classify(String message) {
         String normalized = normalize(message);
+        List<String> requestedGenres = requestedGenres(message);
         if (containsAny(normalized, "你是什么", "什么模型", "调用什么模型", "who are you", "what model")) {
             return AssistantIntent.ASSISTANT_INFO;
+        }
+        if (!requestedGenres.isEmpty() && containsAny(normalized, "推荐", "安利", "听什么", "听啥", "来几首", "给我几首")) {
+            return AssistantIntent.RECOMMENDATION;
+        }
+        if (!requestedGenres.isEmpty() && normalized.contains("类型")
+                && containsAny(normalized, "哪些", "有什么", "歌曲", "音乐", "歌")) {
+            return AssistantIntent.GENRE_QUERY;
         }
         if (containsAny(normalized, "动画", "番剧", "动漫", "番")
                 && containsAny(normalized, "轻松", "治愈", "舒缓", "欢快", "热血", "伤感", "悲伤", "安静")
@@ -77,10 +93,29 @@ public class AssistantQueryUnderstandingService {
         if (containsAny(normalized, "歌库", "多少首", "歌曲数量", "有哪些歌")) {
             return AssistantIntent.LIBRARY_QUERY;
         }
-        if (containsAny(normalized, "出处", "简介", "背景", "故事", "创作", "含义", "发行", "发布", "哪年", "年份", "何时")) {
+        boolean mentionsSpecificSong = containsAny(normalized, "歌", "歌曲", "音乐", "单曲", "这首", "那首");
+        if (containsAny(normalized, "出处", "简介", "背景", "故事", "创作", "含义", "发行", "发布", "哪年", "年份", "何时")
+                || (mentionsSpecificSong && containsAny(normalized, "介绍", "特点", "特色"))) {
             return AssistantIntent.SONG_METADATA;
         }
         return AssistantIntent.GENERAL;
+    }
+
+    public List<String> requestedGenres(String message) {
+        String raw = message == null ? "" : message.trim().toLowerCase(Locale.ROOT);
+        String normalized = normalize(message);
+        Set<String> genres = new LinkedHashSet<>();
+        for (String genre : DIRECT_GENRES) {
+            if (normalized.contains(genre)) genres.add("r&b".equals(genre) ? "R&B" : genre);
+        }
+        if (raw.contains("动漫") || raw.contains("动漫类型") || raw.contains("动画类型")
+                || raw.contains("番剧类型") || raw.contains("动漫歌")) {
+            genres.add("动漫");
+        }
+        if (raw.contains("游戏类型") || raw.contains("游戏音乐") || raw.contains("游戏歌曲")) {
+            genres.add("游戏");
+        }
+        return new ArrayList<>(genres);
     }
 
     private boolean containsAny(String text, String... keywords) {

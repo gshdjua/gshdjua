@@ -7,6 +7,7 @@ import com.example.demo.entity.Audio;
 import com.example.demo.mapper.AudioMapper;
 import com.example.demo.service.retrieval.HybridMusicRetriever;
 import com.example.demo.service.retrieval.EntityQueryParser;
+import com.example.demo.service.retrieval.EntityType;
 import com.example.demo.service.retrieval.RetrievalResult;
 import com.example.demo.service.retrieval.StrictEntityRetriever;
 import com.example.demo.service.retrieval.StructuredEntityQuery;
@@ -22,13 +23,25 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class DeepSeekMusicAgent {
+
+    private static final int CONVERSATION_RETRIEVAL_TOP_K = 10;
+    private static final int DEFAULT_RECOMMENDATION_EVIDENCE_TOP_K = 5;
+    private static final int MAX_RECOMMENDATION_EVIDENCE_TOP_K = 12;
+    private static final Pattern REQUESTED_SONG_COUNT = Pattern.compile("(\\d+)\\s*首");
+    private static final String[] CHINESE_SONG_COUNTS = {
+            "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"
+    };
+    private final ThreadLocal<ApiUsage> lastApiUsage = new ThreadLocal<>();
 
     @Autowired
     private AudioMapper audioMapper;
@@ -103,7 +116,7 @@ public class DeepSeekMusicAgent {
         }
         if (getApiKey().isEmpty()) return "DeepSeek 尚未配置：后端没有读取到 OPENAI_API_KEY 或 DEEPSEEK_API_KEY。请在 springboot-web-demo/.env 中填写 Key 后重启服务。";
 
-        EvidenceContext evidenceContext = songContext(message, history);
+        EvidenceContext evidenceContext = songContext(message, history, intent);
         try {
             String answer = requestDeepSeek(message, evidenceContext, history);
             return answer.isEmpty() ? ensureEvidenceReferences(modelFallback(message, userId), evidenceContext) : answer;
@@ -117,7 +130,8 @@ public class DeepSeekMusicAgent {
         String localAnswer = strictEntityLocalAnswer(entityQuery, songs);
         if (songs.isEmpty() || getApiKey().isEmpty()) return localAnswer;
         EvidenceContext evidenceContext = buildSongEvidenceContext(
-                "严格实体 SQL（" + entityQuery.getEntityType().name() + "）", songs);
+                "严格实体 SQL（" + entityQuery.getEntityType().name() + "）", songs,
+                strictEntityEvidenceLimit(entityQuery.getEntityType()));
         try {
             String answer = requestDeepSeek(message, evidenceContext, history);
             return answer.isEmpty() ? ensureEvidenceReferences(localAnswer, evidenceContext) : answer;
@@ -141,7 +155,8 @@ public class DeepSeekMusicAgent {
                                           List<Audio> songs, String retrievalMethod, AssistantIntent fallbackIntent) {
         if (songs == null || songs.isEmpty()) return musicLibraryAgent.reply(message, userId, fallbackIntent);
         if (getApiKey().isEmpty()) return musicLibraryAgent.reply(message, userId, fallbackIntent);
-        EvidenceContext evidenceContext = buildSongEvidenceContext(retrievalMethod, songs);
+        EvidenceContext evidenceContext = buildSongEvidenceContext(
+                retrievalMethod, songs, evidenceLimitForIntent(fallbackIntent, message));
         try {
             String answer = requestDeepSeek(message, evidenceContext, history);
             return answer.isEmpty()
@@ -257,23 +272,18 @@ public class DeepSeekMusicAgent {
                 || message.contains("为什么") || message.contains("然后") || message.contains("呢");
     }
 
-    private EvidenceContext songContext(String message, List<Map<String, String>> history) {
-        List<RetrievalResult> results = hybridMusicRetriever.retrieve(message, history, 5);
+    private EvidenceContext songContext(String message, List<Map<String, String>> history, AssistantIntent intent) {
+        List<RetrievalResult> results = hybridMusicRetriever.retrieve(
+                message, history, CONVERSATION_RETRIEVAL_TOP_K);
         if (results.isEmpty()) return EvidenceContext.empty();
-        StringBuilder context = new StringBuilder("检索方式：SQL、向量与关键词混合 RAG。\n本地歌曲证据：\n");
+        int evidenceLimit = Math.min(evidenceLimitForIntent(intent, message), results.size());
+        StringBuilder context = new StringBuilder("本地歌曲证据：\n");
         List<String> references = new ArrayList<>();
-        for (RetrievalResult result : results) {
+        for (int index = 0; index < evidenceLimit; index++) {
+            RetrievalResult result = results.get(index);
             String citationId = result.getCitationId();
             context.append("[").append(citationId).append("] ")
                     .append(result.getEvidence())
-                    .append("；权重档案：").append(result.getFusionProfile())
-                    .append("；检索来源：").append(result.getSources())
-                    .append("；来源贡献：").append(result.getFusionContributions())
-                    .append("；融合分数：").append(result.getFusionScore())
-                    .append("；重排分数：").append(result.getRerankScore())
-                    .append("；重排依据：").append(result.getRerankReasons())
-                    .append("；置信度：").append(result.getConfidenceScore())
-                    .append("；置信度阈值：").append(result.getConfidenceThreshold())
                     .append("\n");
             Audio song = audioMapper.selectById(result.getAudioId());
             references.add(referenceLine(citationId, song, result.getSources().toString()));
@@ -281,23 +291,51 @@ public class DeepSeekMusicAgent {
         return new EvidenceContext(context.toString(), references);
     }
 
-    private EvidenceContext buildSongEvidenceContext(String retrievalMethod, List<Audio> relatedSongs) {
+    private EvidenceContext buildSongEvidenceContext(String retrievalMethod, List<Audio> relatedSongs, int evidenceTopK) {
         if (relatedSongs == null || relatedSongs.isEmpty()) return EvidenceContext.empty();
-        StringBuilder context = new StringBuilder("检索方式：").append(retrievalMethod).append("。\nRAG 检索到的本地歌曲证据：\n");
+        StringBuilder context = new StringBuilder("本地歌曲证据：\n");
         List<String> references = new ArrayList<>();
-        for (int index = 0; index < relatedSongs.size(); index++) {
+        int evidenceLimit = Math.min(Math.max(1, evidenceTopK), relatedSongs.size());
+        for (int index = 0; index < evidenceLimit; index++) {
             Audio song = relatedSongs.get(index);
             String citationId = "S" + (index + 1);
             context.append("[").append(citationId).append("] 歌曲：").append(song.getSongName())
                     .append("；歌手：").append(song.getSinger())
                     .append("；类型：").append(song.getGenre() == null || song.getGenre().trim().isEmpty() ? "其他" : song.getGenre())
-                    .append("；收藏数：").append(song.getCollectCount() == null ? 0 : song.getCollectCount())
                     .append("；出处：").append(song.getSource() == null || song.getSource().trim().isEmpty() ? "未填写" : song.getSource())
                     .append("；简介：").append(song.getIntroduction() == null || song.getIntroduction().trim().isEmpty() ? "未填写" : song.getIntroduction())
                     .append("\n");
             references.add(referenceLine(citationId, song, retrievalMethod));
         }
         return new EvidenceContext(context.toString(), references);
+    }
+
+    int evidenceLimitForIntent(AssistantIntent intent, String message) {
+        if (intent == AssistantIntent.SONG_METADATA) return 1;
+        if (intent == AssistantIntent.SOURCE_QUERY || intent == AssistantIntent.GENRE_QUERY) return 5;
+        if (intent == AssistantIntent.RECOMMENDATION) return requestedRecommendationCount(message);
+        return 3;
+    }
+
+    int strictEntityEvidenceLimit(EntityType entityType) {
+        return entityType == EntityType.SONG ? 1 : 5;
+    }
+
+    private int requestedRecommendationCount(String message) {
+        if (message != null) {
+            Matcher matcher = REQUESTED_SONG_COUNT.matcher(message);
+            if (matcher.find()) {
+                try {
+                    return Math.max(1, Math.min(MAX_RECOMMENDATION_EVIDENCE_TOP_K,
+                            Integer.parseInt(matcher.group(1))));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            for (int index = CHINESE_SONG_COUNTS.length - 1; index >= 0; index--) {
+                if (message.contains(CHINESE_SONG_COUNTS[index] + "首")) return index + 1;
+            }
+        }
+        return DEFAULT_RECOMMENDATION_EVIDENCE_TOP_K;
     }
 
     private String requestDeepSeek(String message, EvidenceContext evidenceContext, List<Map<String, String>> history) throws Exception {
@@ -308,17 +346,10 @@ public class DeepSeekMusicAgent {
         JSONObject requestBody = new JSONObject();
         requestBody.put("model", getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat"));
         requestBody.put("temperature", 0.4);
-        JSONArray messages = new JSONArray();
-        messages.add(message("system", "你是 MusicHub 的歌曲背景助手。只根据公开、可靠的常识介绍歌曲背景；不确定时必须说明不确定。回答使用简洁中文，不编造发行年份、创作经历或人物关系。不得要求或披露用户个人信息。"));
-        messages.add(message("system", "当用户询问歌曲是否来自某部动漫、影视或游戏时，先直接给出“是”“不是”或“无法确认”的结论，再补充已知出处；不要改为介绍整个歌库，也不要回避问题。"));
-        messages.add(message("system", "本地检索证据用于确认歌库是否收录、歌曲名称、歌手、类型、出处和简介。只有证据中出现的歌曲才能说成歌库已收录；没有证据必须明确说本地未找到。发行时间等未写入证据的公开背景信息仍需谨慎回答，不得编造。"));
-        messages.add(message("system", "如果本地上下文明确写着未找到足够可靠的歌曲记录，说明候选未通过置信度阈值。此时必须拒绝依据本地歌库给出具体歌曲结论，并说明“本地歌库未检索到足够可靠的证据”，可以建议用户补充准确歌名、歌手、类型或出处。禁止用模型猜测填补本地检索结果。"));
-        messages.add(message("system", "本地证据编号和检索方式仅供内部推理使用。面向用户回答时不得输出 [S1] 等证据编号，不得展示候选证据列表、融合分数、检索来源或检索方式。只使用与问题直接相关的歌曲证据组织自然、详细的回答，忽略仅因语义相似而召回但不匹配明确歌名、歌手或出处的候选。公开背景知识若不来自本地证据，应明确写为公开背景信息，不得伪装成本地事实。"));
-        messages.add(message("system", "当用户要求推荐时，先说明推荐依据，再逐首列出“歌名 - 歌手”，并在有证据时补充类型、出处和一句简介。只介绍本地证据中的歌曲；出处未填写时要明确标注，不能自行猜测。用户说“别的、其他、再来、换一些”时，严禁重复对话中已经推荐的歌曲。"));
-        appendConversationHistory(messages, history);
-        messages.add(message("user", "用户问题：" + message + "\n\n本地歌库提供的最小歌曲元数据：\n" + evidenceContext.getPrompt()));
+        JSONArray messages = buildRequestMessages(message, evidenceContext, history);
         requestBody.put("messages", messages);
 
+        lastApiUsage.remove();
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
         connection.setRequestMethod("POST");
         connection.setConnectTimeout(10000);
@@ -336,12 +367,137 @@ public class DeepSeekMusicAgent {
         if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) return "";
 
         JSONObject responseJson = JSON.parseObject(response);
+        JSONObject usage = responseJson.getJSONObject("usage");
+        if (usage != null) {
+            lastApiUsage.set(new ApiUsage(
+                    usage.getIntValue("prompt_tokens"),
+                    usage.getIntValue("completion_tokens"),
+                    usage.getIntValue("total_tokens")));
+        }
         JSONArray choices = responseJson.getJSONArray("choices");
         if (choices == null || choices.isEmpty()) return "";
         JSONObject firstChoice = choices.getJSONObject(0);
         JSONObject responseMessage = firstChoice.getJSONObject("message");
         String answer = responseMessage == null ? "" : responseMessage.getString("content");
         return ensureEvidenceReferences(answer, evidenceContext);
+    }
+
+    private JSONArray buildRequestMessages(String message, EvidenceContext evidenceContext,
+                                            List<Map<String, String>> history) {
+        JSONArray messages = new JSONArray();
+        messages.add(message("system", "你是 MusicHub 的歌曲背景助手。只根据公开、可靠的常识介绍歌曲背景；不确定时必须说明不确定。回答使用简洁中文，不编造发行年份、创作经历或人物关系。不得要求或披露用户个人信息。"));
+        messages.add(message("system", "当用户询问歌曲是否来自某部动漫、影视或游戏时，先直接给出“是”“不是”或“无法确认”的结论，再补充已知出处；不要改为介绍整个歌库，也不要回避问题。"));
+        messages.add(message("system", "本地检索证据用于确认歌库是否收录、歌曲名称、歌手、类型、出处和简介。只有证据中出现的歌曲才能说成歌库已收录；没有证据必须明确说本地未找到。发行时间等未写入证据的公开背景信息仍需谨慎回答，不得编造。"));
+        messages.add(message("system", "如果本地上下文明确写着未找到足够可靠的歌曲记录，说明候选未通过置信度阈值。此时必须拒绝依据本地歌库给出具体歌曲结论，并说明“本地歌库未检索到足够可靠的证据”，可以建议用户补充准确歌名、歌手、类型或出处。禁止用模型猜测填补本地检索结果。"));
+        messages.add(message("system", "本地证据编号和检索方式仅供内部推理使用。面向用户回答时不得输出 [S1] 等证据编号，不得展示候选证据列表、融合分数、检索来源或检索方式。只使用与问题直接相关的歌曲证据组织自然、详细的回答，忽略仅因语义相似而召回但不匹配明确歌名、歌手或出处的候选。公开背景知识若不来自本地证据，应明确写为公开背景信息，不得伪装成本地事实。"));
+        messages.add(message("system", "面向用户的回答必须使用干净的纯文本，不要使用 Markdown 粗体符号 **，也不要在段落或条目前添加减号。可直接使用“歌手与出处：”这类自然小标题。"));
+        messages.add(message("system", "当用户要求推荐时，先说明推荐依据，再逐首列出“歌名 - 歌手”，并在有证据时补充类型、出处和一句简介。只介绍本地证据中的歌曲；出处未填写时要明确标注，不能自行猜测。用户说“别的、其他、再来、换一些”时，严禁重复对话中已经推荐的歌曲。"));
+        appendConversationHistory(messages, history);
+        messages.add(message("user", "用户问题：" + message + "\n\n本地歌库提供的最小歌曲元数据：\n" + evidenceContext.getPrompt()));
+        return messages;
+    }
+
+    public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
+                                                boolean realCall, int expectedOutputTokens,
+                                                double inputPricePerMillion, double outputPricePerMillion) {
+        long startTime = System.currentTimeMillis();
+        CostPreview preview = buildCostPreview(message, userId, history);
+        int inputTokens = preview.modelRequired
+                ? estimateTokens(JSON.toJSONString(buildRequestMessages(preview.normalizedMessage, preview.evidenceContext, history)))
+                : 0;
+        int outputTokens = preview.modelRequired ? Math.max(1, expectedOutputTokens) : 0;
+        boolean actualUsage = false;
+        String answer = "";
+        if (realCall && preview.modelRequired && isExternalModelConfigured()) {
+            lastApiUsage.remove();
+            answer = reply(message, userId, history);
+            ApiUsage usage = lastApiUsage.get();
+            if (usage != null) {
+                inputTokens = usage.promptTokens;
+                outputTokens = usage.completionTokens;
+                actualUsage = true;
+            }
+            lastApiUsage.remove();
+        }
+        int totalTokens = inputTokens + outputTokens;
+        double estimatedCost = inputTokens / 1_000_000d * Math.max(0d, inputPricePerMillion)
+                + outputTokens / 1_000_000d * Math.max(0d, outputPricePerMillion);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("intent", preview.intent.name());
+        result.put("modelRequired", preview.modelRequired);
+        result.put("modelConfigured", isExternalModelConfigured());
+        result.put("realCallRequested", realCall);
+        result.put("actualUsage", actualUsage);
+        result.put("retrievalTopK", CONVERSATION_RETRIEVAL_TOP_K);
+        result.put("plannedEvidenceTopK", preview.plannedEvidenceTopK);
+        result.put("evidenceCount", preview.evidenceCount);
+        result.put("inputTokens", inputTokens);
+        result.put("outputTokens", outputTokens);
+        result.put("totalTokens", totalTokens);
+        result.put("estimatedCost", estimatedCost);
+        result.put("elapsedMs", System.currentTimeMillis() - startTime);
+        result.put("answerPreview", answer.length() > 300 ? answer.substring(0, 300) + "…" : answer);
+        return result;
+    }
+
+    private CostPreview buildCostPreview(String message, Integer userId, List<Map<String, String>> history) {
+        String normalized = queryUnderstandingService.normalize(message);
+        StructuredEntityQuery entityQuery = entityQueryParser.parse(normalized);
+        if (entityQuery.isStrict()) {
+            List<RetrievalResult> strictResults = entityQuery.hasEntity()
+                    ? strictEntityRetriever.retrieve(entityQuery, CONVERSATION_RETRIEVAL_TOP_K) : new ArrayList<>();
+            List<Audio> songs = new ArrayList<>();
+            for (RetrievalResult result : strictResults) {
+                Audio song = audioMapper.selectById(result.getAudioId());
+                if (song != null) songs.add(song);
+            }
+            int limit = strictEntityEvidenceLimit(entityQuery.getEntityType());
+            return new CostPreview(normalized, AssistantIntent.SONG_METADATA, !songs.isEmpty(), limit,
+                    Math.min(limit, songs.size()), buildSongEvidenceContext("严格实体 SQL", songs, limit));
+        }
+        AssistantIntent intent = queryUnderstandingService.classify(normalized);
+        List<Audio> exactSourceSongs = musicLibraryAgent.findExactSourceSongs(normalized, 5);
+        if (asksForSourceSongList(normalized) && !exactSourceSongs.isEmpty()) {
+            int limit = evidenceLimitForIntent(AssistantIntent.SOURCE_QUERY, normalized);
+            return new CostPreview(normalized, AssistantIntent.SOURCE_QUERY, true, limit,
+                    Math.min(limit, exactSourceSongs.size()), buildSongEvidenceContext("出处精确 SQL", exactSourceSongs, limit));
+        }
+        if (intent == AssistantIntent.RECOMMENDATION && isAnimeMoodQuestion(normalized)) {
+            int limit = evidenceLimitForIntent(intent, normalized);
+            List<Audio> songs = musicLibraryAgent.getRecommendationsForQuery(normalized, userId, limit, new LinkedHashSet<>());
+            return new CostPreview(normalized, intent, !songs.isEmpty(), limit, Math.min(limit, songs.size()),
+                    buildSongEvidenceContext("动画出处筛选 + 本地向量 RAG", songs, limit));
+        }
+        if (intent == AssistantIntent.RECOMMENDATION || intent == AssistantIntent.FAVORITES
+                || intent == AssistantIntent.GENRE_QUERY || intent == AssistantIntent.LIBRARY_QUERY
+                || intent == AssistantIntent.SOURCE_QUERY || intent == AssistantIntent.ASSISTANT_INFO) {
+            return new CostPreview(normalized, intent, false, 0, 0, EvidenceContext.empty());
+        }
+        boolean modelRequired = intent == AssistantIntent.SONG_METADATA || shouldUseRemoteModel(normalized, history);
+        if (!modelRequired) return new CostPreview(normalized, intent, false, 0, 0, EvidenceContext.empty());
+        EvidenceContext context = songContext(normalized, history, intent);
+        int limit = evidenceLimitForIntent(intent, normalized);
+        return new CostPreview(normalized, intent, true, limit, countEvidence(context.getPrompt()), context);
+    }
+
+    private int countEvidence(String prompt) {
+        if (prompt == null || prompt.isEmpty()) return 0;
+        int count = 0;
+        Matcher matcher = Pattern.compile("(?m)^\\[S\\d+\\]").matcher(prompt);
+        while (matcher.find()) count++;
+        return count;
+    }
+
+    private int estimateTokens(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int cjk = 0;
+        int other = 0;
+        for (int index = 0; index < text.length(); index++) {
+            char value = text.charAt(index);
+            if (value >= 0x2E80 && value <= 0x9FFF) cjk++;
+            else if (!Character.isWhitespace(value)) other++;
+        }
+        return Math.max(1, cjk + (int) Math.ceil(other / 4d));
     }
 
     private String referenceLine(String citationId, Audio song, String retrievalMethod) {
@@ -362,6 +518,8 @@ public class DeepSeekMusicAgent {
         if (evidenceBlockIndex >= 0) visibleAnswer = visibleAnswer.substring(0, evidenceBlockIndex);
         visibleAnswer = visibleAnswer.replaceAll("\\s*\\[S\\d+\\]", "");
         visibleAnswer = visibleAnswer.replaceAll("(?m)^.*检索方式[:：].*(?:\\R|$)", "");
+        visibleAnswer = visibleAnswer.replace("**", "");
+        visibleAnswer = visibleAnswer.replaceAll("(?m)^[\\t ]*-\\s*", "");
         return visibleAnswer.trim();
     }
 
@@ -484,5 +642,36 @@ public class DeepSeekMusicAgent {
             while ((line = reader.readLine()) != null) content.append(line);
         }
         return content.toString();
+    }
+
+    private static class CostPreview {
+        private final String normalizedMessage;
+        private final AssistantIntent intent;
+        private final boolean modelRequired;
+        private final int plannedEvidenceTopK;
+        private final int evidenceCount;
+        private final EvidenceContext evidenceContext;
+
+        private CostPreview(String normalizedMessage, AssistantIntent intent, boolean modelRequired,
+                            int plannedEvidenceTopK, int evidenceCount, EvidenceContext evidenceContext) {
+            this.normalizedMessage = normalizedMessage;
+            this.intent = intent;
+            this.modelRequired = modelRequired;
+            this.plannedEvidenceTopK = plannedEvidenceTopK;
+            this.evidenceCount = evidenceCount;
+            this.evidenceContext = evidenceContext;
+        }
+    }
+
+    private static class ApiUsage {
+        private final int promptTokens;
+        private final int completionTokens;
+        private final int totalTokens;
+
+        private ApiUsage(int promptTokens, int completionTokens, int totalTokens) {
+            this.promptTokens = promptTokens;
+            this.completionTokens = completionTokens;
+            this.totalTokens = totalTokens;
+        }
     }
 }

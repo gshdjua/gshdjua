@@ -1,0 +1,6 @@
+{"id":"C001","category":"单曲介绍","question":"介绍一下Good knows这首歌","expected_intent":"SONG_METADATA","expected_evidence_count":1,"expected_output_tokens":400,"expected_model_call":true}
+{"id":"C002","category":"单曲特点","question":"Good knows这首歌有什么特点？","expected_intent":"SONG_METADATA","expected_evidence_count":1,"expected_output_tokens":300,"expected_model_call":true}
+{"id":"C003","category":"歌手查询","question":"平野绫有哪些歌曲？","expected_intent":"SONG_METADATA","expected_evidence_count":0,"expected_output_tokens":300,"expected_model_call":false}
+{"id":"C004","category":"歌曲推荐","question":"推荐三首轻松的动漫歌曲","expected_intent":"RECOMMENDATION","expected_evidence_count":3,"expected_output_tokens":450,"expected_model_call":true}
+{"id":"C005","category":"本地统计","question":"歌库现在有多少首歌曲？","expected_intent":"LIBRARY_QUERY","expected_evidence_count":0,"expected_output_tokens":80,"expected_model_call":false}
+{"id":"C006","category":"收藏查询","question":"我收藏了什么歌曲？","expected_intent":"FAVORITES","expected_evidence_count":0,"expected_output_tokens":120,"expected_model_call":false}
