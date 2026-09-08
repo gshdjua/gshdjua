@@ -1,0 +1,2 @@
+"""MusicHub LangGraph agent service."""
+

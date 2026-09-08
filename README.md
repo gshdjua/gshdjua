@@ -10,6 +10,7 @@ MusicHub 是一个集音乐管理、在线播放、个性化推荐和 AI 歌库�
 | Java 后端 | Spring Boot、Spring MVC、MyBatis、JWT、Maven | 业务接口、认证、文件管理和推荐逻辑 |
 | 数据库 | MySQL 8 | 用户、歌曲、收藏、评论、歌单、播放记录和 AI 会话 |
 | 向量服务 | Python 3.10、FastAPI、Sentence Transformers、FAISS | 歌曲向量化和语义检索 |
+| Agent 服务 | Python 3.10、FastAPI、LangChain、LangGraph | 统一模型协议和可扩展 AI 工作流编排 |
 | 嵌入模型 | `intfloat/multilingual-e5-small` | 中文、日文和英文歌曲元数据向量化 |
 | 大语言模型 | DeepSeek OpenAI 兼容 API | 根据本地证据组织自然语言回答 |
 | 混合检索 | SQL、关键词 RAG、向量 RAG、加权 RRF | 精确检索、语义召回、融合和去重 |
@@ -34,7 +35,9 @@ Spring Boot 意图识别与实体解析
    ↓
 按意图动态压缩的本地证据 + 历史对话 + 当前歌曲上下文
    ↓
-DeepSeek 组织回答
+LangGraph Agent Service（统一协议）
+   ↓
+DeepSeek 组织回答；Agent Service 不可用时回退 Java 原直连逻辑
    ↓
 面向用户的纯文本回答 + 歌曲卡片
 ```
@@ -144,6 +147,7 @@ docker compose up -d --build
 | Vue 用户端与管理后台 | `http://localhost:8081` |
 | Spring Boot 后端 | `http://localhost:8082` |
 | 向量服务健康检查 | `http://localhost:8090/health` |
+| Agent 服务健康检查 | `http://localhost:8100/health` |
 
 
 
@@ -191,7 +195,7 @@ Windows 下可以双击项目根目录：
 start.bat
 ```
 
-脚本会依次启动 FastAPI 向量服务、Spring Boot 后端和 Vue 开发服务器，并打开 `http://localhost:8081`。
+脚本会依次启动 FastAPI 向量服务、LangGraph Agent 服务、Spring Boot 后端和 Vue 开发服务器，并打开 `http://localhost:8081`。
 
 也可以分别运行：
 
@@ -201,6 +205,12 @@ cd rag-service
 py -3.10 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8090
+
+# Agent 服务（新开一个终端）
+cd agent-service
+py -3.10 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100
 
 # Java 后端
 cd springboot-web-demo

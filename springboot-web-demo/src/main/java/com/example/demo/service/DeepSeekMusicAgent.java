@@ -61,6 +61,9 @@ public class DeepSeekMusicAgent {
     @Autowired
     private StrictEntityRetriever strictEntityRetriever;
 
+    @Autowired
+    private AgentServiceClient agentServiceClient;
+
     public String reply(String message, Integer userId, List<Map<String, String>> history) {
         StructuredEntityQuery entityQuery = entityQueryParser.parse(message);
         if (entityQuery.isStrict()) {
@@ -343,10 +346,17 @@ public class DeepSeekMusicAgent {
         if (baseUrl.isEmpty()) baseUrl = "https://api.deepseek.com";
         String endpoint = baseUrl.replaceAll("/+$", "") + "/chat/completions";
 
-        JSONObject requestBody = new JSONObject();
-        requestBody.put("model", getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat"));
-        requestBody.put("temperature", 0.4);
+        String modelName = getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat");
         JSONArray messages = buildRequestMessages(message, evidenceContext, history);
+        AgentServiceClient.AgentResult agentResult = agentServiceClient.chat(messages, modelName, 0.4);
+        if (agentResult != null) {
+            lastApiUsage.set(new ApiUsage(agentResult.getInputTokens(), agentResult.getOutputTokens(), agentResult.getTotalTokens()));
+            return ensureEvidenceReferences(agentResult.getAnswer(), evidenceContext);
+        }
+
+        JSONObject requestBody = new JSONObject();
+        requestBody.put("model", modelName);
+        requestBody.put("temperature", 0.4);
         requestBody.put("messages", messages);
 
         lastApiUsage.remove();

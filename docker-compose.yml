@@ -49,6 +49,25 @@ services:
       retries: 20
       start_period: 30s
 
+  agent-service:
+    build:
+      context: ./agent-service
+    container_name: musichub-agent
+    restart: unless-stopped
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
+      OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-v4-flash}
+      TZ: Asia/Shanghai
+    ports:
+      - "${AGENT_PORT:-8100}:8100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
   backend:
     build:
       context: ./springboot-web-demo
@@ -59,6 +78,7 @@ services:
       MUSICHUB_DB_USERNAME: root
       MUSICHUB_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-musichub123}
       VECTOR_RAG_BASE_URL: http://rag-service:8090
+      AGENT_SERVICE_BASE_URL: http://agent-service:8100
       EVALUATION_DATASET_PATH: /app/evaluation/rag-eval-50.jsonl
       LLM_COST_EVALUATION_DATASET_PATH: /app/evaluation/llm-cost-eval.jsonl
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -74,6 +94,8 @@ services:
       mysql:
         condition: service_healthy
       rag-service:
+        condition: service_healthy
+      agent-service:
         condition: service_healthy
 
   frontend:

@@ -10,6 +10,7 @@ echo Stopping previous MusicHub services if they are running...
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8082" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8081" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8090" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>&1
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8100" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>&1
 
 echo ============================
 echo   MusicHub - Music Player
@@ -37,7 +38,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] Starting local vector RAG...
+echo [1/4] Starting local vector RAG...
 set RAGDIR=%BATDIR%\rag-service
 set RAGPYTHON=%RAGDIR%\.venv\Scripts\python.exe
 if exist "%RAGPYTHON%" goto check_rag_dependencies
@@ -65,14 +66,42 @@ if errorlevel 1 (
 :start_rag
 start "Vector RAG" "%ComSpec%" /k "cd /d ""%RAGDIR%"" && .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8090"
 
-echo [2/3] Starting backend...
-set BKDIR=%BATDIR%\springboot-web-demo
+echo [2/4] Starting LangGraph agent service...
+set AGENTDIR=%BATDIR%\agent-service
+set AGENTPYTHON=%AGENTDIR%\.venv\Scripts\python.exe
+if exist "%AGENTPYTHON%" goto check_agent_dependencies
+
+echo Agent environment not found. Creating it now...
+python -m venv "%AGENTDIR%\.venv"
+if errorlevel 1 (
+    echo [ERROR] Failed to create the Agent Python environment
+    pause
+    exit /b 1
+)
+
+:check_agent_dependencies
+"%AGENTPYTHON%" -c "import fastapi, uvicorn, langchain_core, langchain_openai, langgraph" >nul 2>&1
+if not errorlevel 1 goto start_agent
+
+echo Installing Agent dependencies...
+"%AGENTPYTHON%" -m pip install -r "%AGENTDIR%\requirements.txt"
+if errorlevel 1 (
+    echo [ERROR] Failed to install Agent dependencies
+    pause
+    exit /b 1
+)
+
+:start_agent
+start "LangGraph Agent" "%ComSpec%" /k "cd /d ""%AGENTDIR%"" && .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100"
+
+echo [3/4] Starting backend...
+set BKDIR=%BATDIR%\springboot-web-demo
 start "Backend" "%ComSpec%" /k "cd /d ""%BKDIR%"" && mvn spring-boot:run"
 
 echo Waiting for backend...
 ping -n 10 127.0.0.1 >nul
 
-echo [3/3] Starting frontend...
+echo [4/4] Starting frontend...
 set FEDIR=%BATDIR%\vue-login
 if exist "%FEDIR%\node_modules\.bin\vue-cli-service.cmd" goto start_frontend
 
@@ -103,5 +132,6 @@ echo   Frontend: http://localhost:8081
 echo   Backend:  http://localhost:8082
 
 echo   Vector RAG: http://localhost:8090/health
-echo ============================
+echo   Agent:      http://localhost:8100/health
+echo ============================
 pause

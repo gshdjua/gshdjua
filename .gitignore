@@ -3,6 +3,7 @@ vue-login/node_modules/
 vue-login/dist/
 springboot-web-demo/target/
 rag-service/.venv/
+agent-service/.venv/
 
 # Local Python files
 **/__pycache__/
