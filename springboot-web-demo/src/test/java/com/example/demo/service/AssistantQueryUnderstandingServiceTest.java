@@ -25,6 +25,9 @@ class AssistantQueryUnderstandingServiceTest {
     void separatesGenreConstraintsFromMoodWords() {
         assertEquals(AssistantIntent.RECOMMENDATION, service.classify("请推荐几首轻音乐歌曲"));
         assertEquals(AssistantIntent.RECOMMENDATION, service.classify("推荐动漫类型的轻音乐歌曲"));
+        assertEquals(AssistantIntent.RECOMMENDATION, service.classify("咱们歌库里有轻松的音乐吗？"));
+        assertEquals(AssistantIntent.RECOMMENDATION, service.classify("想听点舒缓的歌"));
+        assertEquals(AssistantIntent.GENERAL, service.classify("我喜欢轻松的音乐"));
         assertEquals(java.util.Arrays.asList("轻音乐", "动漫"), service.requestedGenres("推荐动漫类型的轻音乐歌曲"));
         assertTrue(service.requestedGenres("请推荐一些轻松的歌曲").isEmpty());
     }

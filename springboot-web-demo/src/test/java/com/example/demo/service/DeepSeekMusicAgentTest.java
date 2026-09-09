@@ -1,11 +1,18 @@
 package com.example.demo.service;
 
 import com.example.demo.service.retrieval.EntityType;
+import com.example.demo.service.retrieval.EntityQueryParser;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
+
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class DeepSeekMusicAgentTest {
 
@@ -60,5 +67,27 @@ class DeepSeekMusicAgentTest {
         assertEquals(1, agent.strictEntityEvidenceLimit(EntityType.SONG));
         assertEquals(5, agent.strictEntityEvidenceLimit(EntityType.SINGER));
         assertEquals(5, agent.strictEntityEvidenceLimit(EntityType.SOURCE));
+    }
+
+    @Test
+    void routesGeneralMoodQuestionThroughMoodRetrieval() {
+        AssistantQueryUnderstandingService understanding = new AssistantQueryUnderstandingService();
+        EntityQueryParser parser = new EntityQueryParser();
+        ReflectionTestUtils.setField(parser, "queryUnderstandingService", understanding);
+        MusicLibraryAgent libraryAgent = mock(MusicLibraryAgent.class);
+        DeepSeekMusicAgent routedAgent = new DeepSeekMusicAgent();
+        ReflectionTestUtils.setField(routedAgent, "entityQueryParser", parser);
+        ReflectionTestUtils.setField(routedAgent, "queryUnderstandingService", understanding);
+        ReflectionTestUtils.setField(routedAgent, "musicLibraryAgent", libraryAgent);
+        String question = "咱们歌库里有轻松的音乐吗？";
+        when(libraryAgent.findExactSourceSongs(question, 5)).thenReturn(Collections.emptyList());
+        when(libraryAgent.getRecommendationsForQuery(question, 7, 5, Collections.emptySet()))
+                .thenReturn(Collections.emptyList());
+        when(libraryAgent.reply(question, 7, AssistantIntent.RECOMMENDATION)).thenReturn("没有匹配歌曲");
+
+        String answer = routedAgent.reply(question, 7, Collections.emptyList());
+
+        assertEquals("没有匹配歌曲", answer);
+        verify(libraryAgent).getRecommendationsForQuery(question, 7, 5, Collections.emptySet());
     }
 }

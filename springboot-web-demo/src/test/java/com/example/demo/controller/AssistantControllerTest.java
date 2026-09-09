@@ -60,6 +60,8 @@ class AssistantControllerTest {
         }).when(conversationMapper).insertMessage(any(AssistantMessage.class));
         when(agent.reply("我喜欢动漫歌曲", 7, Collections.emptyList(), 11L, "assistant-message-41"))
                 .thenReturn("本地回答");
+        when(memoryClient.capture(7, 11L, "assistant-message-41", "我喜欢动漫歌曲"))
+                .thenReturn(Collections.singletonMap("capturedCount", 1));
 
         Map<String, Object> payload = new HashMap<>();
         payload.put("conversationId", 11L);

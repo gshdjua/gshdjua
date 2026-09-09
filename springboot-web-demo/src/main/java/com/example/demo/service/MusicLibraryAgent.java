@@ -194,6 +194,8 @@ public class MusicLibraryAgent {
 
         List<Audio> candidates = songs.stream()
                 .filter(song -> !excludedIds.contains(song.getId()))
+                .filter(song -> moodKeywordScore(song, message) > 0
+                        || semanticRanks.getOrDefault(song.getId(), Integer.MAX_VALUE) < 5)
                 .sorted(Comparator.comparingInt((Audio song) -> moodKeywordScore(song, message)).reversed()
                         .thenComparingInt(song -> semanticRanks.getOrDefault(song.getId(), Integer.MAX_VALUE))
                         .thenComparing((Audio song) -> song.getCollectCount() == null ? 0 : song.getCollectCount(), Comparator.reverseOrder())

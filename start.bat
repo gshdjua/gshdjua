@@ -80,7 +80,7 @@ if errorlevel 1 (
 )
 
 :check_agent_dependencies
-"%AGENTPYTHON%" -c "import fastapi, uvicorn, langchain_core, langchain_openai, langgraph" >nul 2>&1
+"%AGENTPYTHON%" -c "import fastapi, uvicorn, langchain_core, langchain_openai, langgraph, pymysql, dotenv" >nul 2>&1
 if not errorlevel 1 goto start_agent
 
 echo Installing Agent dependencies...
@@ -93,6 +93,20 @@ if errorlevel 1 (
 
 :start_agent
 start "LangGraph Agent" "%ComSpec%" /k "cd /d ""%AGENTDIR%"" && .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100"
+
+echo Waiting for Agent health check...
+for /L %%I in (1,1,20) do (
+    powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8100/health -TimeoutSec 2 ^| Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+    if not errorlevel 1 goto agent_ready
+    ping -n 2 127.0.0.1 >nul
+)
+echo [ERROR] Agent service failed to become healthy at http://127.0.0.1:8100/health
+echo Check the "LangGraph Agent" window for the startup error.
+pause
+exit /b 1
+
+:agent_ready
+echo Agent service is healthy.
 
 echo [3/4] Starting backend...
 set BKDIR=%BATDIR%\springboot-web-demo

@@ -77,6 +77,12 @@ public class AssistantQueryUnderstandingService {
                 && containsAny(normalized, "推荐", "哪些", "哪首", "有什么", "歌曲", "音乐", "歌")) {
             return AssistantIntent.RECOMMENDATION;
         }
+        boolean moodQuestion = containsAny(normalized, "轻松", "治愈", "舒缓", "欢快", "热血", "伤感", "悲伤", "安静")
+                && (containsAny(normalized, "推荐", "有没有", "想听", "来点", "来几首", "哪些", "哪首", "有什么")
+                || (normalized.contains("有") && containsAny(normalized, "吗", "么", "？", "?")));
+        if (moodQuestion) {
+            return AssistantIntent.RECOMMENDATION;
+        }
         if (containsAny(normalized, "出处", "动画", "番剧", "动漫", "番", "作品", "游戏", "电影", "电视剧")
                 && containsAny(normalized, "推荐", "哪些", "哪首", "有什么", "歌曲", "音乐", "主题曲", "片尾曲", "片头曲")) {
             return AssistantIntent.SOURCE_QUERY;

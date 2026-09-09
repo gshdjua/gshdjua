@@ -90,15 +90,19 @@ public class DeepSeekMusicAgent {
         if (asksForSourceSongList(normalizedMessage) && !exactSourceSongs.isEmpty()) {
             return replyWithLocalEvidence(normalizedMessage, userId, history, exactSourceSongs, "出处精确 SQL", AssistantIntent.SOURCE_QUERY);
         }
-        if (intent == AssistantIntent.RECOMMENDATION && isAnimeMoodQuestion(normalizedMessage)) {
+        if (intent == AssistantIntent.RECOMMENDATION && isMoodQuestion(normalizedMessage)) {
             boolean asksForAlternatives = asksForAlternatives(normalizedMessage);
             Set<Integer> excludedAudioIds = asksForAlternatives ? previouslyRecommendedAudioIds(history) : new LinkedHashSet<>();
             List<Audio> recommendations = musicLibraryAgent.getRecommendationsForQuery(normalizedMessage, userId, 5, excludedAudioIds);
             if (asksForAlternatives && recommendations.isEmpty()) {
                 return "我已排除本次对话中推荐过的歌曲，但歌库里暂时没有更多已确认符合“"
-                        + moodLabel(normalizedMessage) + "的动漫歌”条件的歌曲。你可以补充更多歌曲出处或简介后再试。";
+                        + moodLabel(normalizedMessage) + "”条件的歌曲。你可以换一种听感后再试。";
             }
-            return replyWithLocalEvidence(normalizedMessage, userId, history, recommendations, "动画出处筛选 + 本地向量 RAG", AssistantIntent.RECOMMENDATION);
+            String retrievalMethod = isAnimeMoodQuestion(normalizedMessage)
+                    ? "动画出处筛选 + 本地向量 RAG"
+                    : "听感筛选 + 本地向量 RAG";
+            return replyWithLocalEvidence(normalizedMessage, userId, history, recommendations, retrievalMethod,
+                    AssistantIntent.RECOMMENDATION);
         }
         if (intent == AssistantIntent.RECOMMENDATION || intent == AssistantIntent.FAVORITES
                 || intent == AssistantIntent.GENRE_QUERY || intent == AssistantIntent.LIBRARY_QUERY
@@ -158,9 +162,9 @@ public class DeepSeekMusicAgent {
                 strictEntityEvidenceLimit(entityQuery.getEntityType()));
         try {
             String answer = requestDeepSeek(message, evidenceContext, history);
-            return answer.isEmpty() ? ensureEvidenceReferences(localAnswer, evidenceContext) : answer;
+            return answer.isEmpty() ? unavailableModelFallback(localAnswer, evidenceContext) : answer;
         } catch (Exception exception) {
-            return ensureEvidenceReferences(localAnswer, evidenceContext);
+            return unavailableModelFallback(localAnswer, evidenceContext);
         }
     }
 
@@ -184,11 +188,16 @@ public class DeepSeekMusicAgent {
         try {
             String answer = requestDeepSeek(message, evidenceContext, history);
             return answer.isEmpty()
-                    ? ensureEvidenceReferences(musicLibraryAgent.reply(message, userId, fallbackIntent), evidenceContext)
+                    ? unavailableModelFallback(musicLibraryAgent.reply(message, userId, fallbackIntent), evidenceContext)
                     : answer;
         } catch (Exception exception) {
-            return ensureEvidenceReferences(musicLibraryAgent.reply(message, userId, fallbackIntent), evidenceContext);
+            return unavailableModelFallback(musicLibraryAgent.reply(message, userId, fallbackIntent), evidenceContext);
         }
+    }
+
+    private String unavailableModelFallback(String localAnswer, EvidenceContext evidenceContext) {
+        return "Agent/DeepSeek 服务暂时不可用，以下回答由本地歌库生成：\n"
+                + ensureEvidenceReferences(localAnswer, evidenceContext);
     }
 
     private boolean needsBackgroundIntroduction(String message) {
@@ -217,6 +226,10 @@ public class DeepSeekMusicAgent {
     private boolean isAnimeMoodQuestion(String message) {
         return containsAny(message, "动画", "番剧", "动漫", "番")
                 && containsAny(message, "轻松", "治愈", "舒缓", "欢快", "热血", "伤感", "悲伤", "安静");
+    }
+
+    private boolean isMoodQuestion(String message) {
+        return containsAny(message, "轻松", "治愈", "舒缓", "欢快", "热血", "伤感", "悲伤", "安静");
     }
 
     private boolean asksForAlternatives(String message) {
@@ -412,7 +425,9 @@ public class DeepSeekMusicAgent {
         JSONObject firstChoice = choices.getJSONObject(0);
         JSONObject responseMessage = firstChoice.getJSONObject("message");
         String answer = responseMessage == null ? "" : responseMessage.getString("content");
-        return ensureEvidenceReferences(answer, evidenceContext);
+        if (answer == null || answer.trim().isEmpty()) return "";
+        return "Agent Service 当前不可用，已临时直连 DeepSeek；本轮长期记忆可能未保存。\n"
+                + ensureEvidenceReferences(answer, evidenceContext);
     }
 
     private JSONArray buildRequestMessages(String message, EvidenceContext evidenceContext,
@@ -664,7 +679,8 @@ public class DeepSeekMusicAgent {
     }
 
     private String modelFallback(String message, Integer userId) {
-        return "DeepSeek 暂时未能返回结果，已改用本地歌库回答：\n" + musicLibraryAgent.reply(message, userId);
+        return "Agent/DeepSeek 服务暂时不可用，以下回答由本地歌库生成：\n"
+                + musicLibraryAgent.reply(message, userId);
     }
 
     private String readAll(InputStream inputStream) throws Exception {

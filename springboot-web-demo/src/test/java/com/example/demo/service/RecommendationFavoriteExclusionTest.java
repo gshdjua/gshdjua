@@ -83,11 +83,16 @@ class RecommendationFavoriteExclusionTest {
         when(audioMapper.selectUserCollects(10)).thenReturn(Collections.emptyList());
         when(vectorRagClient.search("请给我推荐一些轻松的歌曲", 20)).thenReturn(Collections.emptyList());
         when(musicRagRetriever.retrieve("请给我推荐一些轻松的歌曲", null, 20)).thenReturn(Collections.emptyList());
+        when(vectorRagClient.search("咱们歌库里有轻松的音乐吗？", 20)).thenReturn(Collections.emptyList());
+        when(musicRagRetriever.retrieve("咱们歌库里有轻松的音乐吗？", null, 20)).thenReturn(Collections.emptyList());
 
         List<Audio> recommendations = agent.getRecommendationsForQuery("请给我推荐一些轻松的歌曲", 10, 2);
+        List<Audio> naturalQuestionRecommendations = agent.getRecommendationsForQuery("咱们歌库里有轻松的音乐吗？", 10, 2);
         String reply = agent.reply("请给我推荐一些轻松的歌曲", 10, AssistantIntent.RECOMMENDATION);
 
         assertEquals(Integer.valueOf(2), recommendations.get(0).getId());
+        assertEquals(Collections.singletonList(2), naturalQuestionRecommendations.stream()
+                .map(Audio::getId).collect(java.util.stream.Collectors.toList()));
         assertTrue(reply.contains("按“轻松”的听感"));
         assertFalse(reply.contains("收藏和播放偏好"));
         verify(recommendationService, never()).recommend(10, 2);
