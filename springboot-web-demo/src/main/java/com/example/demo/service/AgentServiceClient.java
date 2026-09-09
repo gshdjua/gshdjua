@@ -23,6 +23,11 @@ public class AgentServiceClient {
 
     public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId) {
+        return chat(messages, model, temperature, userMessage, conversationId, userId, null);
+    }
+
+    public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
+                            Long conversationId, Integer userId, String requestId) {
         if (baseUrl == null || baseUrl.trim().isEmpty()) return null;
         HttpURLConnection connection = null;
         try {
@@ -34,7 +39,7 @@ public class AgentServiceClient {
 
             JSONObject request = new JSONObject();
             request.put("protocolVersion", "1.0");
-            request.put("requestId", UUID.randomUUID().toString());
+            request.put("requestId", requestId == null ? UUID.randomUUID().toString() : requestId);
             if (conversationId != null) request.put("conversationId", String.valueOf(conversationId));
             if (userId != null) request.put("userId", String.valueOf(userId));
             request.put("messages", messages);

@@ -48,6 +48,12 @@ class MemorySettingsUpdate(BaseModel):
     enabled: bool
 
 
+class MemoryCaptureRequest(BaseModel):
+    requestId: str = Field(min_length=1, max_length=100)
+    conversationId: Optional[str] = None
+    message: str = Field(min_length=1, max_length=2000)
+
+
 class MemoryUpdate(BaseModel):
     content: str = Field(min_length=1, max_length=500)
 

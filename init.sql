@@ -170,6 +170,19 @@ CREATE TABLE IF NOT EXISTS agent_memory_setting (
     FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS agent_memory_capture (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    request_id VARCHAR(100) NOT NULL,
+    conversation_id BIGINT NULL,
+    enabled TINYINT(1) NOT NULL,
+    captured_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_memory_capture_request (user_id, request_id),
+    KEY idx_agent_memory_capture_created (created_at),
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 默认管理员账号 (密码: 123456)
 INSERT INTO user (username, password, role) VALUES ('admin', '123456', 'admin')
 ON DUPLICATE KEY UPDATE username = username;

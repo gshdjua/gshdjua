@@ -8,6 +8,7 @@ from .contracts import (
     AgentChatRequest,
     AgentChatResponse,
     AgentMessage,
+    MemoryCaptureRequest,
     MemoryRecord,
     MemorySettingsUpdate,
     MemoryUpdate,
@@ -97,6 +98,12 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             raw_user_message,
             str(response.content),
         )
+        memory_repository.capture_preferences(
+            payload.userId,
+            payload.conversationId,
+            payload.requestId,
+            raw_user_message,
+        )
         return AgentChatResponse(
             requestId=payload.requestId,
             answer=str(response.content),
@@ -116,6 +123,16 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
 @app.get("/v1/memory/users/{user_id}/settings")
 def memory_settings(user_id: str) -> dict:
     return memory_repository.settings(user_id)
+
+
+@app.post("/v1/memory/users/{user_id}/capture")
+def capture_memory(user_id: str, payload: MemoryCaptureRequest) -> dict:
+    try:
+        return memory_repository.capture_preferences(
+            user_id, payload.conversationId, payload.requestId, payload.message
+        )
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error
 
 
 @app.put("/v1/memory/users/{user_id}/settings")

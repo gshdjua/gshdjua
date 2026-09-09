@@ -80,6 +80,42 @@ class ConversationMemoryRepositoryTest(unittest.TestCase):
         self.assertEqual([], self.repository.extract_candidates("我今天喜欢听摇滚"))
         self.assertEqual([], self.repository.extract_candidates("我喜欢的密码是 123456"))
 
+    def test_temporary_preference_capture_writes_nothing(self):
+        cursor = FakeCursor()
+
+        captured_count = self.repository._save_preferences(
+            cursor, "user-1", "conversation-1", "我今天喜欢听摇滚"
+        )
+
+        self.assertEqual(0, captured_count)
+        self.assertEqual("", cursor.query)
+
+    def test_capture_skips_write_when_memory_is_disabled(self):
+        cursor = FakeCursor(rowcount=1)
+        with patch.object(self.repository, "_ensure_schema"), \
+                patch.object(self.repository, "settings", return_value={"enabled": False}), \
+                patch.object(self.repository, "_connect", return_value=FakeConnection(cursor)), \
+                patch.object(self.repository, "_save_preferences") as save_preferences:
+            result = self.repository.capture_preferences(
+                "user-1", "conversation-1", "request-1", "我喜欢动漫歌曲"
+            )
+
+        self.assertEqual({"capturedCount": 0, "duplicate": False, "enabled": False}, result)
+        save_preferences.assert_not_called()
+
+    def test_capture_is_idempotent_for_duplicate_request(self):
+        cursor = DuplicateCaptureCursor(fetchone=(1, 1))
+        with patch.object(self.repository, "_ensure_schema"), \
+                patch.object(self.repository, "settings", return_value={"enabled": True}), \
+                patch.object(self.repository, "_connect", return_value=FakeConnection(cursor)), \
+                patch.object(self.repository, "_save_preferences") as save_preferences:
+            result = self.repository.capture_preferences(
+                "user-1", "conversation-1", "request-1", "我喜欢动漫歌曲"
+            )
+
+        self.assertEqual({"capturedCount": 1, "duplicate": True, "enabled": True}, result)
+        save_preferences.assert_not_called()
+
     def test_semantic_ranking_filters_irrelevant_memories(self):
         rows = [
             {"content": "喜欢：动漫歌曲", "embedding": "[1.0, 0.0]", "importance": 0.8, "confidence": 0.9},
@@ -93,10 +129,11 @@ class ConversationMemoryRepositoryTest(unittest.TestCase):
 
 
 class FakeCursor:
-    def __init__(self, fetchone=None):
+    def __init__(self, fetchone=None, rowcount=1):
         self._fetchone = fetchone
         self.query = ""
         self.parameters = None
+        self.rowcount = rowcount
 
     def __enter__(self):
         return self
@@ -110,6 +147,13 @@ class FakeCursor:
 
     def fetchone(self):
         return self._fetchone
+
+
+class DuplicateCaptureCursor(FakeCursor):
+    def execute(self, query, parameters=None):
+        super().execute(query, parameters)
+        if query.startswith("INSERT IGNORE INTO agent_memory_capture"):
+            self.rowcount = 0
 
 
 class FakeConnection:

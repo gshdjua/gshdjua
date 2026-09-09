@@ -113,9 +113,45 @@ class ConversationMemoryRepository:
                     "recent_messages=VALUES(recent_messages),state_version=state_version+1,updated_at=CURRENT_TIMESTAMP",
                     (conversation_id, user_id, summary, self._encode_messages(recent)),
                 )
-            self._save_preferences(user_id, conversation_id, user_message)
         except Exception:
             LOGGER.exception("Failed to persist agent memory for conversation %s", conversation_id)
+
+    def capture_preferences(
+        self,
+        user_id: Optional[str],
+        conversation_id: Optional[str],
+        request_id: str,
+        message: str,
+    ) -> Dict:
+        if not user_id:
+            return {"capturedCount": 0, "duplicate": False, "enabled": False}
+        self._ensure_schema()
+        enabled = self.settings(user_id)["enabled"]
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO agent_memory_capture"
+                "(user_id,request_id,conversation_id,enabled,captured_count) VALUES(%s,%s,%s,%s,0)",
+                (user_id, request_id, conversation_id, 1 if enabled else 0),
+            )
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    "SELECT enabled,captured_count FROM agent_memory_capture WHERE user_id=%s AND request_id=%s",
+                    (user_id, request_id),
+                )
+                row = cursor.fetchone()
+                return {
+                    "capturedCount": int(row[1]) if row else 0,
+                    "duplicate": True,
+                    "enabled": bool(row[0]) if row else enabled,
+                }
+            if not enabled:
+                return {"capturedCount": 0, "duplicate": False, "enabled": False}
+            captured_count = self._save_preferences(cursor, user_id, conversation_id, message)
+            cursor.execute(
+                "UPDATE agent_memory_capture SET captured_count=%s WHERE user_id=%s AND request_id=%s",
+                (captured_count, user_id, request_id),
+            )
+        return {"capturedCount": captured_count, "duplicate": False, "enabled": True}
 
     def settings(self, user_id: str) -> Dict[str, bool]:
         try:
@@ -269,29 +305,27 @@ class ConversationMemoryRepository:
                 updates,
             )
 
-    def _save_preferences(self, user_id: Optional[str], conversation_id: str, message: str) -> None:
-        if not user_id or not self.settings(user_id)["enabled"]:
-            return
+    def _save_preferences(self, cursor, user_id: str, conversation_id: Optional[str], message: str) -> int:
         candidates = self.extract_candidates(message)
         if not candidates:
-            return
-        with self._connect() as connection, connection.cursor() as cursor:
-            for candidate in candidates:
-                vector, model = embedding_client.embed(candidate.content, "passage")
-                memory_key = hashlib.sha256(candidate.normalized_content.encode("utf-8")).hexdigest()
-                cursor.execute(
-                    "INSERT INTO agent_long_term_memory"
-                    "(user_id,memory_key,memory_type,content,normalized_content,importance,confidence,embedding,"
-                    "embedding_model,source_conversation_id,status) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active') "
-                    "ON DUPLICATE KEY UPDATE content=VALUES(content),importance=VALUES(importance),"
-                    "confidence=VALUES(confidence),embedding=VALUES(embedding),embedding_model=VALUES(embedding_model),"
-                    "source_conversation_id=VALUES(source_conversation_id),status='active',updated_at=CURRENT_TIMESTAMP",
-                    (
-                        user_id, memory_key, candidate.memory_type, candidate.content,
-                        candidate.normalized_content, candidate.importance, candidate.confidence,
-                        self._encode_vector(vector), model, conversation_id,
-                    ),
-                )
+            return 0
+        for candidate in candidates:
+            vector, model = embedding_client.embed(candidate.content, "passage")
+            memory_key = hashlib.sha256(candidate.normalized_content.encode("utf-8")).hexdigest()
+            cursor.execute(
+                "INSERT INTO agent_long_term_memory"
+                "(user_id,memory_key,memory_type,content,normalized_content,importance,confidence,embedding,"
+                "embedding_model,source_conversation_id,status) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'active') "
+                "ON DUPLICATE KEY UPDATE content=VALUES(content),importance=VALUES(importance),"
+                "confidence=VALUES(confidence),embedding=VALUES(embedding),embedding_model=VALUES(embedding_model),"
+                "source_conversation_id=VALUES(source_conversation_id),status='active',updated_at=CURRENT_TIMESTAMP",
+                (
+                    user_id, memory_key, candidate.memory_type, candidate.content,
+                    candidate.normalized_content, candidate.importance, candidate.confidence,
+                    self._encode_vector(vector), model, conversation_id,
+                ),
+            )
+        return len(candidates)
 
     def _compress(self, summary: str, messages: List[AgentMessage]):
         if len(messages) <= MAX_RECENT_MESSAGES:
@@ -409,6 +443,15 @@ class ConversationMemoryRepository:
                     "user_id INT PRIMARY KEY,enabled TINYINT(1) NOT NULL DEFAULT 1,"
                     "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
                     "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) "
+                    "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+                )
+                cursor.execute(
+                    "CREATE TABLE IF NOT EXISTS agent_memory_capture ("
+                    "id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id INT NOT NULL,request_id VARCHAR(100) NOT NULL,"
+                    "conversation_id BIGINT NULL,enabled TINYINT(1) NOT NULL,captured_count INT NOT NULL DEFAULT 0,"
+                    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+                    "UNIQUE KEY uk_agent_memory_capture_request(user_id,request_id),"
+                    "KEY idx_agent_memory_capture_created(created_at)) "
                     "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
                 )
                 self._ensure_columns(cursor)

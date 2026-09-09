@@ -40,6 +40,16 @@ class ConversationMemoryIntegrationTest(unittest.TestCase):
         self.repository.save(
             "9001", "101", "", [], [], "我喜欢动漫歌曲", "我记住了你的偏好。"
         )
+        captured = self.repository.capture_preferences(
+            "101", "9001", "assistant-message-1", "我喜欢动漫歌曲"
+        )
+        duplicate = self.repository.capture_preferences(
+            "101", "9001", "assistant-message-1", "我喜欢动漫歌曲"
+        )
+
+        self.assertEqual(1, captured["capturedCount"])
+        self.assertFalse(captured["duplicate"])
+        self.assertTrue(duplicate["duplicate"])
 
         memories = self.repository.list_memories("101")
         self.assertEqual(1, len(memories))
@@ -53,10 +63,19 @@ class ConversationMemoryIntegrationTest(unittest.TestCase):
         restarted_repository.set_enabled("101", False)
         disabled = restarted_repository.load("9001", "101", "继续推荐动漫音乐")
         self.assertEqual([], disabled.long_term_memories)
-        restarted_repository.save("9001", "101", "", [], [], "我喜欢爵士", "好的")
+        disabled_capture = restarted_repository.capture_preferences(
+            "101", "9001", "assistant-message-2", "我喜欢爵士"
+        )
+        self.assertFalse(disabled_capture["enabled"])
         self.assertEqual(1, len(restarted_repository.list_memories("101")))
 
         restarted_repository.set_enabled("101", True)
+        temporary_capture = restarted_repository.capture_preferences(
+            "101", "9001", "assistant-message-3", "我今天喜欢听摇滚"
+        )
+        self.assertEqual(0, temporary_capture["capturedCount"])
+        self.assertEqual(1, len(restarted_repository.list_memories("101")))
+
         memory_id = memories[0]["id"]
         updated = restarted_repository.update_memory("101", memory_id, "喜欢：热血动漫歌曲")
         self.assertEqual("喜欢：热血动漫歌曲", updated["content"])

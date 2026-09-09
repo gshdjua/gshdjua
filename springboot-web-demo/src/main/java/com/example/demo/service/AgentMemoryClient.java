@@ -33,6 +33,14 @@ public class AgentMemoryClient {
         return request("GET", userPath(userId) + "/memories", null);
     }
 
+    public Object capture(Integer userId, Long conversationId, String requestId, String message) {
+        JSONObject body = new JSONObject();
+        body.put("requestId", requestId);
+        if (conversationId != null) body.put("conversationId", String.valueOf(conversationId));
+        body.put("message", message);
+        return request("POST", userPath(userId) + "/capture", body);
+    }
+
     public Object update(Integer userId, Long memoryId, String content) {
         JSONObject body = new JSONObject();
         body.put("content", content);

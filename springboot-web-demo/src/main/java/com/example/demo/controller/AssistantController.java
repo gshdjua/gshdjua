@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/assistant")
@@ -68,9 +69,13 @@ public class AssistantController {
         AssistantMessage userMessage = message(conversationId, "user", message);
         assistantConversationMapper.insertMessage(userMessage);
         String messageForAgent = enrichWithCurrentAudio(message, conversation.getCurrentAudioId());
-        String reply = deepSeekMusicAgent.reply(messageForAgent, userId, history, conversationId);
+        String memoryRequestId = userMessage.getId() == null
+                ? "assistant-message-" + UUID.randomUUID()
+                : "assistant-message-" + userMessage.getId();
+        String reply = deepSeekMusicAgent.reply(messageForAgent, userId, history, conversationId, memoryRequestId);
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
+        agentMemoryClient.capture(userId, conversationId, memoryRequestId, message);
 
         if ("新对话".equals(conversation.getTitle())) {
             assistantConversationMapper.updateTitle(conversationId, userId, message.substring(0, Math.min(message.length(), 18)));
