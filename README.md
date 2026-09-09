@@ -19,7 +19,26 @@ MusicHub 是一个集音乐管理、在线播放、个性化推荐和 AI 歌库�
 | 回答治理 | 实体校验、低置信度拒答、动态证据预算 | 降低误召回、答非所问、无关证据和模型幻觉 |
 | 检索评测 | Hit@K、Recall@K、MRR、Top-1、拒答准确率 | 量化检索、排序和拒答效果 |
 | 成本评测 | 模拟/真实 Token、模型绕过率、费用估算 | 评估动态证据压缩和本地路由的成本收益 |
-| 部署 | Docker Compose、Nginx | 编排 Vue、Spring Boot、MySQL 和向量服务 |
+| 部署 | Docker Compose、Nginx | 编排 Vue、Spring Boot、MySQL、向量服务和 Agent 服务 |
+
+### 服务拓扑
+
+```text
+浏览器
+  │
+  ▼
+Vue 2 前端（8081）
+  │ /api
+  ▼
+Spring Boot 业务与 AI 网关（8082）
+  ├── MySQL（3306）
+  ├── Local Vector RAG（8090）
+  └── LangGraph Agent Service（8100）
+          │
+          └── DeepSeek OpenAI 兼容 API
+```
+
+
 
 ## AI 调用链
 
@@ -38,10 +57,14 @@ Spring Boot 意图识别与实体解析
    ↓
 LangGraph Agent Service（统一协议）
    ↓
-DeepSeek 组织回答；Agent Service 不可用时回退 Java 原直连逻辑
+DeepSeek 组织回答；Agent Service 不可用时临时直连 DeepSeek
+   ↓
+直连仍失败时，明确提示并使用经过约束的 Java 本地回答
    ↓
 面向用户的纯文本回答 + 歌曲卡片
 ```
+
+
 
 ## 相比类似项目的优势
 
@@ -56,7 +79,7 @@ DeepSeek 组织回答；Agent Service 不可用时回退 Java 原直连逻辑
 - 向量 RAG 负责“轻松的动漫歌”“类似某首歌”等模糊问题。
 - 加权 RRF 将多路结果融合，并按歌曲 ID 去重。
 
-系统会区分“轻音乐”和“轻松”：前者是必须满足的歌曲类型，后者是用于排序的听感语义。“动漫类型的轻音乐”会按多类型交集筛选，只有同时具有“动漫”和“轻音乐”标签的歌曲才会进入结果，向量相似度不能绕过类型条件。
+
 
 相比只使用关键词或只使用向量数据库的项目，该方案兼顾事实准确性和语义召回能力。
 
@@ -78,6 +101,8 @@ Agent 会从“我喜欢”“我不喜欢”“不要推荐”等稳定表达�
 
 长期记忆保存在本地 MySQL，向量由本地 RAG 服务生成。需要调用外部模型时，被召回的少量相关偏好可能随问题上下文发送给当前配置的模型服务。
 
+记忆采集已经从模型调用中独立出来。无论问题最终由 Java 本地逻辑、Agent Service 还是 DeepSeek 回答，每条成功处理的用户消息都会进入统一采集入口。采集过程使用用户消息 ID 保证幂等，重复请求不会产生重复记忆；关闭长期记忆后，新的消息不会写入偏好库。
+
 ### 7. 检索效果可以量化评估
 
 管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。独立的 LLM 成本评测支持模拟或真实调用，统计输入/输出 Token、本地绕过率、平均调用成本和规则通过率。修改检索权重、Rerank、拒答阈值或证据预算后，可以使用统一题库比较优化效果。
@@ -89,6 +114,25 @@ Agent 会从“我喜欢”“我不喜欢”“不要推荐”等稳定表达�
 ### 9. AI 与完整音乐业务结合
 
 系统还包含歌曲上传、封面与歌词、多类型标签、评论点赞、头像昵称、自建歌单、顺序或随机播放、每日推荐和播放统计。AI 助手直接使用这些业务数据，而不是一个与系统分离的聊天页面。
+
+
+
+## 项目目录
+
+```text
+MusicHub
+├── vue-login/              Vue 2 用户端、播放器、AI 助手和管理后台
+├── springboot-web-demo/    Spring Boot 业务接口、检索与 AI 网关
+├── agent-service/          FastAPI + LangChain + LangGraph + 记忆
+├── rag-service/            FastAPI + Sentence Transformers + FAISS
+├── evaluation/             检索与 LLM 成本评测数据和脚本
+├── music/                  本地歌曲文件目录
+├── docs/images/            README 截图
+├── init.sql                MySQL 初始化结构和演示账号
+├── docker-compose.yml      容器编排
+├── start.bat               Windows 本地一键启动
+└── docker-start.bat        Docker 一键启动
+```
 
 ## 系统部分截图
 
@@ -202,7 +246,7 @@ Windows 下可以双击项目根目录：
 start.bat
 ```
 
-脚本会依次启动 FastAPI 向量服务、LangGraph Agent 服务、Spring Boot 后端和 Vue 开发服务器，并打开 `http://localhost:8081`。
+脚本会依次启动 FastAPI 向量服务、LangGraph Agent 服务、Spring Boot 后端和 Vue 开发服务器，并打开 `http://localhost:8081`。启动脚本会检查 Agent 的完整依赖并等待 `http://127.0.0.1:8100/health` 返回成功；如果 Agent 启动失败，脚本会停止后续启动并提示查看 Agent 窗口中的错误，避免系统在不知情的情况下长期使用 Java 兜底。
 
 也可以分别运行：
 
@@ -228,6 +272,42 @@ cd vue-login
 npm install
 npm run serve
 ```
+
+## 测试
+
+### Java 单元测试
+
+```powershell
+cd springboot-web-demo
+mvn test
+```
+
+测试覆盖意图识别、氛围推荐、本地回答的统一记忆采集、严格实体检索、混合检索排序、置信度判断和类型处理等逻辑。
+
+### Agent 记忆单元测试
+
+```powershell
+cd agent-service
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+### MySQL 记忆集成测试
+
+```powershell
+cd agent-service
+$env:AGENT_MEMORY_INTEGRATION='1'
+.\.venv\Scripts\python.exe -m unittest tests.test_memory_integration -v
+```
+
+
+## 数据与隐私说明
+
+- 歌曲文件、业务数据、FAISS 索引、对话状态和长期记忆默认保存在本机或用户部署的 MySQL 中。
+- DeepSeek API Key 只在服务端读取，不发送到浏览器。
+- 密码、密钥、Token、证件号码、联系方式、银行卡和地址等敏感表达不会写入长期记忆。
+- “今天、现在、今晚、暂时”等临时偏好不会写入长期记忆。
+- 用户可以查看、修改、删除、清空或关闭长期记忆；关闭记忆不会删除当前对话记录。
+- 当回答需要外部模型时，只会把回答所需的消息、本地检索证据以及少量相关偏好发送给当前配置的模型服务。实际模型服务的数据处理政策由对应服务提供方决定。
 
 ## 初始账号
 

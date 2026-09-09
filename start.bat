@@ -96,7 +96,7 @@ start "LangGraph Agent" "%ComSpec%" /k "cd /d ""%AGENTDIR%"" && .\.venv\Scripts\
 
 echo Waiting for Agent health check...
 for /L %%I in (1,1,20) do (
-    powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8100/health -TimeoutSec 2 ^| Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
+    "%AGENTPYTHON%" -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=2).read()" >nul 2>&1
     if not errorlevel 1 goto agent_ready
     ping -n 2 127.0.0.1 >nul
 )
