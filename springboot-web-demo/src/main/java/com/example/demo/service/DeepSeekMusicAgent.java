@@ -42,6 +42,8 @@ public class DeepSeekMusicAgent {
             "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"
     };
     private final ThreadLocal<ApiUsage> lastApiUsage = new ThreadLocal<>();
+    private final ThreadLocal<Long> currentConversationId = new ThreadLocal<>();
+    private final ThreadLocal<Integer> currentUserId = new ThreadLocal<>();
 
     @Autowired
     private AudioMapper audioMapper;
@@ -125,6 +127,17 @@ public class DeepSeekMusicAgent {
             return answer.isEmpty() ? ensureEvidenceReferences(modelFallback(message, userId), evidenceContext) : answer;
         } catch (Exception exception) {
             return ensureEvidenceReferences(modelFallback(message, userId), evidenceContext);
+        }
+    }
+
+    public String reply(String message, Integer userId, List<Map<String, String>> history, Long conversationId) {
+        currentConversationId.set(conversationId);
+        currentUserId.set(userId);
+        try {
+            return reply(message, userId, history);
+        } finally {
+            currentConversationId.remove();
+            currentUserId.remove();
         }
     }
 
@@ -348,7 +361,8 @@ public class DeepSeekMusicAgent {
 
         String modelName = getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat");
         JSONArray messages = buildRequestMessages(message, evidenceContext, history);
-        AgentServiceClient.AgentResult agentResult = agentServiceClient.chat(messages, modelName, 0.4);
+        AgentServiceClient.AgentResult agentResult = agentServiceClient.chat(
+                messages, modelName, 0.4, message, currentConversationId.get(), currentUserId.get());
         if (agentResult != null) {
             lastApiUsage.set(new ApiUsage(agentResult.getInputTokens(), agentResult.getOutputTokens(), agentResult.getTotalTokens()));
             return ensureEvidenceReferences(agentResult.getAnswer(), evidenceContext);

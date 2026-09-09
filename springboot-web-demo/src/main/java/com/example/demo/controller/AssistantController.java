@@ -63,7 +63,7 @@ public class AssistantController {
         AssistantMessage userMessage = message(conversationId, "user", message);
         assistantConversationMapper.insertMessage(userMessage);
         String messageForAgent = enrichWithCurrentAudio(message, conversation.getCurrentAudioId());
-        String reply = deepSeekMusicAgent.reply(messageForAgent, userId, history);
+        String reply = deepSeekMusicAgent.reply(messageForAgent, userId, history, conversationId);
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
 

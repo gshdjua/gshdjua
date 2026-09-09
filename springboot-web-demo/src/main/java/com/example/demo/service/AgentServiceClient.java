@@ -21,7 +21,8 @@ public class AgentServiceClient {
     @Value("${agent-service.base-url:http://127.0.0.1:8100}")
     private String baseUrl;
 
-    public AgentResult chat(JSONArray messages, String model, double temperature) {
+    public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
+                            Long conversationId, Integer userId) {
         if (baseUrl == null || baseUrl.trim().isEmpty()) return null;
         HttpURLConnection connection = null;
         try {
@@ -34,8 +35,13 @@ public class AgentServiceClient {
             JSONObject request = new JSONObject();
             request.put("protocolVersion", "1.0");
             request.put("requestId", UUID.randomUUID().toString());
+            if (conversationId != null) request.put("conversationId", String.valueOf(conversationId));
+            if (userId != null) request.put("userId", String.valueOf(userId));
             request.put("messages", messages);
             request.put("options", options);
+            JSONObject metadata = new JSONObject();
+            metadata.put("userMessage", userMessage);
+            request.put("metadata", metadata);
 
             URL endpoint = new URL(baseUrl.replaceAll("/+$", "") + "/v1/chat");
             connection = (HttpURLConnection) endpoint.openConnection();
@@ -91,4 +97,3 @@ public class AgentServiceClient {
         public int getTotalTokens() { return totalTokens; }
     }
 }
-

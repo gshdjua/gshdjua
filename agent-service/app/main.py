@@ -4,8 +4,9 @@ from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .config import api_key, base_url, default_model
-from .contracts import AgentChatRequest, AgentChatResponse, TokenUsage
+from .contracts import AgentChatRequest, AgentChatResponse, AgentMessage, TokenUsage
 from .graph import agent_graph
+from .memory import memory_repository
 
 
 app = FastAPI(title="MusicHub Agent Service", version="0.1.0")
@@ -41,6 +42,8 @@ def health() -> dict:
         "model": default_model(),
         "baseUrl": base_url(),
         "protocolVersion": "1.0",
+        "memoryStore": "mysql",
+        "memoryAvailable": memory_repository.available(),
     }
 
 
@@ -51,9 +54,24 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
     started = time.perf_counter()
     model_name = payload.options.model or default_model()
     try:
+        memory = memory_repository.load(payload.conversationId, payload.userId)
+        system_messages = [item for item in payload.messages if item.role == "system"]
+        conversation_messages = [item for item in payload.messages if item.role != "system"]
+        current_message = conversation_messages[-1]
+        incoming_history = conversation_messages[:-1]
+        memory_notes = []
+        if memory.summary:
+            memory_notes.append("此前对话摘要：" + memory.summary)
+        if memory.long_term_memories:
+            memory_notes.append("用户长期偏好：" + "；".join(memory.long_term_memories))
+        effective_messages = list(system_messages)
+        if memory_notes:
+            effective_messages.append(AgentMessage(role="system", content="\n".join(memory_notes)))
+        effective_messages.extend(memory.recent_messages or incoming_history[-6:])
+        effective_messages.append(current_message)
         state = agent_graph.invoke(
             {
-                "messages": [to_langchain_message(item.role, item.content) for item in payload.messages],
+                "messages": [to_langchain_message(item.role, item.content) for item in effective_messages],
                 "provider": payload.options.provider,
                 "model": model_name,
                 "temperature": payload.options.temperature,
@@ -61,6 +79,16 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             }
         )
         response = state["response"]
+        raw_user_message = payload.metadata.get("userMessage", current_message.content)
+        memory_repository.save(
+            payload.conversationId,
+            payload.userId,
+            memory.summary,
+            memory.recent_messages,
+            incoming_history,
+            raw_user_message,
+            str(response.content),
+        )
         return AgentChatResponse(
             requestId=payload.requestId,
             answer=str(response.content),
@@ -75,4 +103,3 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=502, detail="Model invocation failed: " + str(error)) from error
-

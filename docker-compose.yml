@@ -58,6 +58,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
       OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-v4-flash}
+      AGENT_MYSQL_HOST: mysql
+      AGENT_MYSQL_PORT: 3306
+      AGENT_MYSQL_USERNAME: root
+      AGENT_MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-musichub123}
+      AGENT_MYSQL_DATABASE: springweb_demo
+      VECTOR_RAG_BASE_URL: http://rag-service:8090
       TZ: Asia/Shanghai
     ports:
       - "${AGENT_PORT:-8100}:8100"
@@ -67,6 +73,11 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rag-service:
+        condition: service_healthy
 
   backend:
     build:

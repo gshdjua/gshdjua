@@ -62,3 +62,26 @@ CREATE TABLE IF NOT EXISTS assistant_message (
     KEY idx_assistant_message_conversation (conversation_id, id),
     FOREIGN KEY (conversation_id) REFERENCES assistant_conversation(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS agent_conversation_state (
+    conversation_id BIGINT PRIMARY KEY,
+    user_id INT NULL,
+    summary TEXT NOT NULL,
+    recent_messages JSON NOT NULL,
+    state_version BIGINT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_agent_state_user_update (user_id, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS agent_long_term_memory (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    memory_key CHAR(64) NOT NULL,
+    content VARCHAR(500) NOT NULL,
+    source_conversation_id BIGINT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_agent_memory_user_key (user_id, memory_key),
+    KEY idx_agent_memory_user_update (user_id, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

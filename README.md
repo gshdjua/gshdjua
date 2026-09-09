@@ -11,6 +11,7 @@ MusicHub 是一个集音乐管理、在线播放、个性化推荐和 AI 歌库�
 | 数据库 | MySQL 8 | 用户、歌曲、收藏、评论、歌单、播放记录和 AI 会话 |
 | 向量服务 | Python 3.10、FastAPI、Sentence Transformers、FAISS | 歌曲向量化和语义检索 |
 | Agent 服务 | Python 3.10、FastAPI、LangChain、LangGraph | 统一模型协议和可扩展 AI 工作流编排 |
+| Agent 记忆 | MySQL 会话状态、短期消息窗口、摘要压缩、长期偏好 | 支持多轮状态、Token 控制和服务重启后的会话恢复 |
 | 嵌入模型 | `intfloat/multilingual-e5-small` | 中文、日文和英文歌曲元数据向量化 |
 | 大语言模型 | DeepSeek OpenAI 兼容 API | 根据本地证据组织自然语言回答 |
 | 混合检索 | SQL、关键词 RAG、向量 RAG、加权 RRF | 精确检索、语义召回、融合和去重 |
