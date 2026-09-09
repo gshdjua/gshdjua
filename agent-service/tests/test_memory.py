@@ -21,7 +21,7 @@ class ConversationMemoryRepositoryTest(unittest.TestCase):
         self.assertIn("消息0", summary)
         self.assertEqual("消息4", recent[0].content)
 
-    def test_merge_removes_history_already_in_checkpoint(self):
+    def test_merge_removes_history_already_in_stored_state(self):
         stored = [AgentMessage(role="user", content="你好")]
         incoming = [
             AgentMessage(role="user", content="你好"),
@@ -68,6 +68,28 @@ class ConversationMemoryRepositoryTest(unittest.TestCase):
         self.assertEqual("user-1", cursor.parameters[1])
         restored = self.repository._decode_messages(cursor.parameters[3])
         self.assertEqual("可以试试这首歌", restored[-1].content)
+
+    def test_extracts_stable_preferences_and_avoidances(self):
+        candidates = self.repository.extract_candidates("我喜欢动漫歌曲，但我不喜欢重金属")
+
+        self.assertEqual(["preference", "avoidance"], [item.memory_type for item in candidates])
+        self.assertEqual("喜欢：动漫歌曲", candidates[0].content)
+        self.assertEqual("不喜欢：重金属", candidates[1].content)
+
+    def test_does_not_extract_temporary_or_sensitive_preferences(self):
+        self.assertEqual([], self.repository.extract_candidates("我今天喜欢听摇滚"))
+        self.assertEqual([], self.repository.extract_candidates("我喜欢的密码是 123456"))
+
+    def test_semantic_ranking_filters_irrelevant_memories(self):
+        rows = [
+            {"content": "喜欢：动漫歌曲", "embedding": "[1.0, 0.0]", "importance": 0.8, "confidence": 0.9},
+            {"content": "喜欢：古典音乐", "embedding": "[0.0, 1.0]", "importance": 0.8, "confidence": 0.9},
+        ]
+
+        ranked = self.repository.rank_memories(rows, [0.9, 0.1])
+
+        self.assertEqual(1, len(ranked))
+        self.assertEqual("喜欢：动漫歌曲", ranked[0]["content"])
 
 
 class FakeCursor:

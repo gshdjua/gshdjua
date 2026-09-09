@@ -4,7 +4,15 @@ from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .config import api_key, base_url, default_model
-from .contracts import AgentChatRequest, AgentChatResponse, AgentMessage, TokenUsage
+from .contracts import (
+    AgentChatRequest,
+    AgentChatResponse,
+    AgentMessage,
+    MemoryRecord,
+    MemorySettingsUpdate,
+    MemoryUpdate,
+    TokenUsage,
+)
 from .graph import agent_graph
 from .memory import memory_repository
 
@@ -54,11 +62,12 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
     started = time.perf_counter()
     model_name = payload.options.model or default_model()
     try:
-        memory = memory_repository.load(payload.conversationId, payload.userId)
         system_messages = [item for item in payload.messages if item.role == "system"]
         conversation_messages = [item for item in payload.messages if item.role != "system"]
         current_message = conversation_messages[-1]
         incoming_history = conversation_messages[:-1]
+        raw_user_message = payload.metadata.get("userMessage", current_message.content)
+        memory = memory_repository.load(payload.conversationId, payload.userId, raw_user_message)
         memory_notes = []
         if memory.summary:
             memory_notes.append("此前对话摘要：" + memory.summary)
@@ -79,7 +88,6 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             }
         )
         response = state["response"]
-        raw_user_message = payload.metadata.get("userMessage", current_message.content)
         memory_repository.save(
             payload.conversationId,
             payload.userId,
@@ -103,3 +111,67 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
         raise HTTPException(status_code=502, detail="Model invocation failed: " + str(error)) from error
+
+
+@app.get("/v1/memory/users/{user_id}/settings")
+def memory_settings(user_id: str) -> dict:
+    return memory_repository.settings(user_id)
+
+
+@app.put("/v1/memory/users/{user_id}/settings")
+def update_memory_settings(user_id: str, payload: MemorySettingsUpdate) -> dict:
+    try:
+        return memory_repository.set_enabled(user_id, payload.enabled)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error
+
+
+@app.get("/v1/memory/users/{user_id}/memories", response_model=list[MemoryRecord])
+def memories(user_id: str) -> list[MemoryRecord]:
+    try:
+        return [MemoryRecord(**item) for item in memory_repository.list_memories(user_id)]
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error
+
+
+@app.put("/v1/memory/users/{user_id}/memories/{memory_id}", response_model=MemoryRecord)
+def update_memory(user_id: str, memory_id: int, payload: MemoryUpdate) -> MemoryRecord:
+    try:
+        updated = memory_repository.update_memory(user_id, memory_id, payload.content)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return MemoryRecord(**updated)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error
+
+
+@app.delete("/v1/memory/users/{user_id}/memories/{memory_id}")
+def delete_memory(user_id: str, memory_id: int) -> dict:
+    try:
+        if not memory_repository.delete_memory(user_id, memory_id):
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return {"deleted": True}
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error
+
+
+@app.delete("/v1/memory/users/{user_id}/memories")
+def clear_memories(user_id: str) -> dict:
+    try:
+        return {"deletedCount": memory_repository.clear_memories(user_id)}
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error
+
+
+@app.delete("/v1/memory/users/{user_id}/conversation-state/{conversation_id}")
+def delete_conversation_state(user_id: str, conversation_id: str) -> dict:
+    try:
+        return {"deleted": memory_repository.delete_conversation_state(conversation_id, user_id)}
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error

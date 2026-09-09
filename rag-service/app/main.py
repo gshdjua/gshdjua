@@ -30,6 +30,11 @@ class SearchRequest(BaseModel):
     audio_ids: Optional[List[int]] = None
 
 
+class EmbedRequest(BaseModel):
+    texts: List[str] = Field(min_length=1, max_length=32)
+    input_type: str = Field(default="passage", pattern="^(query|passage)$")
+
+
 @app.get("/health")
 def health() -> dict:
     """Return model and local FAISS index state without forcing model download."""
@@ -57,3 +62,14 @@ def search(payload: SearchRequest) -> dict:
         return {"items": engine.search(payload.query, payload.top_k, payload.audio_ids)}
     except Exception as error:
         raise HTTPException(status_code=500, detail="Vector search failed: " + str(error)) from error
+
+
+@app.post("/embed")
+def embed(payload: EmbedRequest) -> dict:
+    try:
+        return {
+            "model": engine.health()["model"],
+            "vectors": engine.embed_texts(payload.texts, payload.input_type),
+        }
+    except Exception as error:
+        raise HTTPException(status_code=500, detail="Embedding failed: " + str(error)) from error

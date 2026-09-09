@@ -8,10 +8,12 @@ import com.example.demo.mapper.AudioMapper;
 import com.example.demo.mapper.AssistantConversationMapper;
 import com.example.demo.mapper.UserMapper;
 import com.example.demo.service.DeepSeekMusicAgent;
+import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -33,6 +35,9 @@ public class AssistantController {
 
     @Autowired
     private DeepSeekMusicAgent deepSeekMusicAgent;
+
+    @Autowired
+    private AgentMemoryClient agentMemoryClient;
 
     @Autowired
     private MusicLibraryAgent musicLibraryAgent;
@@ -106,8 +111,55 @@ public class AssistantController {
 
     @DeleteMapping("/conversations/{conversationId}")
     public Map<String, Object> deleteConversation(@PathVariable Long conversationId, HttpServletRequest request) {
-        int deleted = assistantConversationMapper.deleteByIdAndUserId(conversationId, getUserId(request));
+        Integer userId = getUserId(request);
+        int deleted = assistantConversationMapper.deleteByIdAndUserId(conversationId, userId);
+        if (deleted > 0) agentMemoryClient.deleteConversationState(userId, conversationId);
         return deleted > 0 ? result(200, "Conversation deleted", null) : result(500, "Conversation not found", null);
+    }
+
+    @GetMapping("/memory/settings")
+    public Map<String, Object> memorySettings(HttpServletRequest request) {
+        Object data = agentMemoryClient.getSettings(getUserId(request));
+        return data == null ? result(503, "Agent memory service unavailable", null) : result(200, "success", data);
+    }
+
+    @PutMapping("/memory/settings")
+    public Map<String, Object> updateMemorySettings(@RequestBody Map<String, Object> payload,
+                                                     HttpServletRequest request) {
+        if (!payload.containsKey("enabled")) return result(500, "enabled is required", null);
+        boolean enabled = Boolean.parseBoolean(String.valueOf(payload.get("enabled")));
+        Object data = agentMemoryClient.setEnabled(getUserId(request), enabled);
+        return data == null ? result(503, "Agent memory service unavailable", null) : result(200, "success", data);
+    }
+
+    @GetMapping("/memories")
+    public Map<String, Object> memories(HttpServletRequest request) {
+        Object data = agentMemoryClient.list(getUserId(request));
+        return data == null ? result(503, "Agent memory service unavailable", null) : result(200, "success", data);
+    }
+
+    @PutMapping("/memories/{memoryId}")
+    public Map<String, Object> updateMemory(@PathVariable Long memoryId, @RequestBody Map<String, Object> payload,
+                                             HttpServletRequest request) {
+        String content = String.valueOf(payload.getOrDefault("content", "")).trim();
+        if (content.isEmpty() || content.length() > 500) return result(500, "Memory must contain 1 to 500 characters", null);
+        Object data = agentMemoryClient.update(getUserId(request), memoryId, content);
+        return data == null ? result(500, "Memory not found or memory service unavailable", null)
+                : result(200, "Memory updated", data);
+    }
+
+    @DeleteMapping("/memories/{memoryId}")
+    public Map<String, Object> deleteMemory(@PathVariable Long memoryId, HttpServletRequest request) {
+        Object data = agentMemoryClient.delete(getUserId(request), memoryId);
+        return data == null ? result(500, "Memory not found or memory service unavailable", null)
+                : result(200, "Memory deleted", data);
+    }
+
+    @DeleteMapping("/memories")
+    public Map<String, Object> clearMemories(HttpServletRequest request) {
+        Object data = agentMemoryClient.clear(getUserId(request));
+        return data == null ? result(503, "Agent memory service unavailable", null)
+                : result(200, "Memories cleared", data);
     }
 
     @PostMapping("/conversations/{conversationId}/context")

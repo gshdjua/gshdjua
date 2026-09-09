@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -42,3 +43,21 @@ class AgentChatResponse(BaseModel):
     finishReason: str = "stop"
     latencyMs: int
 
+
+class MemorySettingsUpdate(BaseModel):
+    enabled: bool
+
+
+class MemoryUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=500)
+
+
+class MemoryRecord(BaseModel):
+    id: int
+    memoryType: str
+    content: str
+    importance: float
+    confidence: float
+    sourceConversationId: Optional[str] = None
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None

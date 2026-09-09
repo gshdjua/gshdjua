@@ -147,12 +147,27 @@ CREATE TABLE IF NOT EXISTS agent_long_term_memory (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     memory_key CHAR(64) NOT NULL,
+    memory_type VARCHAR(30) NOT NULL DEFAULT 'preference',
     content VARCHAR(500) NOT NULL,
+    normalized_content VARCHAR(500) NOT NULL DEFAULT '',
+    importance DOUBLE NOT NULL DEFAULT 0.8,
+    confidence DOUBLE NOT NULL DEFAULT 0.9,
+    embedding JSON NULL,
+    embedding_model VARCHAR(255) NULL,
     source_conversation_id BIGINT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_agent_memory_user_key (user_id, memory_key),
     KEY idx_agent_memory_user_update (user_id, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS agent_memory_setting (
+    user_id INT PRIMARY KEY,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 默认管理员账号 (密码: 123456)

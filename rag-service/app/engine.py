@@ -116,6 +116,20 @@ class VectorRagEngine:
                     break
             return results
 
+    def embed_texts(self, texts: List[str], input_type: str = "passage") -> List[List[float]]:
+        normalized = [str(text).strip() for text in texts if str(text).strip()]
+        if not normalized:
+            return []
+        prefix = "query: " if input_type == "query" else "passage: "
+        with self._lock:
+            vectors = self._get_model().encode(
+                [prefix + text for text in normalized],
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+            ).astype("float32")
+        return [[round(float(value), 8) for value in vector] for vector in vectors]
+
     def _get_model(self) -> SentenceTransformer:
         if self._model is None:
             self._model = SentenceTransformer(MODEL_PATH, device=self.device, local_files_only=True)

@@ -245,7 +245,10 @@
         <div class="assistant-intro">
           <div class="assistant-orb">✦</div>
           <div><p>MusicHub Agent</p><h2>歌库智能助手</h2><span>基于你的歌曲和收藏数据回答问题</span></div>
-          <span class="assistant-status" :class="{ ready: assistantModelReady, offline: assistantModelReady === false }">{{ assistantModelReady ? assistantModelName + ' 已连接' : assistantModelReady === false ? 'DeepSeek 未配置' : '正在检查模型状态' }}</span>
+          <div class="assistant-controls">
+            <button class="memory-manage-btn" @click="openMemoryManager">记忆管理</button>
+            <span class="assistant-status" :class="{ ready: assistantModelReady, offline: assistantModelReady === false }">{{ assistantModelReady ? assistantModelName + ' 已连接' : assistantModelReady === false ? 'DeepSeek 未配置' : '正在检查模型状态' }}</span>
+          </div>
         </div>
         <div class="chat-panel">
           <div class="chat-history-toolbar">
@@ -303,6 +306,28 @@
         </div>
       </div>
     </div>
+    <div v-if="showMemoryDialog" class="memory-dialog-overlay" @click.self="showMemoryDialog = false">
+      <section class="memory-dialog">
+        <header>
+          <div><span>MEMORY CONTROL</span><h3>长期记忆管理</h3></div>
+          <button class="memory-close" @click="showMemoryDialog = false">×</button>
+        </header>
+        <div class="memory-setting-row">
+          <div><strong>长期偏好记忆</strong><p>关闭后停止保存和召回长期偏好，不影响当前对话记录。</p></div>
+          <button :class="['memory-switch', { enabled: memoryEnabled }]" :disabled="memorySaving" @click="toggleLongTermMemory">{{ memoryEnabled ? '已开启' : '已关闭' }}</button>
+        </div>
+        <p class="memory-privacy-note">记忆保存在本地 MySQL。被召回的偏好可能随问题上下文发送给当前配置的模型服务。</p>
+        <div v-if="memoryLoading" class="memory-empty">正在加载记忆…</div>
+        <div v-else-if="!memories.length" class="memory-empty">暂时没有长期记忆。你可以对助手说“我喜欢动漫歌曲”。</div>
+        <div v-else class="memory-list">
+          <article v-for="memory in memories" :key="memory.id">
+            <div><span>{{ memory.memoryType === 'avoidance' ? '不喜欢 / 避免' : '偏好' }}</span><p>{{ memory.content }}</p></div>
+            <div class="memory-actions"><button @click="editMemory(memory)">修改</button><button class="danger" @click="deleteMemory(memory)">删除</button></div>
+          </article>
+        </div>
+        <footer><button class="memory-clear" :disabled="!memories.length" @click="clearMemories">清空全部长期记忆</button></footer>
+      </section>
+    </div>
   </div>
 </template>
 <script>
@@ -339,6 +364,11 @@ export default {
       assistantLoading: false,
       assistantModelReady: null,
       assistantModelName: 'DeepSeek',
+      showMemoryDialog: false,
+      memoryEnabled: true,
+      memoryLoading: false,
+      memorySaving: false,
+      memories: [],
       showNicknameDialog: false,
       nicknameInput: '',
       nicknameSaving: false,
@@ -831,6 +861,67 @@ export default {
         this.assistantModelReady = false
       }
     },
+    async openMemoryManager() {
+      this.showMemoryDialog = true
+      this.memoryLoading = true
+      try {
+        const [settings, memories] = await Promise.all([
+          request.get('/assistant/memory/settings'),
+          request.get('/assistant/memories')
+        ])
+        if (settings.data.code !== 200 || memories.data.code !== 200) throw new Error('记忆服务暂时不可用')
+        this.memoryEnabled = settings.data.data.enabled !== false
+        this.memories = memories.data.data || []
+      } catch (err) {
+        alert(err.message || '记忆服务暂时不可用')
+      } finally {
+        this.memoryLoading = false
+      }
+    },
+    async toggleLongTermMemory() {
+      if (this.memorySaving) return
+      this.memorySaving = true
+      try {
+        const res = await request.put('/assistant/memory/settings', { enabled: !this.memoryEnabled })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '设置失败')
+        this.memoryEnabled = res.data.data.enabled
+      } catch (err) {
+        alert(err.message || '记忆设置保存失败')
+      } finally {
+        this.memorySaving = false
+      }
+    },
+    async editMemory(memory) {
+      const content = window.prompt('修改这条长期记忆', memory.content)
+      if (content === null || !content.trim() || content.trim() === memory.content) return
+      try {
+        const res = await request.put('/assistant/memories/' + memory.id, { content: content.trim() })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '修改失败')
+        Object.assign(memory, res.data.data)
+      } catch (err) {
+        alert(err.message || '长期记忆修改失败')
+      }
+    },
+    async deleteMemory(memory) {
+      if (!window.confirm(`确定删除“${memory.content}”吗？`)) return
+      try {
+        const res = await request.delete('/assistant/memories/' + memory.id)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '删除失败')
+        this.memories = this.memories.filter(item => item.id !== memory.id)
+      } catch (err) {
+        alert(err.message || '长期记忆删除失败')
+      }
+    },
+    async clearMemories() {
+      if (!this.memories.length || !window.confirm('确定清空全部长期记忆吗？此操作不可撤销。')) return
+      try {
+        const res = await request.delete('/assistant/memories')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '清空失败')
+        this.memories = []
+      } catch (err) {
+        alert(err.message || '长期记忆清空失败')
+      }
+    },
     askAssistant(question) {
       this.assistantInput = question
       this.sendAssistantMessage()
@@ -1021,12 +1112,14 @@ export default {
 .playlist-page { display: grid; grid-template-columns: 270px minmax(0, 1fr); min-height: calc(100vh - 130px); overflow: hidden; border: 1px solid #e5e1f4; border-radius: 24px; background: #fff; box-shadow: 0 16px 38px rgba(50,39,108,.08); animation: fadeInUp .4s ease-out; }.playlist-sidebar { padding: 24px 15px; background: linear-gradient(160deg, #25204d, #453179); color: #fff; }.playlist-sidebar-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 0 8px 19px; border-bottom: 1px solid rgba(255,255,255,.15); }.playlist-sidebar-head span, .playlist-workspace-head span, .playlist-library span { color: #ad9cf8; font-size: 10px; font-weight: 800; letter-spacing: 1.6px; }.playlist-sidebar-head h2 { margin: 5px 0 0; font-size: 22px; }.create-playlist-btn { padding: 7px 9px; border: 1px solid rgba(255,255,255,.28); border-radius: 9px; color: #fff; background: rgba(255,255,255,.12); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.playlist-create-form { display: flex; gap: 6px; margin: 15px 7px; }.playlist-create-form input { min-width: 0; flex: 1; padding: 8px; border: 0; border-radius: 8px; outline: 0; color: #332860; font: inherit; font-size: 12px; }.playlist-create-form button { padding: 7px 8px; border: 0; border-radius: 8px; color: #4c3479; background: #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.playlist-create-form button:disabled { opacity: .5; cursor: not-allowed; }.playlist-sidebar-empty { padding: 25px 9px; color: rgba(255,255,255,.58); font-size: 13px; line-height: 1.7; }.playlist-nav-item { display: flex; align-items: center; width: 100%; gap: 10px; margin-top: 7px; padding: 11px 10px; border: 1px solid transparent; border-radius: 12px; color: rgba(255,255,255,.8); background: transparent; text-align: left; cursor: pointer; transition: .2s ease; }.playlist-nav-item:hover, .playlist-nav-item.active { border-color: rgba(255,255,255,.18); color: #fff; background: rgba(255,255,255,.14); }.playlist-nav-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: rgba(255,255,255,.13); font-size: 17px; }.playlist-nav-item strong, .playlist-nav-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.playlist-nav-item strong { font-size: 13px; }.playlist-nav-item small { margin-top: 3px; color: rgba(255,255,255,.55); font-size: 11px; }.playlist-workspace { min-width: 0; padding: 34px; background: radial-gradient(circle at 85% 0, #f2edff, transparent 29%), #fff; }.playlist-workspace-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 25px; border-bottom: 1px solid #eeeaf7; }.playlist-workspace-head h1 { margin: 6px 0; color: #2c2548; font-size: 30px; }.playlist-workspace-head p { margin: 0; color: #8d869f; font-size: 14px; }.playlist-head-actions { display: flex; gap: 9px; }.playlist-play-all, .playlist-delete-btn { padding: 10px 13px; border-radius: 10px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }.playlist-play-all { border: 0; color: #fff; background: linear-gradient(135deg, #6e77e8, #8150b9); box-shadow: 0 7px 17px rgba(104,89,195,.23); }.playlist-play-all:disabled { cursor: not-allowed; opacity: .5; }.playlist-delete-btn { border: 1px solid #f0d7df; color: #cc6179; background: #fffafa; }.playlist-loading, .playlist-empty, .playlist-no-selection { display: grid; place-items: center; padding: 90px 20px; color: #958da8; text-align: center; }.playlist-empty span, .playlist-no-selection > span { color: #8062cd; font-size: 48px; }.playlist-empty h3, .playlist-no-selection h2 { margin: 14px 0 7px; color: #4a3c70; }.playlist-empty p, .playlist-no-selection p { margin: 0; font-size: 14px; }.playlist-song-list { display: flex; flex-direction: column; margin-top: 20px; }.playlist-song-row { display: flex; align-items: center; gap: 13px; padding: 10px 7px; border-bottom: 1px solid #f0edf7; }.playlist-order { width: 26px; color: #a6a0b2; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }.playlist-song-row img, .playlist-song-cover { width: 46px; height: 46px; border-radius: 11px; object-fit: cover; }.playlist-song-cover { display: grid; place-items: center; color: #fff; font-size: 20px; }.playlist-song-main { min-width: 0; flex: 1; }.playlist-song-main strong, .playlist-song-main small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.playlist-song-main strong { color: #332b53; font-size: 14px; }.playlist-song-main small { margin-top: 4px; color: #938ba4; font-size: 12px; }.playlist-song-controls { display: flex; gap: 5px; }.playlist-song-controls button { width: 29px; height: 29px; padding: 0; border: 1px solid #e5e0f1; border-radius: 8px; color: #7457bf; background: #fff; font: inherit; cursor: pointer; }.playlist-song-controls button:hover:not(:disabled) { color: #fff; background: #7659c3; border-color: #7659c3; }.playlist-song-controls button:disabled { cursor: not-allowed; opacity: .4; }.playlist-song-controls .remove-song-btn { color: #ce6881; }.playlist-library { margin-top: 30px; padding-top: 25px; border-top: 1px solid #eeeaf7; }.playlist-library h3 { margin: 5px 0 15px; color: #352a58; font-size: 18px; }.playlist-library-empty { padding: 20px; border: 1px dashed #ddd6ef; border-radius: 12px; color: #958ca4; font-size: 13px; text-align: center; }.playlist-library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.playlist-library-song { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px; border: 1px solid #ebe7f6; border-radius: 12px; }.playlist-library-song img, .playlist-library-cover { width: 38px; height: 38px; border-radius: 9px; object-fit: cover; }.playlist-library-cover { display: grid; place-items: center; color: #fff; font-size: 16px; }.playlist-library-song strong, .playlist-library-song small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.playlist-library-song strong { color: #443761; font-size: 12px; }.playlist-library-song small { margin-top: 3px; color: #978fa7; font-size: 11px; }.playlist-library-song button { padding: 6px 8px; border: 0; border-radius: 8px; color: #7056bc; background: #f0edff; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }.playlist-library-song button:disabled { opacity: .5; cursor: not-allowed; }.playlist-no-selection { min-height: 400px; background: radial-gradient(circle at 85% 0, #f2edff, transparent 29%), #fff; }
 .assistant-intro { display: flex; align-items: center; gap: 20px; padding: 34px 42px; margin-bottom: 24px; color: #fff; border-radius: 24px; background: radial-gradient(circle at 85% 30%, rgba(147, 110, 255, .52), transparent 24%), linear-gradient(135deg, #1a2054, #66379a); box-shadow: 0 18px 42px rgba(83, 56, 151, .25); }
 .assistant-orb { display: grid; place-items: center; flex: 0 0 66px; height: 66px; border-radius: 21px; font-size: 30px; background: rgba(255,255,255,.16); box-shadow: 0 0 30px rgba(157,229,255,.72); }
-.assistant-intro p { margin: 0 0 5px; color: #bce8ff; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; }.assistant-intro h2 { margin: 0; font-size: 31px; }.assistant-intro span { display: block; margin-top: 7px; color: rgba(255,255,255,.76); font-size: 16px; }.assistant-status { margin-left: auto; padding: 8px 12px; border: 1px solid rgba(255,255,255,.25); border-radius: 20px; background: rgba(255,255,255,.12); color: #d7eaff; font-size: 12px; white-space: nowrap; }.assistant-status.ready { color: #adffdb; }.assistant-status.offline { color: #ffd3d8; }
+.assistant-intro p { margin: 0 0 5px; color: #bce8ff; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; }.assistant-intro h2 { margin: 0; font-size: 31px; }.assistant-intro span { display: block; margin-top: 7px; color: rgba(255,255,255,.76); font-size: 16px; }.assistant-controls { display: flex; align-items: center; gap: 10px; margin-left: auto; }.memory-manage-btn { padding: 8px 12px; border: 1px solid rgba(255,255,255,.3); border-radius: 20px; color: #fff; background: rgba(255,255,255,.12); font: inherit; font-size: 12px; cursor: pointer; }.memory-manage-btn:hover { background: rgba(255,255,255,.22); }.assistant-status { padding: 8px 12px; border: 1px solid rgba(255,255,255,.25); border-radius: 20px; background: rgba(255,255,255,.12); color: #d7eaff; font-size: 12px; white-space: nowrap; }.assistant-status.ready { color: #adffdb; }.assistant-status.offline { color: #ffd3d8; }
 .chat-panel { min-height: 620px; display: flex; flex-direction: column; overflow: hidden; padding: 28px 32px; border: 1px solid rgba(111,95,199,.13); border-radius: 24px; background: #fff; box-shadow: 0 14px 36px rgba(44, 37, 90, .09); }.chat-messages { flex: 1; min-height: 470px; max-height: 58vh; overflow-y: auto; padding: 8px 8px 22px; display: flex; flex-direction: column; gap: 19px; }.chat-row { display: flex; align-items: flex-start; gap: 12px; max-width: 76%; }.chat-row.user { align-self: flex-end; flex-direction: row-reverse; }.message-avatar { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; overflow: hidden; border-radius: 14px; background: #eeeafd; color: #7651c7; font-size: 16px; font-weight: 700; }.message-avatar img { width: 100%; height: 100%; object-fit: cover; }.chat-row.user .message-avatar { background: #7651c7; color: #fff; }.chat-bubble { padding: 14px 17px; border-radius: 6px 18px 18px 18px; background: #f3f4fa; color: #2a2940; font-size: 15px; line-height: 1.7; white-space: pre-wrap; }.chat-row.user .chat-bubble { border-radius: 18px 6px 18px 18px; background: linear-gradient(135deg, #6d73e8, #8051ba); color: #fff; }.typing span { display: inline-block; width: 4px; height: 4px; margin-left: 3px; border-radius: 50%; background: #7860c3; animation: typing 1s infinite ease-in-out; }.typing span:nth-child(2) { animation-delay: .15s; }.typing span:nth-child(3) { animation-delay: .3s; }@keyframes typing { 50% { transform: translateY(-3px); opacity: .4; } }
 .chat-history-toolbar { display: flex; align-items: center; gap: 12px; margin: -4px 0 18px; padding-bottom: 15px; border-bottom: 1px solid #efedf8; }.new-conversation-btn { flex: 0 0 auto; padding: 9px 13px; border: 0; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #6d73e8, #8051ba); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }.conversation-list { display: flex; flex: 1; gap: 8px; overflow-x: auto; padding: 2px; }.conversation-item { position: relative; display: flex; align-items: center; gap: 7px; min-width: 150px; max-width: 220px; padding: 8px 28px 8px 11px; border: 1px solid #e5e1f7; border-radius: 10px; color: #736c8d; background: #faf9ff; cursor: pointer; transition: .2s ease; }.conversation-item:hover { border-color: #b4a6e9; }.conversation-item.active { border-color: #765ad0; color: #49357d; background: #f0edff; box-shadow: 0 4px 12px rgba(106,82,186,.12); }.conversation-title { overflow: hidden; flex: 1; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.conversation-count { flex: 0 0 auto; color: #a49cb7; font-size: 11px; }.conversation-delete { position: absolute; right: 7px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; color: #948aa9; background: transparent; font-size: 17px; cursor: pointer; }.conversation-delete:hover { color: #fff; background: #e26b82; }
 .chat-content { min-width: 0; flex: 1; }.chat-row.has-recommendations { max-width: 92%; }.recommendation-picker { display: grid; grid-template-columns: repeat(3, minmax(170px, 1fr)); gap: 12px; margin-top: 12px; }.recommendation-card { display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px; text-align: left; border: 1px solid #e4e0fb; border-radius: 13px; background: #fbfaff; cursor: pointer; transition: .2s ease; }.recommendation-card:hover { border-color: #8061d7; transform: translateY(-2px); box-shadow: 0 8px 18px rgba(99,77,180,.15); }.recommendation-card img, .recommendation-cover { width: 46px; height: 46px; border-radius: 10px; object-fit: cover; }.recommendation-cover { display: grid; place-items: center; background: linear-gradient(135deg, #7177e9, #8c50bc); color: #fff; font-size: 21px; }.recommendation-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.recommendation-info strong, .recommendation-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recommendation-info strong { color: #322b58; font-size: 13px; }.recommendation-info small, .recommendation-info em { color: #807896; font-size: 11px; font-style: normal; }.recommendation-play { grid-column: 1 / -1; padding: 5px 8px; border-radius: 7px; background: #eeeafd; color: #6f56bd; font-size: 11px; font-weight: 700; text-align: center; }
 .quick-questions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }.quick-questions button { padding: 7px 11px; border: 1px solid #ddd9f7; border-radius: 20px; color: #705bb8; background: #faf9ff; font-size: 12px; cursor: pointer; }.quick-questions button:hover { border-color: #8e75dc; background: #f0edff; }.chat-input-row { display: flex; gap: 10px; }.chat-input-row input { flex: 1; min-width: 0; padding: 13px 15px; border: 1px solid #e2e0ed; border-radius: 12px; outline: none; font: inherit; }.chat-input-row input:focus { border-color: #7961c9; box-shadow: 0 0 0 3px rgba(121,97,201,.1); }.chat-input-row button { padding: 0 21px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #6c73e9, #8051ba); color: #fff; font-weight: 600; cursor: pointer; }.chat-input-row button:disabled { cursor: not-allowed; opacity: .55; }
 @media (max-width: 640px) { .main-area { padding: 16px; }.daily-recommendation-header { align-items: flex-start; flex-direction: column; }.refresh-recommendations { width: 100%; justify-content: center; }.assistant-page { margin: 0; }.assistant-intro { padding: 22px; }.assistant-intro h2 { font-size: 24px; }.chat-panel { min-height: 500px; padding: 16px; }.chat-history-toolbar { align-items: flex-start; flex-direction: column; gap: 9px; }.new-conversation-btn { width: 100%; }.conversation-list { width: 100%; }.conversation-item { min-width: 138px; }.chat-messages { min-height: 330px; }.chat-row { max-width: 92%; }.recommendation-picker { grid-template-columns: 1fr; }.quick-questions { overflow-x: auto; flex-wrap: nowrap; }.quick-questions button { white-space: nowrap; } }
+
+.memory-dialog-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: rgba(22,18,48,.58); backdrop-filter: blur(5px); }.memory-dialog { width: min(680px, 100%); max-height: 82vh; overflow-y: auto; padding: 26px; border-radius: 22px; background: #fff; box-shadow: 0 25px 70px rgba(20,14,54,.35); }.memory-dialog header { display: flex; align-items: flex-start; justify-content: space-between; }.memory-dialog header span { color: #7b63c7; font-size: 11px; font-weight: 800; letter-spacing: 1.5px; }.memory-dialog h3 { margin: 5px 0 0; color: #302650; font-size: 24px; }.memory-close { width: 34px; height: 34px; border: 0; border-radius: 50%; color: #766b8b; background: #f1eef8; font-size: 22px; cursor: pointer; }.memory-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 24px; padding: 17px; border: 1px solid #e7e2f4; border-radius: 15px; background: #faf9ff; }.memory-setting-row strong { color: #3a3158; }.memory-setting-row p { margin: 5px 0 0; color: #8a8299; font-size: 13px; }.memory-switch { min-width: 76px; padding: 8px 11px; border: 0; border-radius: 18px; color: #8a6170; background: #f6e8ed; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.memory-switch.enabled { color: #246d54; background: #dff5eb; }.memory-privacy-note { padding: 11px 13px; border-radius: 10px; color: #756d86; background: #f5f3fa; font-size: 12px; line-height: 1.6; }.memory-empty { padding: 42px 15px; color: #948ca3; text-align: center; }.memory-list { display: flex; flex-direction: column; gap: 9px; margin-top: 16px; }.memory-list article { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 14px 15px; border: 1px solid #ece8f5; border-radius: 13px; }.memory-list article span { color: #8168c5; font-size: 11px; font-weight: 700; }.memory-list article p { margin: 4px 0 0; color: #3d3650; font-size: 14px; }.memory-actions { display: flex; gap: 6px; }.memory-actions button, .memory-clear { padding: 7px 10px; border: 1px solid #ded8ee; border-radius: 8px; color: #6955a5; background: #fff; cursor: pointer; }.memory-actions .danger, .memory-clear { color: #c25570; }.memory-dialog footer { display: flex; justify-content: flex-end; margin-top: 20px; padding-top: 16px; border-top: 1px solid #eeeaf5; }.memory-clear:disabled { cursor: not-allowed; opacity: .45; }
 
 .music-card { background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 3px 15px rgba(0,0,0,0.06); transition: all 0.3s ease; cursor: pointer; }
 .music-card:hover { transform: translateY(-6px); box-shadow: 0 12px 35px rgba(0,0,0,0.1); }
