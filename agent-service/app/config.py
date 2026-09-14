@@ -64,3 +64,19 @@ def tool_api_key() -> str:
 
 def tool_http_timeout_seconds() -> float:
     return float(first_config("AGENT_TOOL_HTTP_TIMEOUT_SECONDS", default="3.5"))
+
+
+def tool_max_attempts() -> int:
+    return max(1, int(first_config("AGENT_TOOL_MAX_ATTEMPTS", default="2")))
+
+
+def tool_retry_backoff_seconds() -> float:
+    return max(0.0, float(first_config("AGENT_TOOL_RETRY_BACKOFF_SECONDS", default="0.1")))
+
+
+def tool_circuit_failure_threshold() -> int:
+    return max(1, int(first_config("AGENT_TOOL_CIRCUIT_FAILURE_THRESHOLD", default="3")))
+
+
+def tool_circuit_recovery_seconds() -> float:
+    return max(0.0, float(first_config("AGENT_TOOL_CIRCUIT_RECOVERY_SECONDS", default="30")))

@@ -75,6 +75,7 @@ class ToolExecutionResult(BaseModel):
     readOnly: bool
     data: Any = None
     error: Optional[ToolError] = None
+    attempts: int = 0
     durationMs: int = 0
 
 
@@ -82,6 +83,7 @@ class ToolDescriptor(BaseModel):
     name: str
     description: str
     readOnly: bool
+    requiresAuthentication: bool
     timeoutSeconds: float
     parameters: Dict[str, Any]
 

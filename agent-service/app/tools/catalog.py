@@ -1,3 +1,10 @@
+from ..config import (
+    tool_circuit_failure_threshold,
+    tool_circuit_recovery_seconds,
+    tool_max_attempts,
+    tool_retry_backoff_seconds,
+)
+from .executor import CircuitBreaker, ToolExecutor
 from .java_client import java_tool_client
 from .models import (
     FavoriteSearchArgs,
@@ -32,7 +39,16 @@ def song_detail(arguments: SongDetailArgs, context: ToolContext):
     return java_tool_client.execute("song_detail", arguments.model_dump(exclude_none=True), context)
 
 
-tool_registry = ToolRegistry()
+tool_registry = ToolRegistry(
+    executor=ToolExecutor(
+        max_attempts=tool_max_attempts(),
+        retry_backoff_seconds=tool_retry_backoff_seconds(),
+        circuit_breaker=CircuitBreaker(
+            failure_threshold=tool_circuit_failure_threshold(),
+            recovery_seconds=tool_circuit_recovery_seconds(),
+        ),
+    )
+)
 tool_registry.register(
     ToolDefinition(
         name="song_search",
@@ -57,6 +73,7 @@ tool_registry.register(
         handler=search_favorites,
         read_only=True,
         timeout_seconds=4.0,
+        requires_user=True,
     )
 )
 tool_registry.register(
@@ -70,6 +87,7 @@ tool_registry.register(
         handler=recommend_songs,
         read_only=True,
         timeout_seconds=8.0,
+        requires_user=True,
     )
 )
 tool_registry.register(

@@ -12,7 +12,7 @@ MusicHub 是一个集音乐管理、在线播放、个性化推荐和 AI 歌库�
 | 向量服务 | Python 3.10、FastAPI、Sentence Transformers、FAISS | 歌曲向量化和语义检索 |
 | Agent 服务 | Python 3.10、FastAPI、LangChain、LangGraph | 统一模型协议和可扩展 AI 工作流编排 |
 | Agent 记忆 | MySQL 会话状态、短期消息窗口、摘要压缩、长期偏好 | 支持多轮状态、Token 控制和服务重启后的会话恢复 |
-| Agent 工具层 | Pydantic、JSON Schema、ToolRegistry | 统一注册、参数校验、超时控制和标准化工具结果 |
+| Agent 工具层 | Pydantic、JSON Schema、ToolRegistry、ToolExecutor | 统一注册、权限检查、超时重试、熔断和标准化工具结果 |
 | 嵌入模型 | `intfloat/multilingual-e5-small` | 中文、日文和英文歌曲元数据向量化 |
 | 大语言模型 | DeepSeek OpenAI 兼容 API | 根据本地证据组织自然语言回答 |
 | 混合检索 | SQL、关键词 RAG、向量 RAG、加权 RRF | 精确检索、语义召回、融合和去重 |
@@ -112,7 +112,9 @@ Agent 会从“我喜欢”“我不喜欢”“不要推荐”等稳定表达�
 
 ### 7. 统一的 Agent 工具注册与调用
 
-Agent Service 已建立 `ToolRegistry`，工具参数由 Pydantic 定义并自动生成 JSON Schema，统一处理注册、重复名称保护、参数校验、调用超时和错误返回。LangGraph 可以根据模型返回的工具调用进入工具节点，执行完成后再把结构化结果交给模型组织最终回答，并限制单次请求的最大工具轮数。
+Agent Service 已建立 `ToolRegistry` 和独立的 `ToolExecutor`。工具参数由 Pydantic 定义并自动生成 JSON Schema；每次调用统一经过参数校验、用户权限检查、超时、只读工具有限重试、按工具隔离的熔断以及标准化结果转换。重试只处理明确标记为可重试的网络、超时或下游服务错误；参数错误、权限错误和未知异常不会盲目重试，写工具默认禁止自动重试。熔断进入恢复窗口后只放行一次半开探测，成功后恢复调用。审计日志只记录工具名、`traceId`、耗时、尝试次数和错误码，不记录查询正文或用户数据。
+
+LangGraph 可以根据模型返回的工具调用进入工具节点，执行完成后再把结构化结果交给模型组织最终回答，并限制单次请求的最大工具轮数。
 
 当前已注册 `song_search`、`favorite_search`、`recommend_songs`、`vector_search` 和 `song_detail` 五个只读工具。歌曲搜索和详情以 MySQL 真实数据为准；收藏查询只使用服务端传入的当前用户身份；推荐复用现有个性化推荐、类型/听感过滤和候选排除逻辑；向量检索复用本地 FAISS 语义索引，并支持限定候选歌曲 ID。所有工具通过带版本号的内部协议调用 Spring Boot，只返回歌曲 ID、歌名、歌手、类型、出处、简介、收藏数、封面及必要检索证据，不向 Agent 暴露本地音频保存路径。内部接口可通过 `AGENT_TOOL_KEY` 配置服务间鉴权，请求上下文中的 `requestId`、`traceId` 和用户身份由服务端传递，不采信模型生成的身份信息。
 
