@@ -58,11 +58,16 @@ public class VectorRagClient {
     }
 
     public List<RetrievalResult> searchResults(String question, int limit) {
+        return searchResults(question, limit, null);
+    }
+
+    public List<RetrievalResult> searchResults(String question, int limit, List<Integer> audioIds) {
         if (question == null || question.trim().isEmpty() || limit < 1) return Collections.emptyList();
         try {
             JSONObject request = new JSONObject();
             request.put("query", question.trim());
             request.put("top_k", Math.min(Math.max(limit, 1), 20));
+            if (audioIds != null && !audioIds.isEmpty()) request.put("audio_ids", audioIds);
             JSONObject response = post("/search", request);
             JSONArray items = response.getJSONArray("items");
             if (items == null || items.isEmpty()) return Collections.emptyList();

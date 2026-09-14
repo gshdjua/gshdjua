@@ -81,13 +81,14 @@ class DeepSeekMusicAgentTest {
         ReflectionTestUtils.setField(routedAgent, "musicLibraryAgent", libraryAgent);
         String question = "咱们歌库里有轻松的音乐吗？";
         when(libraryAgent.findExactSourceSongs(question, 5)).thenReturn(Collections.emptyList());
-        when(libraryAgent.getRecommendationsForQuery(question, 7, 5, Collections.emptySet()))
-                .thenReturn(Collections.emptyList());
-        when(libraryAgent.reply(question, 7, AssistantIntent.RECOMMENDATION)).thenReturn("没有匹配歌曲");
+        MusicLibraryAgent.RecommendationOutcome outcome = new MusicLibraryAgent.RecommendationOutcome(
+                5, 0, 0, "INSUFFICIENT_MATCHES", Collections.emptyList());
+        when(libraryAgent.getRecommendationOutcome(question, 7, 5, Collections.emptySet())).thenReturn(outcome);
+        when(libraryAgent.formatRecommendationReply(question, outcome)).thenReturn("没有匹配歌曲");
 
         String answer = routedAgent.reply(question, 7, Collections.emptyList());
 
         assertEquals("没有匹配歌曲", answer);
-        verify(libraryAgent).getRecommendationsForQuery(question, 7, 5, Collections.emptySet());
+        verify(libraryAgent).getRecommendationOutcome(question, 7, 5, Collections.emptySet());
     }
 }

@@ -961,10 +961,6 @@ export default {
       this.assistantInput = question
       this.sendAssistantMessage()
     },
-    isRecommendationQuestion(message) {
-      const normalized = message.toLowerCase()
-      return message.includes('推荐') || message.includes('好听') || message.includes('听什么') || message.includes('听啥') || message.includes('热门') || message.includes('人气') || normalized.includes('recommend') || normalized.includes('popular')
-    },
     async sendAssistantMessage() {
       const message = this.assistantInput.trim()
       if (!message || this.assistantLoading || !this.activeConversationId) return
@@ -973,14 +969,10 @@ export default {
       try {
         const res = await request.post('/assistant/chat', { message, conversationId: this.activeConversationId })
         if (res.data.code !== 200) throw new Error(res.data.msg || '暂时无法回答')
-        this.assistantMessages.push(res.data.data.userMessage, res.data.data.assistantMessage)
         const assistantMessage = res.data.data.assistantMessage
-        if (this.isRecommendationQuestion(message)) {
-          try {
-            const recommendationRes = await request.get('/assistant/recommendations', { params: { message } })
-            if (recommendationRes.data.code === 200) assistantMessage.recommendations = recommendationRes.data.data
-          } catch (err) {}
-        }
+        assistantMessage.recommendations = res.data.data.recommendations || []
+        assistantMessage.recommendationMeta = res.data.data.recommendationMeta || {}
+        this.assistantMessages.push(res.data.data.userMessage, assistantMessage)
         await this.refreshConversationSummary()
       } catch (err) {
         alert(err.message || '连接歌库失败，请确认后端服务已经启动。')

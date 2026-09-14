@@ -1,4 +1,5 @@
 import time
+from typing import List
 
 from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -16,9 +17,15 @@ from .contracts import (
 )
 from .graph import agent_graph
 from .memory import memory_repository
+from .tools import tool_registry
+from .tools.models import ToolCatalogResponse
 
 
 app = FastAPI(title="MusicHub Agent Service", version="0.1.0")
+
+
+def should_enable_tools(messages: List[AgentMessage]) -> bool:
+    return not any("本地歌库提供的最小歌曲元数据：" in message.content for message in messages)
 
 
 def to_langchain_message(role: str, content: str):
@@ -53,7 +60,13 @@ def health() -> dict:
         "protocolVersion": "1.0",
         "memoryStore": "mysql",
         "memoryAvailable": memory_repository.available(),
+        "tools": [item.name for item in tool_registry.descriptors()],
     }
+
+
+@app.get("/v1/tools", response_model=ToolCatalogResponse)
+def tools() -> ToolCatalogResponse:
+    return ToolCatalogResponse(tools=tool_registry.descriptors())
 
 
 @app.post("/v1/chat", response_model=AgentChatResponse)
@@ -75,6 +88,16 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
         if memory.long_term_memories:
             memory_notes.append("用户长期偏好：" + "；".join(memory.long_term_memories))
         effective_messages = list(system_messages)
+        effective_messages.append(AgentMessage(
+            role="system",
+            content=(
+                "需要确认 MusicHub 本地歌库内容时使用 song_search，查询单曲事实使用 song_detail；"
+                "查询当前用户收藏使用 favorite_search，获取推荐候选使用 recommend_songs，"
+                "只有模糊听感需要补充语义候选时才使用 vector_search。"
+                "这些工具返回的是只读结构化数据；只能把工具实际返回的歌曲说成本地已收录。"
+                "工具失败或没有结果时，应明确说明本地歌库未找到，不得编造。"
+            ),
+        ))
         if memory_notes:
             effective_messages.append(AgentMessage(role="system", content="\n".join(memory_notes)))
         effective_messages.extend(memory.recent_messages or incoming_history[-6:])
@@ -86,6 +109,11 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "model": model_name,
                 "temperature": payload.options.temperature,
                 "strategy": payload.options.strategy,
+                "request_id": payload.requestId,
+                "trace_id": payload.metadata.get("traceId", payload.requestId),
+                "user_id": payload.userId,
+                "tool_rounds": 0,
+                "tools_enabled": should_enable_tools(payload.messages),
             }
         )
         response = state["response"]

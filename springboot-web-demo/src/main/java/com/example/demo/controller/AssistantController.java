@@ -72,7 +72,9 @@ public class AssistantController {
         String memoryRequestId = userMessage.getId() == null
                 ? "assistant-message-" + UUID.randomUUID()
                 : "assistant-message-" + userMessage.getId();
-        String reply = deepSeekMusicAgent.reply(messageForAgent, userId, history, conversationId, memoryRequestId);
+        DeepSeekMusicAgent.ReplyResult replyResult = deepSeekMusicAgent.replyWithResult(
+                messageForAgent, userId, history, conversationId, memoryRequestId);
+        String reply = replyResult.getReply();
         Object memoryCapture = agentMemoryClient.capture(userId, conversationId, memoryRequestId, message);
         if (memoryCapture == null && !reply.contains("Agent Service 当前不可用")) {
             reply += "\n\n（Agent 记忆服务当前不可用，本轮长期偏好可能未保存。）";
@@ -89,6 +91,8 @@ public class AssistantController {
         data.put("reply", reply);
         data.put("userMessage", userMessage);
         data.put("assistantMessage", assistantMessage);
+        data.put("recommendations", replyResult.getRecommendations());
+        data.put("recommendationMeta", replyResult.getRecommendationMetadata());
         return result(200, "success", data);
     }
 

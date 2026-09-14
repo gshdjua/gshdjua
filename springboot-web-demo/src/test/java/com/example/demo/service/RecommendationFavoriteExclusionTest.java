@@ -127,6 +127,44 @@ class RecommendationFavoriteExclusionTest {
         verify(recommendationService, never()).recommend(10, 5);
     }
 
+    @Test
+    void recommendationOutcomeExplainsFavoriteShortfallAndReturnsEveryAvailableCandidate() {
+        AudioMapper audioMapper = mock(AudioMapper.class);
+        AssistantQueryUnderstandingService understanding = new AssistantQueryUnderstandingService();
+        VectorRagClient vectorRagClient = mock(VectorRagClient.class);
+        MusicRagRetriever keywordRetriever = mock(MusicRagRetriever.class);
+        MusicLibraryAgent agent = new MusicLibraryAgent();
+        ReflectionTestUtils.setField(agent, "audioMapper", audioMapper);
+        ReflectionTestUtils.setField(agent, "queryUnderstandingService", understanding);
+        ReflectionTestUtils.setField(agent, "vectorRagClient", vectorRagClient);
+        ReflectionTestUtils.setField(agent, "musicRagRetriever", keywordRetriever);
+
+        Audio favorite1 = audio(1, "收藏1", "歌手", "动漫");
+        Audio favorite2 = audio(2, "收藏2", "歌手", "动漫");
+        Audio favorite3 = audio(3, "收藏3", "歌手", "动漫");
+        Audio candidate1 = audio(4, "候选1", "歌手", "动漫");
+        Audio candidate2 = audio(5, "候选2", "歌手", "动漫");
+        Audio candidate3 = audio(6, "候选3", "歌手", "动漫");
+        Audio candidate4 = audio(7, "候选4", "歌手", "动漫");
+        String question = "请给我推荐5首动漫类型的歌曲";
+        when(audioMapper.selectAll()).thenReturn(java.util.Arrays.asList(
+                favorite1, favorite2, favorite3, candidate1, candidate2, candidate3, candidate4));
+        when(audioMapper.selectUserCollects(10)).thenReturn(java.util.Arrays.asList(favorite1, favorite2, favorite3));
+        when(vectorRagClient.search(understanding.normalize(question), 20)).thenReturn(Collections.emptyList());
+        when(keywordRetriever.retrieve(question, null, 20)).thenReturn(Collections.emptyList());
+
+        MusicLibraryAgent.RecommendationOutcome outcome = agent.getRecommendationOutcome(
+                question, 10, 5, Collections.emptySet());
+        String reply = agent.formatRecommendationReply(question, outcome);
+
+        assertEquals(5, outcome.getRequestedCount());
+        assertEquals(4, outcome.getSongs().size());
+        assertEquals(3, outcome.getFavoriteExcludedCount());
+        assertEquals("FAVORITES_EXCLUDED", outcome.getShortfallReason());
+        assertTrue(reply.contains("3 首已在你的收藏中"));
+        assertTrue(reply.contains("目前只有 4 首可推荐"));
+    }
+
     private Audio audio(int id, String songName, String singer, String genre) {
         Audio audio = new Audio();
         audio.setId(id);

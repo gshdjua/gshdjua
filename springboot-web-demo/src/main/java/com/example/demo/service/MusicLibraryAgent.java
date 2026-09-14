@@ -118,8 +118,95 @@ public class MusicLibraryAgent {
         return personalizedRecommendationService.recommend(userId, 6);
     }
 
+    public RecommendationOutcome getRecommendationOutcome(String message, Integer userId, int requestedCount,
+                                                           Set<Integer> excludedAudioIds) {
+        int safeRequestedCount = Math.max(1, Math.min(requestedCount, 12));
+        List<Audio> allCandidates = getRecommendationsForQuery(message, userId, 20, excludedAudioIds);
+        List<Audio> selected = new ArrayList<>(allCandidates.subList(0,
+                Math.min(safeRequestedCount, allCandidates.size())));
+        List<String> requestedGenres = queryUnderstandingService.requestedGenres(message);
+        int favoriteExcludedCount = 0;
+        if (userId != null && !requestedGenres.isEmpty()) {
+            for (Audio favorite : audioMapper.selectUserCollects(userId)) {
+                if (MusicGenreUtils.containsAll(favorite.getGenre(), requestedGenres)) favoriteExcludedCount++;
+            }
+        }
+        String shortfallReason = selected.size() >= safeRequestedCount ? ""
+                : favoriteExcludedCount > 0 ? "FAVORITES_EXCLUDED" : "INSUFFICIENT_MATCHES";
+        return new RecommendationOutcome(safeRequestedCount, allCandidates.size(), favoriteExcludedCount,
+                shortfallReason, selected);
+    }
+
+    public String formatRecommendationReply(String message, RecommendationOutcome outcome) {
+        List<Audio> recommendations = outcome.getSongs();
+        List<String> requestedGenres = queryUnderstandingService.requestedGenres(message);
+        if (recommendations.isEmpty()) {
+            return shortageExplanation(outcome, requestedGenres.isEmpty()
+                    ? "歌库中暂时没有符合条件的未收藏歌曲可推荐。"
+                    : "歌库中暂时没有同时属于“" + String.join(" + ", requestedGenres) + "”类型的未收藏歌曲。");
+        }
+        Audio seedSong = findMentionedSong(message, audioMapper.selectAll());
+        String answer = !requestedGenres.isEmpty()
+                ? "我按歌曲类型“" + String.join(" + ", requestedGenres) + "”筛选"
+                + (isMoodRecommendation(message) ? "，并以“" + moodLabel(message) + "”的听感排序" : "") + "推荐："
+                + readableSongList(recommendations, recommendations.size()) + "。"
+                : isMoodRecommendation(message)
+                ? "我按“" + moodLabel(message) + "”的听感和歌曲资料进行语义排序推荐："
+                + readableSongList(recommendations, recommendations.size()) + "。"
+                : seedSong == null
+                ? "我按你的收藏和播放偏好推荐：" + readableSongList(recommendations, recommendations.size()) + "。"
+                : "我以《" + seedSong.getSongName() + "》为参考，优先按相同类型、出处和歌手筛选，并已排除这首歌本身："
+                + readableSongList(recommendations, recommendations.size()) + "。";
+        return shortageExplanation(outcome, answer);
+    }
+
+    private String shortageExplanation(RecommendationOutcome outcome, String answer) {
+        if (!outcome.hasShortfall()) return answer;
+        if (outcome.getFavoriteExcludedCount() > 0) {
+            return answer + "\n\n你希望获得 " + outcome.getRequestedCount() + " 首；符合类型的歌曲中有 "
+                    + outcome.getFavoriteExcludedCount() + " 首已在你的收藏中，排除后目前只有 "
+                    + outcome.getAvailableCount() + " 首可推荐，因此本次没有为了凑数加入已收藏或不符合条件的歌曲。";
+        }
+        return answer + "\n\n你希望获得 " + outcome.getRequestedCount() + " 首，但当前歌库只有 "
+                + outcome.getAvailableCount() + " 首有足够证据符合条件，因此本次没有为了凑数加入不符合条件的歌曲。";
+    }
+
     public List<Audio> getRecommendationsForQuery(String message, Integer userId, int limit) {
         return getRecommendationsForQuery(message, userId, limit, Collections.emptySet());
+    }
+
+    public static class RecommendationOutcome {
+        private final int requestedCount;
+        private final int availableCount;
+        private final int favoriteExcludedCount;
+        private final String shortfallReason;
+        private final List<Audio> songs;
+
+        public RecommendationOutcome(int requestedCount, int availableCount, int favoriteExcludedCount,
+                                     String shortfallReason, List<Audio> songs) {
+            this.requestedCount = requestedCount;
+            this.availableCount = availableCount;
+            this.favoriteExcludedCount = favoriteExcludedCount;
+            this.shortfallReason = shortfallReason;
+            this.songs = songs == null ? Collections.emptyList() : new ArrayList<>(songs);
+        }
+
+        public int getRequestedCount() { return requestedCount; }
+        public int getAvailableCount() { return availableCount; }
+        public int getFavoriteExcludedCount() { return favoriteExcludedCount; }
+        public String getShortfallReason() { return shortfallReason; }
+        public List<Audio> getSongs() { return new ArrayList<>(songs); }
+        public boolean hasShortfall() { return songs.size() < requestedCount; }
+
+        public Map<String, Object> toMetadata() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("requestedCount", requestedCount);
+            result.put("returnedCount", songs.size());
+            result.put("availableCount", availableCount);
+            result.put("favoriteExcludedCount", favoriteExcludedCount);
+            result.put("shortfallReason", shortfallReason);
+            return result;
+        }
     }
 
     public List<Audio> getRecommendationsForQuery(String message, Integer userId, int limit, Set<Integer> excludedAudioIds) {

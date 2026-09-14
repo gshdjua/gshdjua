@@ -64,6 +64,8 @@ services:
       AGENT_MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-musichub123}
       AGENT_MYSQL_DATABASE: springweb_demo
       VECTOR_RAG_BASE_URL: http://rag-service:8090
+      MUSICHUB_TOOL_BASE_URL: http://backend:8082
+      AGENT_TOOL_KEY: ${AGENT_TOOL_KEY:-}
       TZ: Asia/Shanghai
     ports:
       - "${AGENT_PORT:-8100}:8100"
@@ -90,6 +92,7 @@ services:
       MUSICHUB_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-musichub123}
       VECTOR_RAG_BASE_URL: http://rag-service:8090
       AGENT_SERVICE_BASE_URL: http://agent-service:8100
+      AGENT_TOOL_KEY: ${AGENT_TOOL_KEY:-}
       EVALUATION_DATASET_PATH: /app/evaluation/rag-eval-50.jsonl
       LLM_COST_EVALUATION_DATASET_PATH: /app/evaluation/llm-cost-eval.jsonl
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

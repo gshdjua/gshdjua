@@ -79,8 +79,8 @@ class AssistantControllerTest {
             item.setId(messageIds.incrementAndGet());
             return null;
         }).when(conversationMapper).insertMessage(any(AssistantMessage.class));
-        when(agent.reply("我喜欢动漫歌曲", 7, Collections.emptyList(), 11L, "assistant-message-41"))
-                .thenReturn("本地回答");
+        when(agent.replyWithResult("我喜欢动漫歌曲", 7, Collections.emptyList(), 11L, "assistant-message-41"))
+                .thenReturn(new DeepSeekMusicAgent.ReplyResult("本地回答", null));
         when(memoryClient.capture(7, 11L, "assistant-message-41", "我喜欢动漫歌曲"))
                 .thenReturn(Collections.singletonMap("capturedCount", 1));
 

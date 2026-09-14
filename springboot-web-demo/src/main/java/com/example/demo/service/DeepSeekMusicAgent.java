@@ -42,6 +42,7 @@ public class DeepSeekMusicAgent {
             "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"
     };
     private final ThreadLocal<ApiUsage> lastApiUsage = new ThreadLocal<>();
+    private final ThreadLocal<MusicLibraryAgent.RecommendationOutcome> currentRecommendationOutcome = new ThreadLocal<>();
     private final ThreadLocal<Long> currentConversationId = new ThreadLocal<>();
     private final ThreadLocal<Integer> currentUserId = new ThreadLocal<>();
     private final ThreadLocal<String> currentRequestId = new ThreadLocal<>();
@@ -93,7 +94,11 @@ public class DeepSeekMusicAgent {
         if (intent == AssistantIntent.RECOMMENDATION && isMoodQuestion(normalizedMessage)) {
             boolean asksForAlternatives = asksForAlternatives(normalizedMessage);
             Set<Integer> excludedAudioIds = asksForAlternatives ? previouslyRecommendedAudioIds(history) : new LinkedHashSet<>();
-            List<Audio> recommendations = musicLibraryAgent.getRecommendationsForQuery(normalizedMessage, userId, 5, excludedAudioIds);
+            int requestedCount = requestedRecommendationCount(normalizedMessage);
+            MusicLibraryAgent.RecommendationOutcome outcome = musicLibraryAgent.getRecommendationOutcome(
+                    normalizedMessage, userId, requestedCount, excludedAudioIds);
+            currentRecommendationOutcome.set(outcome);
+            List<Audio> recommendations = outcome.getSongs();
             if (asksForAlternatives && recommendations.isEmpty()) {
                 return "我已排除本次对话中推荐过的歌曲，但歌库里暂时没有更多已确认符合“"
                         + moodLabel(normalizedMessage) + "”条件的歌曲。你可以换一种听感后再试。";
@@ -101,11 +106,16 @@ public class DeepSeekMusicAgent {
             String retrievalMethod = isAnimeMoodQuestion(normalizedMessage)
                     ? "动画出处筛选 + 本地向量 RAG"
                     : "听感筛选 + 本地向量 RAG";
-            return replyWithLocalEvidence(normalizedMessage, userId, history, recommendations, retrievalMethod,
-                    AssistantIntent.RECOMMENDATION);
+            return replyWithRecommendationEvidence(normalizedMessage, history, outcome, retrievalMethod);
         }
-        if (intent == AssistantIntent.RECOMMENDATION || intent == AssistantIntent.FAVORITES
-                || intent == AssistantIntent.GENRE_QUERY || intent == AssistantIntent.LIBRARY_QUERY
+        if (intent == AssistantIntent.RECOMMENDATION) {
+            int requestedCount = requestedRecommendationCount(normalizedMessage);
+            MusicLibraryAgent.RecommendationOutcome outcome = musicLibraryAgent.getRecommendationOutcome(
+                    normalizedMessage, userId, requestedCount, new LinkedHashSet<>());
+            currentRecommendationOutcome.set(outcome);
+            return replyWithRecommendationEvidence(normalizedMessage, history, outcome, "个性化推荐与类型筛选");
+        }
+        if (intent == AssistantIntent.FAVORITES || intent == AssistantIntent.GENRE_QUERY || intent == AssistantIntent.LIBRARY_QUERY
                 || intent == AssistantIntent.SOURCE_QUERY) {
             return musicLibraryAgent.reply(normalizedMessage, userId, intent);
         }
@@ -141,16 +151,50 @@ public class DeepSeekMusicAgent {
 
     public String reply(String message, Integer userId, List<Map<String, String>> history, Long conversationId,
                         String requestId) {
+        return replyWithResult(message, userId, history, conversationId, requestId).getReply();
+    }
+
+    public ReplyResult replyWithResult(String message, Integer userId, List<Map<String, String>> history,
+                                       Long conversationId, String requestId) {
         currentConversationId.set(conversationId);
         currentUserId.set(userId);
         currentRequestId.set(requestId);
+        currentRecommendationOutcome.remove();
         try {
-            return reply(message, userId, history);
+            String reply = reply(message, userId, history);
+            return new ReplyResult(reply, currentRecommendationOutcome.get());
         } finally {
             currentConversationId.remove();
             currentUserId.remove();
             currentRequestId.remove();
+            currentRecommendationOutcome.remove();
         }
+    }
+
+    private String replyWithRecommendationEvidence(String message, List<Map<String, String>> history,
+                                                   MusicLibraryAgent.RecommendationOutcome outcome,
+                                                   String retrievalMethod) {
+        String localAnswer = musicLibraryAgent.formatRecommendationReply(message, outcome);
+        List<Audio> songs = outcome.getSongs();
+        if (songs.isEmpty() || outcome.hasShortfall() || getApiKey().isEmpty()) return localAnswer;
+        EvidenceContext evidenceContext = buildSongEvidenceContext(
+                retrievalMethod, songs, outcome.getRequestedCount());
+        try {
+            String answer = requestDeepSeek(message, evidenceContext, history);
+            return answer.isEmpty() || !mentionsEverySong(answer, songs) ? localAnswer : answer;
+        } catch (Exception exception) {
+            return localAnswer;
+        }
+    }
+
+    private boolean mentionsEverySong(String answer, List<Audio> songs) {
+        if (answer == null) return false;
+        String normalized = answer.toLowerCase();
+        for (Audio song : songs) {
+            String songName = song.getSongName() == null ? "" : song.getSongName().toLowerCase();
+            if (songName.isEmpty() || !normalized.contains(songName)) return false;
+        }
+        return true;
     }
 
     private String replyWithStrictEntityEvidence(String message, List<Map<String, String>> history,
@@ -654,6 +698,26 @@ public class DeepSeekMusicAgent {
             return normalized.substring(1, normalized.length() - 1).trim();
         }
         return normalized;
+    }
+
+    public static class ReplyResult {
+        private final String reply;
+        private final MusicLibraryAgent.RecommendationOutcome recommendationOutcome;
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
+            this.reply = reply;
+            this.recommendationOutcome = recommendationOutcome;
+        }
+
+        public String getReply() { return reply; }
+
+        public List<Audio> getRecommendations() {
+            return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();
+        }
+
+        public Map<String, Object> getRecommendationMetadata() {
+            return recommendationOutcome == null ? new LinkedHashMap<>() : recommendationOutcome.toMetadata();
+        }
     }
 
     private static class EvidenceContext {

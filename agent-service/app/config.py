@@ -52,3 +52,15 @@ def mysql_config() -> dict:
 
 def vector_rag_base_url() -> str:
     return first_config("VECTOR_RAG_BASE_URL", default="http://127.0.0.1:8090").rstrip("/")
+
+
+def java_tool_base_url() -> str:
+    return first_config("MUSICHUB_TOOL_BASE_URL", default="http://127.0.0.1:8082").rstrip("/")
+
+
+def tool_api_key() -> str:
+    return first_config("AGENT_TOOL_KEY")
+
+
+def tool_http_timeout_seconds() -> float:
+    return float(first_config("AGENT_TOOL_HTTP_TIMEOUT_SECONDS", default="3.5"))
