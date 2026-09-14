@@ -76,9 +76,69 @@ class ConversationMemoryRepositoryTest(unittest.TestCase):
         self.assertEqual("喜欢：动漫歌曲", candidates[0].content)
         self.assertEqual("不喜欢：重金属", candidates[1].content)
 
+    def test_extracts_only_preference_clause_before_request(self):
+        punctuated = self.repository.extract_candidates("我喜欢动漫类型的歌曲，请你给我推荐几首")
+        unpunctuated = self.repository.extract_candidates("我喜欢动漫类型的歌曲你能给我推荐几首吗")
+        short_request = self.repository.extract_candidates("我喜欢动漫类型的歌曲能推荐几首吗")
+        listening_request = self.repository.extract_candidates("我喜欢动漫类型的歌曲想听几首")
+
+        self.assertEqual(["喜欢：动漫类型的歌曲"], [item.content for item in punctuated])
+        self.assertEqual(["喜欢：动漫类型的歌曲"], [item.content for item in unpunctuated])
+        self.assertEqual(["喜欢：动漫类型的歌曲"], [item.content for item in short_request])
+        self.assertEqual(["喜欢：动漫类型的歌曲"], [item.content for item in listening_request])
+        self.assertEqual(punctuated[0].topic_key, unpunctuated[0].topic_key)
+        self.assertEqual(
+            self.repository.extract_candidates("我喜欢动漫歌曲")[0].topic_key,
+            unpunctuated[0].topic_key,
+        )
+
+    def test_cleans_avoidance_request_tail(self):
+        candidates = self.repository.extract_candidates("我不喜欢爵士歌曲请不要再推荐给我")
+
+        self.assertEqual(["不喜欢：爵士歌曲"], [item.content for item in candidates])
+
+    def test_rejects_questions_disguised_as_preferences(self):
+        self.assertEqual([], self.repository.extract_candidates("我喜欢什么歌曲"))
+        self.assertEqual([], self.repository.extract_candidates("你知道我喜欢动漫歌曲吗"))
+        self.assertEqual([], self.repository.extract_candidates("我喜欢动漫还是摇滚"))
+
     def test_does_not_extract_temporary_or_sensitive_preferences(self):
         self.assertEqual([], self.repository.extract_candidates("我今天喜欢听摇滚"))
         self.assertEqual([], self.repository.extract_candidates("我喜欢的密码是 123456"))
+
+    def test_extracts_expiring_preference_with_topic_metadata(self):
+        candidates = self.repository.extract_candidates("本周我想听轻快的歌曲")
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("喜欢：轻快的歌曲", candidates[0].content)
+        self.assertEqual("轻快的歌曲", candidates[0].topic)
+        self.assertTrue(candidates[0].topic_key)
+        self.assertIsNotNone(candidates[0].expires_at)
+
+    def test_alias_topics_conflict_but_specific_topic_remains_distinct(self):
+        preference = self.repository.extract_candidates("我喜欢摇滚")[0]
+        avoidance = self.repository.extract_candidates("我不喜欢摇滚乐")[0]
+        specific_avoidance = self.repository.extract_candidates("我不喜欢日系摇滚")[0]
+
+        self.assertEqual(preference.topic_key, avoidance.topic_key)
+        self.assertNotEqual(preference.topic_key, specific_avoidance.topic_key)
+
+    def test_splits_compound_preferences(self):
+        candidates = self.repository.extract_candidates("我不喜欢摇滚、爵士和电子乐")
+
+        self.assertEqual(
+            ["不喜欢：摇滚", "不喜欢：爵士", "不喜欢：电子乐"],
+            [item.content for item in candidates],
+        )
+        self.assertEqual(3, len({item.topic_key for item in candidates}))
+
+    def test_supersede_targets_other_active_memories_with_same_topic(self):
+        cursor = FakeCursor()
+
+        self.repository._supersede_topic_competitors(cursor, "user-1", 9, "topic-key")
+
+        self.assertIn("status='superseded'", cursor.query)
+        self.assertEqual((9, "user-1", "topic-key", 9), cursor.parameters)
 
     def test_temporary_preference_capture_writes_nothing(self):
         cursor = FakeCursor()

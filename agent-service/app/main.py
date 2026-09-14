@@ -166,6 +166,19 @@ def update_memory(user_id: str, memory_id: int, payload: MemoryUpdate) -> Memory
         raise HTTPException(status_code=503, detail="Memory store unavailable") from error
 
 
+@app.post("/v1/memory/users/{user_id}/memories/{memory_id}/reactivate", response_model=MemoryRecord)
+def reactivate_memory(user_id: str, memory_id: int) -> MemoryRecord:
+    try:
+        reactivated = memory_repository.reactivate_memory(user_id, memory_id)
+        if reactivated is None:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return MemoryRecord(**reactivated)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Memory store unavailable") from error
+
+
 @app.delete("/v1/memory/users/{user_id}/memories/{memory_id}")
 def delete_memory(user_id: str, memory_id: int) -> dict:
     try:

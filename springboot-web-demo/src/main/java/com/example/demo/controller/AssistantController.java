@@ -163,6 +163,13 @@ public class AssistantController {
                 : result(200, "Memory deleted", data);
     }
 
+    @PostMapping("/memories/{memoryId}/reactivate")
+    public Map<String, Object> reactivateMemory(@PathVariable Long memoryId, HttpServletRequest request) {
+        Object data = agentMemoryClient.reactivate(getUserId(request), memoryId);
+        return data == null ? result(500, "Memory not found or memory service unavailable", null)
+                : result(200, "Memory reactivated", data);
+    }
+
     @DeleteMapping("/memories")
     public Map<String, Object> clearMemories(HttpServletRequest request) {
         Object data = agentMemoryClient.clear(getUserId(request));

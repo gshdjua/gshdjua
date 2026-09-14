@@ -156,10 +156,18 @@ CREATE TABLE IF NOT EXISTS agent_long_term_memory (
     embedding_model VARCHAR(255) NULL,
     source_conversation_id BIGINT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'active',
+    topic VARCHAR(200) NOT NULL DEFAULT '',
+    topic_key CHAR(64) NOT NULL DEFAULT '',
+    expires_at TIMESTAMP NULL,
+    last_accessed_at TIMESTAMP NULL,
+    access_count BIGINT NOT NULL DEFAULT 0,
+    superseded_by BIGINT NULL,
+    origin VARCHAR(20) NOT NULL DEFAULT 'automatic',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_agent_memory_user_key (user_id, memory_key),
-    KEY idx_agent_memory_user_update (user_id, updated_at)
+    KEY idx_agent_memory_user_update (user_id, updated_at),
+    KEY idx_agent_memory_topic_status (user_id, topic_key, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS agent_memory_setting (

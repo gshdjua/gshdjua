@@ -29,6 +29,27 @@ import static org.mockito.Mockito.when;
 class AssistantControllerTest {
 
     @Test
+    void reactivatesMemoryForAuthenticatedUser() {
+        AgentMemoryClient memoryClient = mock(AgentMemoryClient.class);
+        UserMapper userMapper = mock(UserMapper.class);
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        AssistantController controller = new AssistantController();
+        ReflectionTestUtils.setField(controller, "agentMemoryClient", memoryClient);
+        ReflectionTestUtils.setField(controller, "userMapper", userMapper);
+
+        User user = new User();
+        user.setId(7);
+        when(request.getHeader("Authorization")).thenReturn(JwtUtil.generateToken("tester"));
+        when(userMapper.selectByUsername("tester")).thenReturn(user);
+        when(memoryClient.reactivate(7, 19L)).thenReturn(Collections.singletonMap("status", "active"));
+
+        Map<String, Object> response = controller.reactivateMemory(19L, request);
+
+        assertEquals(200, response.get("code"));
+        verify(memoryClient).reactivate(7, 19L);
+    }
+
+    @Test
     void localAnswerStillUsesUnifiedMemoryCaptureEntry() {
         DeepSeekMusicAgent agent = mock(DeepSeekMusicAgent.class);
         AgentMemoryClient memoryClient = mock(AgentMemoryClient.class);

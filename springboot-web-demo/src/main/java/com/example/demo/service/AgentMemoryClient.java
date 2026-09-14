@@ -47,6 +47,10 @@ public class AgentMemoryClient {
         return request("PUT", userPath(userId) + "/memories/" + memoryId, body);
     }
 
+    public Object reactivate(Integer userId, Long memoryId) {
+        return request("POST", userPath(userId) + "/memories/" + memoryId + "/reactivate", new JSONObject());
+    }
+
     public Object delete(Integer userId, Long memoryId) {
         return request("DELETE", userPath(userId) + "/memories/" + memoryId, null);
     }

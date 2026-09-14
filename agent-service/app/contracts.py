@@ -67,3 +67,9 @@ class MemoryRecord(BaseModel):
     sourceConversationId: Optional[str] = None
     createdAt: Optional[datetime] = None
     updatedAt: Optional[datetime] = None
+    topic: str = ""
+    status: str = "active"
+    expiresAt: Optional[datetime] = None
+    lastAccessedAt: Optional[datetime] = None
+    accessCount: int = 0
+    supersededBy: Optional[int] = None

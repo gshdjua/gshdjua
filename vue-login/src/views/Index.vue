@@ -323,9 +323,22 @@
         <div v-if="memoryLoading" class="memory-empty">正在加载记忆…</div>
         <div v-else-if="!memories.length" class="memory-empty">暂时没有长期记忆。你可以对助手说“我喜欢动漫歌曲”。</div>
         <div v-else class="memory-list">
-          <article v-for="memory in memories" :key="memory.id">
-            <div><span>{{ memory.memoryType === 'avoidance' ? '不喜欢 / 避免' : '偏好' }}</span><p>{{ memory.content }}</p></div>
-            <div class="memory-actions"><button @click="editMemory(memory)">修改</button><button class="danger" @click="deleteMemory(memory)">删除</button></div>
+          <article v-for="memory in memories" :key="memory.id" :class="'memory-' + memory.status">
+            <div class="memory-content">
+              <div class="memory-labels">
+                <span>{{ memory.memoryType === 'avoidance' ? '不喜欢 / 避免' : '偏好' }}</span>
+                <em :class="memory.status">{{ memoryStatusLabel(memory.status) }}</em>
+              </div>
+              <p>{{ memory.content }}</p>
+              <small v-if="memory.expiresAt">有效期至 {{ formatMemoryDate(memory.expiresAt) }}</small>
+              <small v-else-if="memory.status === 'superseded'">已被较新的同主题记忆替代</small>
+              <small v-else-if="memory.accessCount">已用于 {{ memory.accessCount }} 次相关回答</small>
+            </div>
+            <div class="memory-actions">
+              <button v-if="memory.status !== 'active'" @click="reactivateMemory(memory)">重新启用</button>
+              <button @click="editMemory(memory)">修改</button>
+              <button class="danger" @click="deleteMemory(memory)">删除</button>
+            </div>
           </article>
         </div>
         <footer><button class="memory-clear" :disabled="!memories.length" @click="clearMemories">清空全部长期记忆</button></footer>
@@ -791,6 +804,13 @@ export default {
       const seconds = String(totalSeconds % 60).padStart(2, '0')
       return `${minutes}:${seconds}`
     },
+    memoryStatusLabel(status) {
+      return { active: '生效中', expired: '已过期', superseded: '已替代' }[status] || status
+    },
+    formatMemoryDate(value) {
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+    },
     async openAssistant(audioId) {
       this.currentTab = 'assistant'
       this.loadAssistantStatus()
@@ -905,6 +925,16 @@ export default {
         Object.assign(memory, res.data.data)
       } catch (err) {
         alert(err.message || '长期记忆修改失败')
+      }
+    },
+    async reactivateMemory(memory) {
+      if (!window.confirm(`确定重新启用“${memory.content}”吗？同主题的旧记忆将被替代。`)) return
+      try {
+        const res = await request.post('/assistant/memories/' + memory.id + '/reactivate')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '重新启用失败')
+        await this.openMemoryManager()
+      } catch (err) {
+        alert(err.message || '长期记忆重新启用失败')
       }
     },
     async deleteMemory(memory) {
@@ -1125,7 +1155,7 @@ export default {
 .quick-questions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }.quick-questions button { padding: 7px 11px; border: 1px solid #ddd9f7; border-radius: 20px; color: #705bb8; background: #faf9ff; font-size: 12px; cursor: pointer; }.quick-questions button:hover { border-color: #8e75dc; background: #f0edff; }.chat-input-row { display: flex; gap: 10px; }.chat-input-row input { flex: 1; min-width: 0; padding: 13px 15px; border: 1px solid #e2e0ed; border-radius: 12px; outline: none; font: inherit; }.chat-input-row input:focus { border-color: #7961c9; box-shadow: 0 0 0 3px rgba(121,97,201,.1); }.chat-input-row button { padding: 0 21px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #6c73e9, #8051ba); color: #fff; font-weight: 600; cursor: pointer; }.chat-input-row button:disabled { cursor: not-allowed; opacity: .55; }
 @media (max-width: 640px) { .main-area { padding: 16px; }.daily-recommendation-header { align-items: flex-start; flex-direction: column; }.refresh-recommendations { width: 100%; justify-content: center; }.assistant-page { margin: 0; }.assistant-intro { padding: 22px; }.assistant-intro h2 { font-size: 24px; }.chat-panel { min-height: 500px; padding: 16px; }.chat-history-toolbar { align-items: flex-start; flex-direction: column; gap: 9px; }.new-conversation-btn { width: 100%; }.conversation-list { width: 100%; }.conversation-item { min-width: 138px; }.chat-messages { min-height: 330px; }.chat-row { max-width: 92%; }.recommendation-picker { grid-template-columns: 1fr; }.quick-questions { overflow-x: auto; flex-wrap: nowrap; }.quick-questions button { white-space: nowrap; } }
 
-.memory-dialog-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: rgba(22,18,48,.58); backdrop-filter: blur(5px); }.memory-dialog { width: min(680px, 100%); max-height: 82vh; overflow-y: auto; padding: 26px; border-radius: 22px; background: #fff; box-shadow: 0 25px 70px rgba(20,14,54,.35); }.memory-dialog header { display: flex; align-items: flex-start; justify-content: space-between; }.memory-dialog header span { color: #7b63c7; font-size: 11px; font-weight: 800; letter-spacing: 1.5px; }.memory-dialog h3 { margin: 5px 0 0; color: #302650; font-size: 24px; }.memory-close { width: 34px; height: 34px; border: 0; border-radius: 50%; color: #766b8b; background: #f1eef8; font-size: 22px; cursor: pointer; }.memory-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 24px; padding: 17px; border: 1px solid #e7e2f4; border-radius: 15px; background: #faf9ff; }.memory-setting-row strong { color: #3a3158; }.memory-setting-row p { margin: 5px 0 0; color: #8a8299; font-size: 13px; }.memory-switch { min-width: 76px; padding: 8px 11px; border: 0; border-radius: 18px; color: #8a6170; background: #f6e8ed; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.memory-switch.enabled { color: #246d54; background: #dff5eb; }.memory-privacy-note { padding: 11px 13px; border-radius: 10px; color: #756d86; background: #f5f3fa; font-size: 12px; line-height: 1.6; }.memory-empty { padding: 42px 15px; color: #948ca3; text-align: center; }.memory-list { display: flex; flex-direction: column; gap: 9px; margin-top: 16px; }.memory-list article { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 14px 15px; border: 1px solid #ece8f5; border-radius: 13px; }.memory-list article span { color: #8168c5; font-size: 11px; font-weight: 700; }.memory-list article p { margin: 4px 0 0; color: #3d3650; font-size: 14px; }.memory-actions { display: flex; gap: 6px; }.memory-actions button, .memory-clear { padding: 7px 10px; border: 1px solid #ded8ee; border-radius: 8px; color: #6955a5; background: #fff; cursor: pointer; }.memory-actions .danger, .memory-clear { color: #c25570; }.memory-dialog footer { display: flex; justify-content: flex-end; margin-top: 20px; padding-top: 16px; border-top: 1px solid #eeeaf5; }.memory-clear:disabled { cursor: not-allowed; opacity: .45; }
+.memory-dialog-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: rgba(22,18,48,.58); backdrop-filter: blur(5px); }.memory-dialog { width: min(680px, 100%); max-height: 82vh; overflow-y: auto; padding: 26px; border-radius: 22px; background: #fff; box-shadow: 0 25px 70px rgba(20,14,54,.35); }.memory-dialog header { display: flex; align-items: flex-start; justify-content: space-between; }.memory-dialog header span { color: #7b63c7; font-size: 11px; font-weight: 800; letter-spacing: 1.5px; }.memory-dialog h3 { margin: 5px 0 0; color: #302650; font-size: 24px; }.memory-close { width: 34px; height: 34px; border: 0; border-radius: 50%; color: #766b8b; background: #f1eef8; font-size: 22px; cursor: pointer; }.memory-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 24px; padding: 17px; border: 1px solid #e7e2f4; border-radius: 15px; background: #faf9ff; }.memory-setting-row strong { color: #3a3158; }.memory-setting-row p { margin: 5px 0 0; color: #8a8299; font-size: 13px; }.memory-switch { min-width: 76px; padding: 8px 11px; border: 0; border-radius: 18px; color: #8a6170; background: #f6e8ed; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.memory-switch.enabled { color: #246d54; background: #dff5eb; }.memory-privacy-note { padding: 11px 13px; border-radius: 10px; color: #756d86; background: #f5f3fa; font-size: 12px; line-height: 1.6; }.memory-empty { padding: 42px 15px; color: #948ca3; text-align: center; }.memory-list { display: flex; flex-direction: column; gap: 9px; margin-top: 16px; }.memory-list article { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 14px 15px; border: 1px solid #ece8f5; border-radius: 13px; }.memory-list article.memory-expired, .memory-list article.memory-superseded { background: #fafafa; opacity: .78; }.memory-content { min-width: 0; }.memory-labels { display: flex; align-items: center; gap: 7px; }.memory-list article span { color: #8168c5; font-size: 11px; font-weight: 700; }.memory-labels em { padding: 2px 7px; border-radius: 10px; color: #277258; background: #e1f4ec; font-size: 10px; font-style: normal; }.memory-labels em.expired, .memory-labels em.superseded { color: #756d86; background: #ece9f2; }.memory-list article p { margin: 4px 0 0; color: #3d3650; font-size: 14px; }.memory-list article small { display: block; margin-top: 5px; color: #948ca3; font-size: 11px; }.memory-actions { display: flex; flex-shrink: 0; gap: 6px; }.memory-actions button, .memory-clear { padding: 7px 10px; border: 1px solid #ded8ee; border-radius: 8px; color: #6955a5; background: #fff; cursor: pointer; }.memory-actions .danger, .memory-clear { color: #c25570; }.memory-dialog footer { display: flex; justify-content: flex-end; margin-top: 20px; padding-top: 16px; border-top: 1px solid #eeeaf5; }.memory-clear:disabled { cursor: not-allowed; opacity: .45; }
 
 .music-card { background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 3px 15px rgba(0,0,0,0.06); transition: all 0.3s ease; cursor: pointer; }
 .music-card:hover { transform: translateY(-6px); box-shadow: 0 12px 35px rgba(0,0,0,0.1); }
