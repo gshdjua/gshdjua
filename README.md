@@ -12,6 +12,7 @@ MusicHub 是一个集音乐管理、在线播放、个性化推荐和 AI 歌库�
 | 向量服务 | Python 3.10、FastAPI、Sentence Transformers、FAISS | 歌曲向量化和语义检索 |
 | Agent 服务 | Python 3.10、FastAPI、LangChain、LangGraph | 统一模型协议和可扩展 AI 工作流编排 |
 | Agent 记忆 | MySQL 会话状态、短期消息窗口、摘要压缩、长期偏好 | 支持多轮状态、Token 控制和服务重启后的会话恢复 |
+| Agent 策略层 | LangGraph、StrategyRouter、Direct、ReAct | 按问题复杂度选择单工具直达或多轮工具推理 |
 | Agent 工具层 | Pydantic、JSON Schema、ToolRegistry、ToolExecutor | 统一注册、权限检查、超时重试、熔断和标准化工具结果 |
 | 嵌入模型 | `intfloat/multilingual-e5-small` | 中文、日文和英文歌曲元数据向量化 |
 | 大语言模型 | DeepSeek OpenAI 兼容 API | 根据本地证据组织自然语言回答 |
@@ -35,6 +36,7 @@ Spring Boot 业务与 AI 网关（8082）
   ├── MySQL（3306）
   ├── Local Vector RAG（8090）
   └── LangGraph Agent Service（8100）
+          ├── StrategyRouter ──▶ DirectStrategy / ReActStrategy
           ├── ToolRegistry
           ├── 5 个只读工具 ──内部接口──▶ Spring Boot
           │
@@ -118,15 +120,21 @@ LangGraph 可以根据模型返回的工具调用进入工具节点，执行完�
 
 当前已注册 `song_search`、`favorite_search`、`recommend_songs`、`vector_search` 和 `song_detail` 五个只读工具。歌曲搜索和详情以 MySQL 真实数据为准；收藏查询只使用服务端传入的当前用户身份；推荐复用现有个性化推荐、类型/听感过滤和候选排除逻辑；向量检索复用本地 FAISS 语义索引，并支持限定候选歌曲 ID。所有工具通过带版本号的内部协议调用 Spring Boot，只返回歌曲 ID、歌名、歌手、类型、出处、简介、收藏数、封面及必要检索证据，不向 Agent 暴露本地音频保存路径。内部接口可通过 `AGENT_TOOL_KEY` 配置服务间鉴权，请求上下文中的 `requestId`、`traceId` 和用户身份由服务端传递，不采信模型生成的身份信息。
 
-### 8. 检索效果可以量化评估
+### 8. Direct 与 ReAct 推理策略
+
+Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`。Java 客户端默认请求 `auto`：单步骤收藏、推荐、歌曲详情或检索问题由 Direct 策略直接生成一个结构化工具调用，再让模型基于结果生成回答，省去一次模型选工具调用；包含比较、分析或多个工具意图的问题进入 ReAct，允许模型根据工具观察结果继续处理，最多执行两轮工具。Java 已经准备本地证据时固定使用 Direct 且禁用工具，避免重复检索。
+
+接口仍支持显式指定 `direct` 或 `react`。响应返回实际采用的 `strategy` 和不包含隐藏思维链的 `strategyReason`，日志只记录请求策略、最终策略、原因码和 `traceId`。
+
+### 9. 检索效果可以量化评估
 
 管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。独立的 LLM 成本评测支持模拟或真实调用，统计输入/输出 Token、本地绕过率、平均调用成本和规则通过率。修改检索权重、Rerank、拒答阈值或证据预算后，可以使用统一题库比较优化效果。
 
-### 9. 本地数据与外部模型解耦
+### 10. 本地数据与外部模型解耦
 
 歌曲文件、用户数据、FAISS 索引和检索逻辑保存在本地。DeepSeek 只由服务端调用，API Key 不会发送到浏览器。歌库统计、收藏查询、歌手歌曲列表等问题直接由本地逻辑回答；需要模型时再按意图发送最少量证据。未配置 DeepSeek 时，系统仍可使用本地规则和检索能力。
 
-### 10. AI 与完整音乐业务结合
+### 11. AI 与完整音乐业务结合
 
 系统还包含歌曲上传、封面与歌词、多类型标签、评论点赞、头像昵称、自建歌单、顺序或随机播放、每日推荐和播放统计。AI 助手直接使用这些业务数据，而不是一个与系统分离的聊天页面。
 

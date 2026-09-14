@@ -35,7 +35,7 @@ public class AgentServiceClient {
             options.put("provider", "deepseek");
             options.put("model", model);
             options.put("temperature", temperature);
-            options.put("strategy", "direct");
+            options.put("strategy", "auto");
 
             JSONObject request = new JSONObject();
             request.put("protocolVersion", "1.0");

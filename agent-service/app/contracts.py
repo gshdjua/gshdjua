@@ -13,7 +13,7 @@ class AgentOptions(BaseModel):
     provider: str = "deepseek"
     model: Optional[str] = None
     temperature: float = Field(default=0.4, ge=0.0, le=2.0)
-    strategy: str = "direct"
+    strategy: Literal["auto", "direct", "react"] = "auto"
 
 
 class AgentChatRequest(BaseModel):
@@ -39,6 +39,7 @@ class AgentChatResponse(BaseModel):
     provider: str
     model: str
     strategy: str
+    strategyReason: str = ""
     usage: TokenUsage
     finishReason: str = "stop"
     latencyMs: int

@@ -61,6 +61,8 @@ def health() -> dict:
         "memoryStore": "mysql",
         "memoryAvailable": memory_repository.available(),
         "tools": [item.name for item in tool_registry.descriptors()],
+        "strategies": ["auto", "direct", "react"],
+        "defaultStrategy": "auto",
     }
 
 
@@ -109,6 +111,7 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "model": model_name,
                 "temperature": payload.options.temperature,
                 "strategy": payload.options.strategy,
+                "user_message": raw_user_message,
                 "request_id": payload.requestId,
                 "trace_id": payload.metadata.get("traceId", payload.requestId),
                 "user_id": payload.userId,
@@ -137,7 +140,8 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             answer=str(response.content),
             provider=payload.options.provider,
             model=model_name,
-            strategy=payload.options.strategy,
+            strategy=state["selected_strategy"],
+            strategyReason=state["strategy_reason"],
             usage=extract_usage(response),
             finishReason=str(response.response_metadata.get("finish_reason", "stop")),
             latencyMs=round((time.perf_counter() - started) * 1000),
