@@ -59,6 +59,10 @@ class ToolRegistry:
             for item in self._tools.values()
         ]
 
+    def is_read_only(self, name: str) -> bool:
+        definition = self._tools.get(name)
+        return definition.read_only if definition is not None else False
+
     def invoke(self, name: str, arguments: Dict[str, Any], context: ToolContext) -> ToolExecutionResult:
         definition = self._tools.get(name)
         if definition is None:

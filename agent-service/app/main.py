@@ -1,3 +1,4 @@
+import logging
 import time
 from typing import List
 
@@ -9,6 +10,7 @@ from .contracts import (
     AgentChatRequest,
     AgentChatResponse,
     AgentMessage,
+    ExecutionBudgetReport,
     MemoryCaptureRequest,
     MemoryRecord,
     MemorySettingsUpdate,
@@ -22,6 +24,7 @@ from .tools.models import ToolCatalogResponse
 
 
 app = FastAPI(title="MusicHub Agent Service", version="0.1.0")
+LOGGER = logging.getLogger(__name__)
 
 
 def should_enable_tools(messages: List[AgentMessage]) -> bool:
@@ -34,19 +37,6 @@ def to_langchain_message(role: str, content: str):
     if role == "assistant":
         return AIMessage(content=content)
     return HumanMessage(content=content)
-
-
-def extract_usage(message: AIMessage) -> TokenUsage:
-    usage = message.usage_metadata or {}
-    response_usage = message.response_metadata.get("token_usage", {})
-    input_tokens = int(usage.get("input_tokens", response_usage.get("prompt_tokens", 0)) or 0)
-    output_tokens = int(usage.get("output_tokens", response_usage.get("completion_tokens", 0)) or 0)
-    total_tokens = int(usage.get("total_tokens", response_usage.get("total_tokens", 0)) or 0)
-    return TokenUsage(
-        inputTokens=input_tokens,
-        outputTokens=output_tokens,
-        totalTokens=total_tokens or input_tokens + output_tokens,
-    )
 
 
 @app.get("/health")
@@ -63,6 +53,8 @@ def health() -> dict:
         "tools": [item.name for item in tool_registry.descriptors()],
         "strategies": ["auto", "direct", "react"],
         "defaultStrategy": "auto",
+        "costBudgets": ["low", "standard", "high"],
+        "defaultCostBudget": "standard",
     }
 
 
@@ -111,11 +103,20 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "model": model_name,
                 "temperature": payload.options.temperature,
                 "strategy": payload.options.strategy,
+                "cost_budget": payload.options.costBudget,
                 "user_message": raw_user_message,
                 "request_id": payload.requestId,
                 "trace_id": payload.metadata.get("traceId", payload.requestId),
                 "user_id": payload.userId,
                 "tool_rounds": 0,
+                "tool_calls": 0,
+                "model_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "execution_started_at": time.monotonic(),
+                "budget_exhausted": False,
+                "budget_stop_reason": "",
                 "tools_enabled": should_enable_tools(payload.messages),
             }
         )
@@ -135,6 +136,19 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             payload.requestId,
             raw_user_message,
         )
+        LOGGER.info(
+            "Agent budget usage: level=%s modelCalls=%s toolCalls=%s toolRounds=%s "
+            "totalTokens=%s elapsedMs=%s exceeded=%s stopReason=%s traceId=%s",
+            state["cost_budget"],
+            state.get("model_calls", 0),
+            state.get("tool_calls", 0),
+            state.get("tool_rounds", 0),
+            state.get("total_tokens", 0),
+            round((time.perf_counter() - started) * 1000),
+            state.get("budget_exhausted", False),
+            state.get("budget_stop_reason", ""),
+            payload.metadata.get("traceId", payload.requestId),
+        )
         return AgentChatResponse(
             requestId=payload.requestId,
             answer=str(response.content),
@@ -142,8 +156,30 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             model=model_name,
             strategy=state["selected_strategy"],
             strategyReason=state["strategy_reason"],
-            usage=extract_usage(response),
-            finishReason=str(response.response_metadata.get("finish_reason", "stop")),
+            usage=TokenUsage(
+                inputTokens=state.get("input_tokens", 0),
+                outputTokens=state.get("output_tokens", 0),
+                totalTokens=state.get("total_tokens", 0),
+            ),
+            budget=ExecutionBudgetReport(
+                level=state["cost_budget"],
+                modelCalls=state.get("model_calls", 0),
+                toolCalls=state.get("tool_calls", 0),
+                toolRounds=state.get("tool_rounds", 0),
+                maxModelCalls=state["max_model_calls"],
+                maxToolCalls=state["max_tool_calls"],
+                maxToolRounds=state["max_tool_rounds"],
+                maxTotalTokens=state["max_total_tokens"],
+                maxExecutionMs=state["max_execution_ms"],
+                elapsedMs=round((time.perf_counter() - started) * 1000),
+                exceeded=state.get("budget_exhausted", False),
+                stopReason=state.get("budget_stop_reason", ""),
+            ),
+            finishReason=(
+                "budget"
+                if state.get("budget_exhausted", False)
+                else str(response.response_metadata.get("finish_reason", "stop"))
+            ),
             latencyMs=round((time.perf_counter() - started) * 1000),
         )
     except ValueError as error:

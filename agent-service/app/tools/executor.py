@@ -173,7 +173,14 @@ class ToolExecutor:
             if not last_error.retryable or attempt >= attempts:
                 break
             if self._retry_backoff_seconds:
-                time.sleep(self._retry_backoff_seconds * (2 ** (attempt - 1)))
+                delay = self._retry_backoff_seconds * (2 ** (attempt - 1))
+                if context.deadline_monotonic is not None:
+                    remaining = context.deadline_monotonic - time.monotonic()
+                    if remaining <= 0:
+                        last_error = ToolInvocationError("TOOL_TIMEOUT", "工具调用超时", True)
+                        break
+                    delay = min(delay, remaining)
+                time.sleep(delay)
 
         if last_error is not None and last_error.retryable:
             self._circuit_breaker.record_failure(definition.name)
@@ -192,10 +199,16 @@ class ToolExecutor:
 
     @staticmethod
     def _invoke_once(definition: "ToolDefinition", validated, context: ToolContext) -> Any:
+        timeout_seconds = definition.timeout_seconds
+        if context.deadline_monotonic is not None:
+            remaining = context.deadline_monotonic - time.monotonic()
+            if remaining <= 0:
+                raise FutureTimeoutError()
+            timeout_seconds = min(timeout_seconds, remaining)
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-tool")
         future = executor.submit(definition.handler, validated, context)
         try:
-            return future.result(timeout=definition.timeout_seconds)
+            return future.result(timeout=timeout_seconds)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 

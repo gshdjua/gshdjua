@@ -36,6 +36,7 @@ public class AgentServiceClient {
             options.put("model", model);
             options.put("temperature", temperature);
             options.put("strategy", "auto");
+            options.put("costBudget", "standard");
 
             JSONObject request = new JSONObject();
             request.put("protocolVersion", "1.0");

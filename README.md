@@ -122,9 +122,11 @@ LangGraph 可以根据模型返回的工具调用进入工具节点，执行完�
 
 ### 8. Direct 与 ReAct 推理策略
 
-Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`。Java 客户端默认请求 `auto`：单步骤收藏、推荐、歌曲详情或检索问题由 Direct 策略直接生成一个结构化工具调用，再让模型基于结果生成回答，省去一次模型选工具调用；包含比较、分析或多个工具意图的问题进入 ReAct，允许模型根据工具观察结果继续处理，最多执行两轮工具。Java 已经准备本地证据时固定使用 Direct 且禁用工具，避免重复检索。
+Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`。Java 客户端默认请求 `auto`：单步骤收藏、推荐、歌曲详情或检索问题由 Direct 策略直接生成一个结构化工具调用，再让模型基于结果生成回答，省去一次模型选工具调用；包含比较、分析或多个工具意图的问题进入 ReAct，允许模型根据工具观察结果继续处理，工具轮数由成本预算限制。Java 已经准备本地证据时固定使用 Direct 且禁用工具，避免重复检索。
 
 接口仍支持显式指定 `direct` 或 `react`。响应返回实际采用的 `strategy` 和不包含隐藏思维链的 `strategyReason`，日志只记录请求策略、最终策略、原因码和 `traceId`。
+
+策略路由支持 `low`、`standard` 和 `high` 三档成本预算。低预算强制使用单步 Direct；标准预算允许最多 3 次模型调用、2 轮及 4 次工具调用；高预算允许最多 4 次模型调用、3 轮及 6 次工具调用。每档还限制累计 Token 和总执行时间，DeepSeek 单次请求使用当前剩余时间作为超时值，并关闭 SDK 隐式重试。达到模型、工具、Token 或时间限制后不再继续推理，响应通过 `budget` 返回实际模型调用数、工具调用数、工具轮次、累计 Token、耗时和停止原因。多轮 ReAct 的 Token 会跨所有模型调用汇总，而不是只统计最终回答。
 
 ### 9. 检索效果可以量化评估
 

@@ -58,6 +58,7 @@ class ToolContext(BaseModel):
     request_id: str
     trace_id: str
     user_id: Optional[str] = None
+    deadline_monotonic: Optional[float] = Field(default=None, exclude=True)
 
 
 class ToolError(BaseModel):

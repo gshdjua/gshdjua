@@ -31,4 +31,11 @@ class AssistantQueryUnderstandingServiceTest {
         assertEquals(java.util.Arrays.asList("轻音乐", "动漫"), service.requestedGenres("推荐动漫类型的轻音乐歌曲"));
         assertTrue(service.requestedGenres("请推荐一些轻松的歌曲").isEmpty());
     }
+
+    @Test
+    void personalFavoriteScopeTakesPriorityOverGenreQuery() {
+        assertEquals(AssistantIntent.FAVORITES, service.classify("我的收藏里动漫类型的歌曲有几首"));
+        assertEquals(AssistantIntent.FAVORITES, service.classify("我收藏的摇滚歌曲有哪些"));
+        assertEquals(AssistantIntent.GENRE_QUERY, service.classify("歌库中动漫类型的歌曲有几首"));
+    }
 }

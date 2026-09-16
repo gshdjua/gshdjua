@@ -165,6 +165,28 @@ class RecommendationFavoriteExclusionTest {
         assertTrue(reply.contains("目前只有 4 首可推荐"));
     }
 
+    @Test
+    void favoriteGenreQueryFiltersCurrentUsersFavoritesAndExplainsTruncatedDisplay() {
+        AudioMapper audioMapper = mock(AudioMapper.class);
+        MusicLibraryAgent agent = new MusicLibraryAgent();
+        ReflectionTestUtils.setField(agent, "audioMapper", audioMapper);
+        ReflectionTestUtils.setField(agent, "queryUnderstandingService", new AssistantQueryUnderstandingService());
+
+        List<Audio> favorites = new java.util.ArrayList<>();
+        for (int index = 1; index <= 7; index++) {
+            favorites.add(audio(index, "动漫收藏" + index, "歌手" + index, "动漫"));
+        }
+        favorites.add(audio(8, "摇滚收藏", "摇滚歌手", "摇滚"));
+        when(audioMapper.selectAll()).thenReturn(favorites);
+        when(audioMapper.selectUserCollects(10)).thenReturn(favorites);
+
+        String reply = agent.reply("我的收藏里动漫类型的歌曲有几首", 10, AssistantIntent.FAVORITES);
+
+        assertTrue(reply.contains("你的收藏中同时属于“动漫”类型的歌曲有 7 首"));
+        assertTrue(reply.contains("以下展示前 6 首"));
+        assertFalse(reply.contains("摇滚收藏"));
+    }
+
     private Audio audio(int id, String songName, String singer, String genre) {
         Audio audio = new Audio();
         audio.setId(id);

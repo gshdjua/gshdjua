@@ -94,6 +94,28 @@ class ToolRegistryTest(unittest.TestCase):
         self.assertTrue(result.error.retryable)
         self.assertEqual(1, result.attempts)
 
+    def test_request_deadline_prevents_late_tool_execution(self):
+        calls = []
+        registry = ToolRegistry(executor=ToolExecutor(max_attempts=1, retry_backoff_seconds=0))
+        registry.register(ToolDefinition(
+            name="deadline",
+            description="test",
+            args_model=ExampleArgs,
+            handler=lambda arguments, context: calls.append(1),
+            timeout_seconds=1,
+        ))
+        context = ToolContext(
+            request_id="request-deadline",
+            trace_id="trace-deadline",
+            deadline_monotonic=time.monotonic() - 1,
+        )
+
+        result = registry.invoke("deadline", {"query": "动漫"}, context)
+
+        self.assertFalse(result.success)
+        self.assertEqual("TOOL_TIMEOUT", result.error.code)
+        self.assertEqual([], calls)
+
     def test_authenticated_tool_is_rejected_before_handler_execution(self):
         calls = []
         registry = ToolRegistry()

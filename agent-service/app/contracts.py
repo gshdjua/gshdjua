@@ -14,6 +14,7 @@ class AgentOptions(BaseModel):
     model: Optional[str] = None
     temperature: float = Field(default=0.4, ge=0.0, le=2.0)
     strategy: Literal["auto", "direct", "react"] = "auto"
+    costBudget: Literal["low", "standard", "high"] = "standard"
 
 
 class AgentChatRequest(BaseModel):
@@ -32,6 +33,21 @@ class TokenUsage(BaseModel):
     totalTokens: int = 0
 
 
+class ExecutionBudgetReport(BaseModel):
+    level: str
+    modelCalls: int = 0
+    toolCalls: int = 0
+    toolRounds: int = 0
+    maxModelCalls: int
+    maxToolCalls: int
+    maxToolRounds: int
+    maxTotalTokens: int
+    maxExecutionMs: int
+    elapsedMs: int = 0
+    exceeded: bool = False
+    stopReason: str = ""
+
+
 class AgentChatResponse(BaseModel):
     protocolVersion: str = "1.0"
     requestId: str
@@ -41,6 +57,7 @@ class AgentChatResponse(BaseModel):
     strategy: str
     strategyReason: str = ""
     usage: TokenUsage
+    budget: ExecutionBudgetReport
     finishReason: str = "stop"
     latencyMs: int
 

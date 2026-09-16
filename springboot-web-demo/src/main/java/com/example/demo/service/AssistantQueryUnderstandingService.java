@@ -68,6 +68,11 @@ public class AssistantQueryUnderstandingService {
         if (!requestedGenres.isEmpty() && containsAny(normalized, "推荐", "安利", "听什么", "听啥", "来几首", "给我几首")) {
             return AssistantIntent.RECOMMENDATION;
         }
+        // “我的收藏里有哪些动漫歌曲”同时包含收藏、类型和歌曲。个人收藏是数据范围，
+        // 必须先于普通类型查询判断；但“收藏量最高”仍属于全站热度/歌库查询。
+        if (isPersonalFavoriteQuery(normalized)) {
+            return AssistantIntent.FAVORITES;
+        }
         if (!requestedGenres.isEmpty() && normalized.contains("类型")
                 && containsAny(normalized, "哪些", "有什么", "歌曲", "音乐", "歌")) {
             return AssistantIntent.GENRE_QUERY;
@@ -105,6 +110,12 @@ public class AssistantQueryUnderstandingService {
             return AssistantIntent.SONG_METADATA;
         }
         return AssistantIntent.GENERAL;
+    }
+
+    private boolean isPersonalFavoriteQuery(String normalized) {
+        if (containsAny(normalized, "我的收藏", "我收藏", "收藏夹", "favorite")) return true;
+        return normalized.contains("收藏") && !containsAny(normalized,
+                "收藏量", "收藏数", "收藏次数", "收藏最多", "收藏最高", "高收藏");
     }
 
     public List<String> requestedGenres(String message) {

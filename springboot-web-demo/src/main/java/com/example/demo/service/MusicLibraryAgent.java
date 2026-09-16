@@ -64,8 +64,16 @@ public class MusicLibraryAgent {
         }
         if (intent == AssistantIntent.FAVORITES) {
             List<Audio> favorites = audioMapper.selectUserCollects(userId);
-            return favorites.isEmpty() ? "你的收藏夹目前还是空的。"
-                    : "你收藏了 " + favorites.size() + " 首歌：" + readableSongList(favorites, 5) + "。";
+            List<String> requestedGenres = queryUnderstandingService.requestedGenres(message);
+            if (requestedGenres.isEmpty()) {
+                return favorites.isEmpty() ? "你的收藏夹目前还是空的。"
+                        : countedSongReply("你收藏了", favorites, 5);
+            }
+            List<Audio> matches = favorites.stream()
+                    .filter(song -> MusicGenreUtils.containsAll(song.getGenre(), requestedGenres))
+                    .collect(Collectors.toList());
+            String scope = "你的收藏中同时属于“" + String.join(" + ", requestedGenres) + "”类型的歌曲";
+            return matches.isEmpty() ? scope + "有 0 首。" : countedSongReply(scope + "有", matches, 6);
         }
         if (intent == AssistantIntent.GENRE_QUERY) return readableGenreReply(songs, queryUnderstandingService.normalize(message));
         if (intent == AssistantIntent.LIBRARY_QUERY) {
@@ -425,6 +433,13 @@ public class MusicLibraryAgent {
         return songs.stream().limit(limit)
                 .map(song -> "《" + song.getSongName() + "》- " + song.getSinger())
                 .collect(Collectors.joining("；"));
+    }
+
+    private String countedSongReply(String prefix, List<Audio> songs, int displayLimit) {
+        int shown = Math.min(displayLimit, songs.size());
+        String displayNotice = songs.size() > shown ? "，以下展示前 " + shown + " 首" : "";
+        return prefix + " " + songs.size() + " 首" + displayNotice + "："
+                + readableSongList(songs, shown) + "。";
     }
 
     private String readableGenreReply(List<Audio> songs, String normalizedQuestion) {

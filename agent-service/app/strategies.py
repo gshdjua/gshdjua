@@ -10,10 +10,24 @@ class DirectToolPlan:
 
 
 @dataclass(frozen=True)
+class BudgetLimits:
+    level: str
+    max_model_calls: int
+    max_tool_calls: int
+    max_tool_rounds: int
+    max_total_tokens: int
+    max_execution_ms: int
+
+
+@dataclass(frozen=True)
 class StrategyDecision:
     selected: str
     reason: str
-    max_tool_rounds: int
+    budget: BudgetLimits
+
+    @property
+    def max_tool_rounds(self) -> int:
+        return self.budget.max_tool_rounds
 
 
 class DirectStrategy:
@@ -35,6 +49,10 @@ class DirectStrategy:
         "一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5,
         "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
     }
+    _FAVORITE_FILTER_TERMS = (
+        "轻音乐", "动漫", "动画", "流行", "摇滚", "电子", "嘻哈", "r&b",
+        "民谣", "爵士", "古典", "原声", "游戏",
+    )
 
     def plan(self, message: str) -> Optional[DirectToolPlan]:
         normalized = (message or "").strip().lower()
@@ -76,11 +94,16 @@ class DirectStrategy:
 
     @staticmethod
     def _favorite_filter(message: str) -> Optional[str]:
+        explicit_terms = [term for term in DirectStrategy._FAVORITE_FILTER_TERMS if term in message]
+        if explicit_terms:
+            return "".join(explicit_terms)
         result = message
         for phrase in (
             "请帮我", "帮我", "请", "查看一下", "查询一下", "查看", "查询", "我的",
             "我收藏了", "我收藏的", "收藏了哪些", "收藏了什么", "收藏列表", "收藏",
-            "有哪些", "有什么", "多少首", "哪些", "什么", "歌曲", "音乐", "首歌", "歌",
+            "一共有几首", "共有几首", "有几首", "有哪些", "有什么", "多少首", "几首",
+            "哪些", "什么", "类型的", "类型", "里面", "里", "中", "的",
+            "歌曲", "音乐", "首歌", "歌",
         ):
             result = result.replace(phrase, "")
         result = re.sub(r"[\s，。！？?,.!：:]+", "", result)
@@ -105,25 +128,55 @@ class StrategyRouter:
     _FAVORITE_WORDS = DirectStrategy._FAVORITE_WORDS
     _SEMANTIC_WORDS = DirectStrategy._MOOD_WORDS
     _FACT_WORDS = DirectStrategy._DETAIL_WORDS
+    _BUDGETS = {
+        "low": BudgetLimits("low", 1, 1, 1, 2500, 12000),
+        "standard": BudgetLimits("standard", 3, 4, 2, 8000, 25000),
+        "high": BudgetLimits("high", 4, 6, 3, 16000, 30000),
+    }
 
     def __init__(self) -> None:
         self.direct = DirectStrategy()
         self.react = ReActStrategy()
 
-    def select(self, requested: str, message: str, tools_enabled: bool = True) -> StrategyDecision:
+    @staticmethod
+    def _decision(selected: str, reason: str, budget: BudgetLimits) -> StrategyDecision:
+        if selected == "direct":
+            budget = BudgetLimits(
+                budget.level,
+                min(1, budget.max_model_calls),
+                min(1, budget.max_tool_calls),
+                min(1, budget.max_tool_rounds),
+                budget.max_total_tokens,
+                budget.max_execution_ms,
+            )
+        return StrategyDecision(selected, reason, budget)
+
+    def select(
+        self,
+        requested: str,
+        message: str,
+        tools_enabled: bool = True,
+        cost_budget: str = "standard",
+    ) -> StrategyDecision:
         normalized_request = (requested or "auto").strip().lower()
         if normalized_request not in ("auto", "direct", "react"):
             raise ValueError("Unsupported strategy: " + normalized_request)
+        normalized_budget = (cost_budget or "standard").strip().lower()
+        budget = self._BUDGETS.get(normalized_budget)
+        if budget is None:
+            raise ValueError("Unsupported cost budget: " + normalized_budget)
         if not tools_enabled:
-            return StrategyDecision("direct", "prepared_evidence", self.direct.max_tool_rounds)
+            return self._decision("direct", "prepared_evidence", budget)
+        if budget.level == "low" and normalized_request != "direct":
+            return self._decision("direct", "budget_limited", budget)
         if normalized_request == "direct":
-            return StrategyDecision("direct", "requested_direct", self.direct.max_tool_rounds)
+            return self._decision("direct", "requested_direct", budget)
         if normalized_request == "react":
-            return StrategyDecision("react", "requested_react", self.react.max_tool_rounds)
+            return self._decision("react", "requested_react", budget)
 
         normalized_message = (message or "").strip().lower()
         if DirectStrategy._contains(normalized_message, self._COMPLEX_WORDS):
-            return StrategyDecision("react", "complex_request", self.react.max_tool_rounds)
+            return self._decision("react", "complex_request", budget)
         intent_groups = sum((
             DirectStrategy._contains(normalized_message, self._RECOMMEND_WORDS),
             DirectStrategy._contains(normalized_message, self._FAVORITE_WORDS),
@@ -131,8 +184,8 @@ class StrategyRouter:
             DirectStrategy._contains(normalized_message, self._FACT_WORDS),
         ))
         if intent_groups >= 2:
-            return StrategyDecision("react", "multiple_tool_intents", self.react.max_tool_rounds)
-        return StrategyDecision("direct", "single_step_request", self.direct.max_tool_rounds)
+            return self._decision("react", "multiple_tool_intents", budget)
+        return self._decision("direct", "single_step_request", budget)
 
 
 strategy_router = StrategyRouter()
