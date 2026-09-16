@@ -23,6 +23,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -42,6 +43,7 @@ public class DeepSeekMusicAgent {
             "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"
     };
     private final ThreadLocal<ApiUsage> lastApiUsage = new ThreadLocal<>();
+    private final ThreadLocal<AgentServiceClient.AgentResult> lastAgentResult = new ThreadLocal<>();
     private final ThreadLocal<MusicLibraryAgent.RecommendationOutcome> currentRecommendationOutcome = new ThreadLocal<>();
     private final ThreadLocal<Long> currentConversationId = new ThreadLocal<>();
     private final ThreadLocal<Integer> currentUserId = new ThreadLocal<>();
@@ -168,6 +170,8 @@ public class DeepSeekMusicAgent {
             currentUserId.remove();
             currentRequestId.remove();
             currentRecommendationOutcome.remove();
+            lastApiUsage.remove();
+            lastAgentResult.remove();
         }
     }
 
@@ -430,6 +434,7 @@ public class DeepSeekMusicAgent {
                 messages, modelName, 0.4, message, currentConversationId.get(), currentUserId.get(),
                 currentRequestId.get());
         if (agentResult != null) {
+            lastAgentResult.set(agentResult);
             lastApiUsage.set(new ApiUsage(agentResult.getInputTokens(), agentResult.getOutputTokens(), agentResult.getTotalTokens()));
             return ensureEvidenceReferences(agentResult.getAnswer(), evidenceContext);
         }
@@ -440,6 +445,7 @@ public class DeepSeekMusicAgent {
         requestBody.put("messages", messages);
 
         lastApiUsage.remove();
+        lastAgentResult.remove();
         HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
         connection.setRequestMethod("POST");
         connection.setConnectTimeout(10000);
@@ -492,6 +498,18 @@ public class DeepSeekMusicAgent {
     public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
                                                 boolean realCall, int expectedOutputTokens,
                                                 double inputPricePerMillion, double outputPricePerMillion) {
+        return evaluateLlmCost(message, userId, history, realCall, expectedOutputTokens,
+                inputPricePerMillion, outputPricePerMillion, "production", "auto", "standard");
+    }
+
+    public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
+                                                boolean realCall, int expectedOutputTokens,
+                                                double inputPricePerMillion, double outputPricePerMillion,
+                                                String executionTarget, String requestedStrategy, String costBudget) {
+        if ("agent_native".equalsIgnoreCase(executionTarget)) {
+            return evaluateAgentNativeCost(message, userId, realCall, expectedOutputTokens,
+                    inputPricePerMillion, outputPricePerMillion, requestedStrategy, costBudget);
+        }
         long startTime = System.currentTimeMillis();
         CostPreview preview = buildCostPreview(message, userId, history);
         int inputTokens = preview.modelRequired
@@ -499,27 +517,46 @@ public class DeepSeekMusicAgent {
                 : 0;
         int outputTokens = preview.modelRequired ? Math.max(1, expectedOutputTokens) : 0;
         boolean actualUsage = false;
-        String answer = "";
+        AgentServiceClient.AgentResult agentExecution = null;
         if (realCall && preview.modelRequired && isExternalModelConfigured()) {
             lastApiUsage.remove();
-            answer = reply(message, userId, history);
+            lastAgentResult.remove();
+            reply(message, userId, history);
             ApiUsage usage = lastApiUsage.get();
+            agentExecution = lastAgentResult.get();
             if (usage != null) {
                 inputTokens = usage.promptTokens;
                 outputTokens = usage.completionTokens;
                 actualUsage = true;
             }
             lastApiUsage.remove();
+            lastAgentResult.remove();
         }
         int totalTokens = inputTokens + outputTokens;
         double estimatedCost = inputTokens / 1_000_000d * Math.max(0d, inputPricePerMillion)
                 + outputTokens / 1_000_000d * Math.max(0d, outputPricePerMillion);
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("evaluationVersion", "2.0");
+        result.put("executionTarget", "production");
         result.put("intent", preview.intent.name());
         result.put("modelRequired", preview.modelRequired);
         result.put("modelConfigured", isExternalModelConfigured());
         result.put("realCallRequested", realCall);
         result.put("actualUsage", actualUsage);
+        boolean modelExecutedOrEstimated = preview.modelRequired && (!realCall || actualUsage);
+        result.put("executionPath", !preview.modelRequired ? "local" : agentExecution != null ? "agent"
+                : !realCall ? "estimated_agent" : actualUsage ? "direct_model_fallback" : "model_unavailable");
+        result.put("traceId", agentExecution == null ? "" : agentExecution.getTraceId());
+        result.put("selectedStrategy", agentExecution == null ? (preview.modelRequired ? "direct" : "local") : agentExecution.getStrategy());
+        result.put("strategyReason", agentExecution == null ? (preview.modelRequired ? "estimated" : "local_rule") : agentExecution.getStrategyReason());
+        result.put("costBudget", agentExecution == null ? (preview.modelRequired ? "standard" : "none") : agentExecution.getCostBudget());
+        result.put("modelCalls", agentExecution == null ? (modelExecutedOrEstimated ? 1 : 0) : agentExecution.getModelCalls());
+        result.put("toolCalls", agentExecution == null ? 0 : agentExecution.getToolCalls());
+        result.put("toolRounds", agentExecution == null ? 0 : agentExecution.getToolRounds());
+        result.put("toolExecutions", agentExecution == null ? Collections.emptyList() : agentExecution.getToolExecutions());
+        result.put("budgetExceeded", agentExecution != null && agentExecution.isBudgetExceeded());
+        result.put("stopReason", agentExecution == null ? "" : agentExecution.getStopReason());
+        result.put("finishReason", agentExecution == null ? (preview.modelRequired ? "estimated" : "local") : agentExecution.getFinishReason());
         result.put("retrievalTopK", CONVERSATION_RETRIEVAL_TOP_K);
         result.put("plannedEvidenceTopK", preview.plannedEvidenceTopK);
         result.put("evidenceCount", preview.evidenceCount);
@@ -527,9 +564,85 @@ public class DeepSeekMusicAgent {
         result.put("outputTokens", outputTokens);
         result.put("totalTokens", totalTokens);
         result.put("estimatedCost", estimatedCost);
-        result.put("elapsedMs", System.currentTimeMillis() - startTime);
-        result.put("answerPreview", answer.length() > 300 ? answer.substring(0, 300) + "…" : answer);
+        result.put("elapsedMs", agentExecution == null ? System.currentTimeMillis() - startTime : agentExecution.getLatencyMs());
         return result;
+    }
+
+    private Map<String, Object> evaluateAgentNativeCost(String message, Integer userId, boolean realCall,
+                                                         int expectedOutputTokens, double inputPricePerMillion,
+                                                         double outputPricePerMillion, String requestedStrategy,
+                                                         String costBudget) {
+        long startTime = System.currentTimeMillis();
+        Map<String, Object> preview = agentServiceClient.previewStrategy(
+                message, requestedStrategy, costBudget);
+        String selectedStrategy = textValue(preview == null ? null : preview.get("selectedStrategy"),
+                normalizeEvaluationStrategy(requestedStrategy));
+        String strategyReason = textValue(preview == null ? null : preview.get("strategyReason"),
+                preview == null ? "preview_unavailable" : "");
+        String budget = textValue(preview == null ? null : preview.get("costBudget"),
+                normalizeEvaluationBudget(costBudget));
+        String plannedTool = textValue(preview == null ? null : preview.get("plannedTool"), "");
+        AgentServiceClient.AgentResult execution = realCall
+                ? agentServiceClient.chatNativeEvaluation(message, userId, requestedStrategy, costBudget)
+                : null;
+
+        boolean executed = execution != null;
+        int inputTokens = executed ? execution.getInputTokens()
+                : realCall ? 0 : estimateTokens("MusicHub Agent native evaluation " + message);
+        int outputTokens = executed ? execution.getOutputTokens()
+                : realCall ? 0 : Math.max(1, expectedOutputTokens);
+        int totalTokens = inputTokens + outputTokens;
+        int modelCalls = executed ? execution.getModelCalls()
+                : realCall ? 0 : ("react".equals(selectedStrategy) ? 2 : 1);
+        double estimatedCost = inputTokens / 1_000_000d * Math.max(0d, inputPricePerMillion)
+                + outputTokens / 1_000_000d * Math.max(0d, outputPricePerMillion);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("evaluationVersion", "2.0");
+        result.put("executionTarget", "agent_native");
+        result.put("intent", "AGENT_NATIVE");
+        result.put("modelRequired", true);
+        result.put("modelConfigured", isExternalModelConfigured());
+        result.put("realCallRequested", realCall);
+        result.put("actualUsage", executed);
+        result.put("executionPath", !realCall ? "estimated_agent_native"
+                : executed ? "agent_native" : "agent_unavailable");
+        result.put("traceId", executed ? execution.getTraceId() : "");
+        result.put("selectedStrategy", executed ? execution.getStrategy() : selectedStrategy);
+        result.put("strategyReason", executed ? execution.getStrategyReason() : strategyReason);
+        result.put("costBudget", executed ? execution.getCostBudget() : budget);
+        result.put("modelCalls", executed ? execution.getModelCalls() : modelCalls);
+        result.put("toolCalls", executed ? execution.getToolCalls() : 0);
+        result.put("toolRounds", executed ? execution.getToolRounds() : 0);
+        result.put("toolExecutions", executed ? execution.getToolExecutions() : Collections.emptyList());
+        result.put("plannedTool", plannedTool);
+        result.put("budgetExceeded", executed && execution.isBudgetExceeded());
+        result.put("stopReason", executed ? execution.getStopReason() : "");
+        result.put("finishReason", executed ? execution.getFinishReason() : "estimated");
+        result.put("retrievalTopK", 0);
+        result.put("plannedEvidenceTopK", 0);
+        result.put("evidenceCount", 0);
+        result.put("inputTokens", inputTokens);
+        result.put("outputTokens", outputTokens);
+        result.put("totalTokens", totalTokens);
+        result.put("estimatedCost", estimatedCost);
+        result.put("elapsedMs", executed ? execution.getLatencyMs() : System.currentTimeMillis() - startTime);
+        return result;
+    }
+
+    private String normalizeEvaluationStrategy(String value) {
+        String normalized = value == null ? "auto" : value.trim().toLowerCase();
+        return "direct".equals(normalized) || "react".equals(normalized) ? normalized : "direct";
+    }
+
+    private String normalizeEvaluationBudget(String value) {
+        String normalized = value == null ? "standard" : value.trim().toLowerCase();
+        return "low".equals(normalized) || "high".equals(normalized) ? normalized : "standard";
+    }
+
+    private String textValue(Object value, String fallback) {
+        String result = value == null ? "" : String.valueOf(value).trim();
+        return result.isEmpty() ? fallback : result;
     }
 
     private CostPreview buildCostPreview(String message, Integer userId, List<Map<String, String>> history) {

@@ -270,7 +270,9 @@ export default {
       try {
         const res = await request.get('/user/isCollected/' + this.audio.id)
         if (res.data.code === 200) this.isCollected = res.data.data
-      } catch (e) {}
+      } catch (e) {
+        console.warn('收藏状态加载失败:', e)
+      }
     },
     getAudioUrl(path) {
       if (!path) return ''
@@ -424,7 +426,9 @@ export default {
           this.isCollected = true
           this.audio.collectCount = (this.audio.collectCount || 0) + 1
         }
-      } catch (e) {}
+      } catch (e) {
+        alert(e.response?.data?.msg || '收藏操作失败，请稍后重试')
+      }
     },
     async openAddToPlaylistDialog() {
       if (!this.audio) return
@@ -462,7 +466,10 @@ export default {
       this.hasRecordedCurrentPlayback = true
       try {
         await request.post('/user/play/' + this.audio.id)
-      } catch (e) {}
+      } catch (e) {
+        this.hasRecordedCurrentPlayback = false
+        console.warn('播放记录保存失败，后续将允许重试:', e)
+      }
     },
     async loadComments() {
       if (!this.audio) return
@@ -492,7 +499,9 @@ export default {
           this.commentInput = ''
           await this.loadComments()
         }
-      } catch (e) {} finally {
+      } catch (e) {
+        alert(e.response?.data?.msg || '评论发布失败，请稍后重试')
+      } finally {
         this.commentSubmitting = false
       }
     },
@@ -505,14 +514,18 @@ export default {
           comment.likeCount = res.data.data.likeCount
           if (this.commentSort === 'hot') this.loadComments()
         }
-      } catch (e) {}
+      } catch (e) {
+        alert(e.response?.data?.msg || '点赞操作失败，请稍后重试')
+      }
     },
     async deleteComment(comment) {
       if (!comment || !window.confirm('确定删除这条评论吗？')) return
       try {
         const res = await request.delete('/user/comments/' + comment.id)
         if (res.data.code === 200) this.comments = this.comments.filter(item => item.id !== comment.id)
-      } catch (e) {}
+      } catch (e) {
+        alert(e.response?.data?.msg || '评论删除失败，请稍后重试')
+      }
     },
     setCommentSort(sort) {
       if (this.commentSort === sort) return

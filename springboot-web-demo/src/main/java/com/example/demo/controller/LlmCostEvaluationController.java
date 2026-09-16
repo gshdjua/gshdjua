@@ -1,6 +1,7 @@
 package com.example.demo.controller;
 
 import com.example.demo.service.DeepSeekMusicAgent;
+import com.example.demo.service.AgentServiceClient;
 import com.example.demo.service.LlmCostEvaluationDatasetService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -26,6 +27,9 @@ public class LlmCostEvaluationController {
 
     @Autowired
     private DeepSeekMusicAgent musicAgent;
+
+    @Autowired
+    private AgentServiceClient agentServiceClient;
 
     @GetMapping("/cases")
     public Map<String, Object> cases() {
@@ -65,12 +69,25 @@ public class LlmCostEvaluationController {
         double inputPrice = decimal(payload.get("inputPricePerMillion"), 0d);
         double outputPrice = decimal(payload.get("outputPricePerMillion"), 0d);
         Integer userId = nullableInteger(payload.get("userId"));
+        String executionTarget = text(payload.get("executionTarget"));
+        String requestedStrategy = text(payload.get("requestedStrategy"));
+        String costBudget = text(payload.get("costBudget"));
         try {
             return response(200, "success", musicAgent.evaluateLlmCost(question, userId,
-                    history(payload.get("history")), realCall, expectedOutputTokens, inputPrice, outputPrice));
+                    history(payload.get("history")), realCall, expectedOutputTokens, inputPrice, outputPrice,
+                    executionTarget, requestedStrategy, costBudget));
         } catch (Exception exception) {
             return response(500, "成本评测失败：" + exception.getMessage(), null);
         }
+    }
+
+    @GetMapping("/traces/{traceId}")
+    public Map<String, Object> trace(@PathVariable String traceId) {
+        if (traceId == null || traceId.trim().isEmpty() || traceId.length() > 191) {
+            return response(400, "traceId 不合法", null);
+        }
+        Map<String, Object> data = agentServiceClient.getExecutionAudit(traceId);
+        return data == null ? response(404, "未找到执行审计记录", null) : response(200, "success", data);
     }
 
     private List<Map<String, String>> history(Object value) {

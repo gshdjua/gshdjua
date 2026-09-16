@@ -6,11 +6,16 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -90,5 +95,73 @@ class DeepSeekMusicAgentTest {
 
         assertEquals("没有匹配歌曲", answer);
         verify(libraryAgent).getRecommendationOutcome(question, 7, 5, Collections.emptySet());
+    }
+
+    @Test
+    void costEvaluationV2ReportsLocalBypassWithoutPersistingAnswerPreview() {
+        AssistantQueryUnderstandingService understanding = new AssistantQueryUnderstandingService();
+        EntityQueryParser parser = new EntityQueryParser();
+        ReflectionTestUtils.setField(parser, "queryUnderstandingService", understanding);
+        MusicLibraryAgent libraryAgent = mock(MusicLibraryAgent.class);
+        DeepSeekMusicAgent evaluatedAgent = new DeepSeekMusicAgent();
+        ReflectionTestUtils.setField(evaluatedAgent, "entityQueryParser", parser);
+        ReflectionTestUtils.setField(evaluatedAgent, "queryUnderstandingService", understanding);
+        ReflectionTestUtils.setField(evaluatedAgent, "musicLibraryAgent", libraryAgent);
+        when(libraryAgent.findExactSourceSongs("歌库现在有多少首歌曲？", 5)).thenReturn(Collections.emptyList());
+
+        Map<String, Object> result = evaluatedAgent.evaluateLlmCost(
+                "歌库现在有多少首歌曲？", null, Collections.emptyList(), false, 100, 3, 9);
+
+        assertEquals("2.0", result.get("evaluationVersion"));
+        assertEquals("local", result.get("executionPath"));
+        assertEquals("local", result.get("selectedStrategy"));
+        assertEquals(0, result.get("modelCalls"));
+        assertFalse(result.containsKey("answerPreview"));
+    }
+
+    @Test
+    void agentNativeSimulationUsesAgentStrategyPreviewWithoutExecutingTools() {
+        AgentServiceClient client = mock(AgentServiceClient.class);
+        Map<String, Object> preview = new LinkedHashMap<>();
+        preview.put("selectedStrategy", "direct");
+        preview.put("strategyReason", "single_step_request");
+        preview.put("costBudget", "standard");
+        preview.put("plannedTool", "favorite_search");
+        when(client.previewStrategy("我收藏了哪些动漫歌曲？", "auto", "standard")).thenReturn(preview);
+        DeepSeekMusicAgent evaluatedAgent = new DeepSeekMusicAgent();
+        ReflectionTestUtils.setField(evaluatedAgent, "agentServiceClient", client);
+
+        Map<String, Object> result = evaluatedAgent.evaluateLlmCost(
+                "我收藏了哪些动漫歌曲？", 7, Collections.emptyList(), false, 180, 3, 9,
+                "agent_native", "auto", "standard");
+
+        assertEquals("agent_native", result.get("executionTarget"));
+        assertEquals("estimated_agent_native", result.get("executionPath"));
+        assertEquals("direct", result.get("selectedStrategy"));
+        assertEquals("favorite_search", result.get("plannedTool"));
+        assertEquals(1, result.get("modelCalls"));
+        assertEquals(0, result.get("toolCalls"));
+        verify(client, never()).chatNativeEvaluation(anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void unavailableAgentNativeRealCallDoesNotReportEstimatedUsageAsActual() {
+        AgentServiceClient client = mock(AgentServiceClient.class);
+        Map<String, Object> preview = new LinkedHashMap<>();
+        preview.put("selectedStrategy", "direct");
+        preview.put("costBudget", "standard");
+        preview.put("plannedTool", "song_detail");
+        when(client.previewStrategy(anyString(), anyString(), anyString())).thenReturn(preview);
+        DeepSeekMusicAgent evaluatedAgent = new DeepSeekMusicAgent();
+        ReflectionTestUtils.setField(evaluatedAgent, "agentServiceClient", client);
+
+        Map<String, Object> result = evaluatedAgent.evaluateLlmCost(
+                "介绍 Good knows", 7, Collections.emptyList(), true, 200, 3, 9,
+                "agent_native", "auto", "standard");
+
+        assertEquals("agent_unavailable", result.get("executionPath"));
+        assertEquals(0, result.get("modelCalls"));
+        assertEquals(0, result.get("totalTokens"));
+        assertFalse((Boolean) result.get("actualUsage"));
     }
 }

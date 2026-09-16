@@ -81,6 +81,7 @@ public class LlmCostEvaluationDatasetService {
         if (question.isEmpty()) throw new IllegalArgumentException("问题不能为空");
         if (question.length() > 500) throw new IllegalArgumentException("问题不能超过500个字符");
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schema_version", "2.0");
         result.put("id", id.toUpperCase());
         result.put("category", defaultText(payload.get("category"), "未分类"));
         result.put("question", question);
@@ -88,6 +89,10 @@ public class LlmCostEvaluationDatasetService {
         result.put("expected_evidence_count", clamp(payload.get("expected_evidence_count"), 3, 0, 12));
         result.put("expected_output_tokens", clamp(payload.get("expected_output_tokens"), 300, 1, 4000));
         result.put("expected_model_call", booleanValue(payload.get("expected_model_call")));
+        result.put("expected_strategy", strategy(payload.get("expected_strategy")));
+        result.put("execution_target", executionTarget(payload.get("execution_target")));
+        result.put("cost_budget", costBudget(payload.get("cost_budget")));
+        result.put("expected_tools", expectedTools(payload.get("expected_tools")));
         return result;
     }
 
@@ -157,6 +162,44 @@ public class LlmCostEvaluationDatasetService {
     private String defaultText(Object value, String fallback) {
         String result = text(value);
         return result.isEmpty() ? fallback : result;
+    }
+
+    private String strategy(Object value) {
+        String result = defaultText(value, "AUTO").toLowerCase();
+        if (!("auto".equals(result) || "local".equals(result) || "direct".equals(result) || "react".equals(result))) {
+            throw new IllegalArgumentException("期望策略必须是 AUTO、local、direct 或 react");
+        }
+        return "auto".equals(result) ? "AUTO" : result;
+    }
+
+    private String executionTarget(Object value) {
+        String result = defaultText(value, "production").toLowerCase();
+        if (!("production".equals(result) || "agent_native".equals(result))) {
+            throw new IllegalArgumentException("执行目标必须是 production 或 agent_native");
+        }
+        return result;
+    }
+
+    private String costBudget(Object value) {
+        String result = defaultText(value, "standard").toLowerCase();
+        if (!("low".equals(result) || "standard".equals(result) || "high".equals(result))) {
+            throw new IllegalArgumentException("成本预算必须是 low、standard 或 high");
+        }
+        return result;
+    }
+
+    private List<String> expectedTools(Object value) {
+        List<String> result = new ArrayList<>();
+        if (!(value instanceof List)) return result;
+        List<String> allowed = Arrays.asList(
+                "song_search", "favorite_search", "recommend_songs", "vector_search", "song_detail");
+        for (Object item : (List<?>) value) {
+            String tool = text(item);
+            if (tool.isEmpty() || result.contains(tool)) continue;
+            if (!allowed.contains(tool)) throw new IllegalArgumentException("未知期望工具：" + tool);
+            result.add(tool);
+        }
+        return result;
     }
 
     private String text(Object value) {

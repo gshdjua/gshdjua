@@ -468,7 +468,9 @@ export default {
           localStorage.setItem('avatarPath', this.avatarPath)
           localStorage.setItem('nickname', this.nickname)
         }
-      } catch (err) {}
+      } catch (err) {
+        console.warn('用户资料加载失败，继续使用本地缓存:', err)
+      }
     },
     openNicknameDialog() {
       this.nicknameInput = this.nickname
@@ -513,7 +515,10 @@ export default {
             return
           }
         }
-      } catch (err) {}
+      } catch (err) {
+        localStorage.removeItem(this.dailyRecommendationStorageKey())
+        console.warn('每日推荐缓存无法解析，将重新生成:', err)
+      }
       await this.refreshDailyRecommendations(false)
     },
     async refreshDailyRecommendations(excludeCurrent = false) {
@@ -521,7 +526,9 @@ export default {
       try {
         const res = await request.get('/user/recommendations', { params: { limit: 20 } })
         if (res.data.code === 200 && Array.isArray(res.data.data)) personalizedSongs = res.data.data
-      } catch (err) {}
+      } catch (err) {
+        console.warn('个性化推荐加载失败，已回退到本地歌库:', err)
+      }
 
       const recommendationLimit = Math.min(12, this.audioList.length)
       const uniqueSongs = new Map()
@@ -818,7 +825,9 @@ export default {
       if (audioId && this.activeConversationId) {
         try {
           await request.post(`/assistant/conversations/${this.activeConversationId}/context`, { audioId })
-        } catch (err) {}
+        } catch (err) {
+          console.warn('当前歌曲上下文绑定失败:', err)
+        }
       }
       this.scrollChatToBottom()
     },
@@ -993,7 +1002,8 @@ export default {
     },
     openPlayer(audio) {
       if (this.currentTab === 'assistant' && this.activeConversationId) {
-        request.post(`/assistant/conversations/${this.activeConversationId}/context`, { audioId: audio.id }).catch(() => {})
+        request.post(`/assistant/conversations/${this.activeConversationId}/context`, { audioId: audio.id })
+          .catch(err => console.warn('播放歌曲上下文绑定失败:', err))
       }
       const query = { from: this.currentTab || 'home' }
       this.$router.push({ path: '/player/' + audio.id, query })
@@ -1002,7 +1012,9 @@ export default {
       try {
         const res = await request.get('/assistant/conversations')
         if (res.data.code === 200) this.conversations = res.data.data || []
-      } catch (err) {}
+      } catch (err) {
+        console.warn('会话列表刷新失败:', err)
+      }
     },
     doSearch() {
       if (this.searchKey) this.currentTab = 'music'

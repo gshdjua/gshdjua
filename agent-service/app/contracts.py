@@ -27,6 +27,24 @@ class AgentChatRequest(BaseModel):
     metadata: Dict[str, str] = Field(default_factory=dict)
 
 
+class StrategyPreviewRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    strategy: Literal["auto", "direct", "react"] = "auto"
+    costBudget: Literal["low", "standard", "high"] = "standard"
+
+
+class StrategyPreviewResponse(BaseModel):
+    selectedStrategy: str
+    strategyReason: str
+    costBudget: str
+    plannedTool: str = ""
+    maxModelCalls: int
+    maxToolCalls: int
+    maxToolRounds: int
+    maxTotalTokens: int
+    maxExecutionMs: int
+
+
 class TokenUsage(BaseModel):
     inputTokens: int = 0
     outputTokens: int = 0
@@ -48,9 +66,18 @@ class ExecutionBudgetReport(BaseModel):
     stopReason: str = ""
 
 
+class ToolExecutionAudit(BaseModel):
+    tool: str
+    success: bool
+    attempts: int = 0
+    durationMs: int = 0
+    errorCode: str = ""
+
+
 class AgentChatResponse(BaseModel):
     protocolVersion: str = "1.0"
     requestId: str
+    traceId: str
     answer: str
     provider: str
     model: str
@@ -58,8 +85,34 @@ class AgentChatResponse(BaseModel):
     strategyReason: str = ""
     usage: TokenUsage
     budget: ExecutionBudgetReport
+    toolExecutions: List[ToolExecutionAudit] = Field(default_factory=list)
     finishReason: str = "stop"
     latencyMs: int
+
+
+class ExecutionAuditRecord(BaseModel):
+    traceId: str
+    requestId: str
+    provider: str
+    model: str
+    requestedStrategy: str
+    selectedStrategy: str
+    strategyReason: str = ""
+    costBudget: str
+    modelCalls: int = 0
+    toolCalls: int = 0
+    toolRounds: int = 0
+    toolExecutions: List[ToolExecutionAudit] = Field(default_factory=list)
+    inputTokens: int = 0
+    outputTokens: int = 0
+    totalTokens: int = 0
+    latencyMs: int = 0
+    budgetExceeded: bool = False
+    stopReason: str = ""
+    finishReason: str = ""
+    status: str = "success"
+    errorCode: str = ""
+    createdAt: Optional[datetime] = None
 
 
 class MemorySettingsUpdate(BaseModel):

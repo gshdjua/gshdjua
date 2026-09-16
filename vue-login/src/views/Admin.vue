@@ -226,7 +226,7 @@
         </div>
         <div class="chart-card song-chart-card">
           <div class="chart-heading"><div><p>TOP TRACKS</p><h3>歌曲播放排行</h3></div><span>{{ selectedMonth }}</span></div>
-          <div v-if="monthlyPlayList.length" class="bar-chart song-bar-chart">
+          <div v-if="topSongs().length" class="bar-chart song-bar-chart">
             <div v-for="item in topSongs()" :key="item.audioId" class="bar-column">
               <span class="bar-value">{{ item.playCount }}</span>
               <div class="bar-track"><div class="bar-fill song-bar" :style="{ height: barHeight(item.playCount, topSongPlays()) }"></div></div>
@@ -237,7 +237,7 @@
         </div>
         <div class="chart-card daily-chart-card">
           <div class="chart-heading"><div><p>DAILY TREND</p><h3>每日播放趋势</h3></div><span>{{ selectedMonth }}</span></div>
-          <div class="daily-chart-wrap">
+          <div v-if="maxDailyPlays() > 0" class="daily-chart-wrap">
             <div class="daily-y-axis"><span>{{ maxDailyPlays() }}</span><span>{{ Math.ceil(maxDailyPlays() / 2) }}</span><span>0</span></div>
             <div class="bar-chart daily-bar-chart">
               <div v-for="item in monthDays()" :key="item.day" class="bar-column daily-column">
@@ -247,6 +247,7 @@
               </div>
             </div>
           </div>
+          <div v-else class="chart-empty">这个月还没有播放数据</div>
         </div>
       </section>
 
@@ -349,24 +350,31 @@
       <section v-if="currentMenu==='llmCost'" class="evaluation-dashboard">
         <div class="evaluation-hero llm-cost-hero">
           <div>
-            <p class="evaluation-eyebrow">LLM COST LAB</p>
-            <h2>LLM 调用成本评测</h2>
-            <p>使用独立题库检查模型路由、动态证据数量、Token 消耗、响应耗时和预估费用。</p>
+            <p class="evaluation-eyebrow">LLM COST LAB V2</p>
+            <h2>策略与 LLM 成本评测</h2>
+            <p>基于当前执行链检查本地绕过、Direct/ReAct 路由、工具调用、预算、Token、延迟和预估费用。</p>
           </div>
           <div class="evaluation-actions">
             <label class="llm-cost-mode"><input v-model="llmCostRealCall" type="checkbox" :disabled="llmCostRunning" /> 真实调用 DeepSeek</label>
-            <button class="evaluation-run-btn" :disabled="llmCostRunning || !llmCostCases.length" @click="runLlmCostEvaluation">
+            <button class="evaluation-run-btn" :disabled="llmCostRunning || !llmCostSelectedCases.length" @click="runLlmCostEvaluation">
               {{ llmCostRunning ? '评测运行中…' : '▶ 开始成本评测' }}
             </button>
             <button class="evaluation-export-btn" :disabled="llmCostRunning" @click="showLlmCostDataset = !showLlmCostDataset">
               {{ showLlmCostDataset ? '收起题库' : '管理题库' }}
             </button>
-            <button class="evaluation-add-btn" :disabled="llmCostRunning" @click="openLlmCostCaseDialog()">＋ 新增成本题</button>
+            <button class="evaluation-add-btn" :disabled="llmCostRunning" @click="openLlmCostCaseDialog()">＋ {{ llmCostAddButtonText }}</button>
             <button v-if="llmCostSummary" class="evaluation-export-btn" @click="downloadLlmCostReport">导出JSON</button>
           </div>
         </div>
 
         <div class="llm-cost-settings">
+          <label>评测题组
+            <select v-model="llmCostScope" :disabled="llmCostRunning" @change="resetLlmCostRun">
+              <option value="production">生产链路（{{ llmCostProductionCount }}题）</option>
+              <option value="agent_native">Agent 原生执行（{{ llmCostAgentNativeCount }}题）</option>
+              <option value="all">全部题目（{{ llmCostCases.length }}题）</option>
+            </select>
+          </label>
           <label>官方价格方案
             <select v-model="llmCostPricePreset" @change="applyLlmCostPricePreset">
               <option value="flash-peak">V4 Flash 高峰（保守估算）</option>
@@ -387,24 +395,24 @@
           <div class="evaluation-progress-card">
             <div class="evaluation-progress-head">
               <span>{{ llmCostRunning ? '正在评测' : llmCostSummary ? '评测完成' : '等待开始' }}</span>
-              <strong>{{ llmCostProgress }} / {{ llmCostCases.length }}</strong>
+              <strong>{{ llmCostProgress }} / {{ llmCostSelectedCases.length }}</strong>
             </div>
             <div class="evaluation-progress-track"><div :style="{width: llmCostProgressPercent + '%'}"></div></div>
             <small v-if="llmCostCurrentCase">当前：{{ llmCostCurrentCase.id }} · {{ llmCostCurrentCase.question }}</small>
           </div>
 
           <div v-if="showLlmCostDataset" class="evaluation-dataset-panel">
-            <div class="evaluation-panel-head"><div><p>COST DATASET</p><h3>成本测试集管理</h3></div><span>{{ llmCostCases.length }} 题</span></div>
+            <div class="evaluation-panel-head"><div><p>COST DATASET</p><h3>{{ llmCostScopeLabel }}题库管理</h3></div><span>{{ llmCostSelectedCases.length }} 题</span></div>
             <div class="evaluation-dataset-table-wrap">
               <table class="evaluation-table evaluation-dataset-table">
-                <thead><tr><th>ID</th><th>类别</th><th>问题</th><th>期望意图</th><th>证据上限</th><th>模型调用</th><th>操作</th></tr></thead>
-                <tbody><tr v-for="item in llmCostCases" :key="item.id">
-                  <td><strong>{{ item.id }}</strong></td><td>{{ item.category }}</td>
+                <thead><tr><th>ID</th><th>执行目标</th><th>类别</th><th>问题</th><th>期望意图</th><th>期望策略</th><th>期望工具</th><th>模型调用</th><th>操作</th></tr></thead>
+                <tbody><tr v-for="item in llmCostSelectedCases" :key="item.id">
+                  <td><strong>{{ item.id }}</strong></td><td>{{ item.execution_target === 'agent_native' ? 'Agent 原生' : '生产链路' }}</td><td>{{ item.category }}</td>
                   <td class="evaluation-question-cell" :title="item.question">{{ item.question }}</td>
-                  <td>{{ item.expected_intent }}</td><td>{{ item.expected_evidence_count }}</td>
+                  <td>{{ item.expected_intent }}</td><td>{{ item.expected_strategy || 'AUTO' }}</td><td>{{ (item.expected_tools || []).join(', ') || '—' }}</td>
                   <td>{{ item.expected_model_call ? '是' : '否' }}</td>
                   <td><div class="evaluation-row-actions"><button @click="openLlmCostCaseDialog(item)">编辑</button><button class="danger" @click="deleteLlmCostCase(item)">删除</button></div></td>
-                </tr></tbody>
+                </tr><tr v-if="!llmCostSelectedCases.length"><td colspan="9" class="evaluation-state">当前题组暂无测试题，可点击右上角新增。</td></tr></tbody>
               </table>
             </div>
           </div>
@@ -416,6 +424,10 @@
             <div class="evaluation-metric"><span>输出 Token</span><strong>{{ llmCostSummary.outputTokens }}</strong><small>{{ llmCostRealCall ? 'API 实际值优先' : '按测试题预算' }}</small></div>
             <div class="evaluation-metric"><span>平均 Token/题</span><strong>{{ formatDecimal(llmCostSummary.averageTokens) }}</strong><small>输入与输出合计</small></div>
             <div class="evaluation-metric"><span>平均 Token/模型调用</span><strong>{{ formatDecimal(llmCostSummary.averageTokensPerModelCall) }}</strong><small>排除本地零 Token 问题</small></div>
+            <div class="evaluation-metric"><span>Direct / ReAct</span><strong>{{ llmCostSummary.directCases }} / {{ llmCostSummary.reactCases }}</strong><small>真实或模拟策略分布</small></div>
+            <div class="evaluation-metric"><span>工具调用</span><strong>{{ llmCostSummary.toolCalls }}</strong><small>{{ llmCostSummary.toolRounds }} 个执行轮次</small></div>
+            <div class="evaluation-metric"><span>P95 延迟</span><strong>{{ formatDecimal(llmCostSummary.p95LatencyMs) }}ms</strong><small>端到端执行时间</small></div>
+            <div class="evaluation-metric"><span>预算停止</span><strong>{{ llmCostSummary.budgetExceededCases }}</strong><small>达到 Token、时间或调用上限</small></div>
             <div class="evaluation-metric"><span>规则通过率</span><strong>{{ formatPercent(llmCostSummary.passRate) }}</strong><small>{{ llmCostSummary.passedCases }}/{{ llmCostSummary.totalCases }} 题通过</small></div>
             <div class="evaluation-metric primary"><span>预估总费用</span><strong>{{ formatLlmCost(llmCostSummary.estimatedCost) }}</strong><small>{{ hasLlmTokenPrice() ? '根据上方价格计算' : '请先填写输入、输出价格' }}</small></div>
           </div>
@@ -424,11 +436,13 @@
             <div class="evaluation-panel-head"><div><p>CASE DETAILS</p><h3>逐题成本明细</h3></div><span>{{ llmCostResults.length }} 条</span></div>
             <div class="evaluation-table-wrap llm-cost-result-table">
               <table class="evaluation-table">
-                <thead><tr><th>ID</th><th>问题</th><th>意图</th><th>证据（实际/上限）</th><th>调用模型</th><th>输入</th><th>输出</th><th>总计</th><th>耗时</th><th>费用</th></tr></thead>
+                <thead><tr><th>ID</th><th>问题</th><th>意图</th><th>路径 / 策略</th><th>模型/工具/轮次</th><th>证据（实际/上限）</th><th>输入</th><th>输出</th><th>总计</th><th>耗时</th><th>费用</th></tr></thead>
                 <tbody><tr v-for="item in llmCostResults" :key="item.id" :class="{'llm-cost-mismatch': !item.passed}">
                   <td><strong>{{ item.id }}</strong></td><td class="evaluation-question-cell" :title="item.question">{{ item.question }}</td>
-                  <td>{{ item.intent }}</td><td :title="`系统动态预算：${item.plannedEvidenceTopK}`">{{ item.evidenceCount }}/{{ item.expectedEvidenceLimit }}</td>
-                  <td>{{ item.modelRequired ? (item.actualUsage ? '真实' : '模拟') : '本地' }}</td>
+                  <td>{{ item.intent }}</td>
+                  <td :title="`${item.strategyReason || ''} · ${item.traceId || '无 traceId'}`">{{ item.executionPath }} / {{ item.selectedStrategy }}</td>
+                  <td :title="toolExecutionTitle(item)">{{ item.modelCalls }}/{{ item.toolCalls }}/{{ item.toolRounds }} · {{ item.costBudget }}</td>
+                  <td :title="`系统动态预算：${item.plannedEvidenceTopK}`">{{ item.evidenceCount }}/{{ item.expectedEvidenceLimit }}</td>
                   <td>{{ item.inputTokens }}</td><td>{{ item.outputTokens }}</td><td>{{ item.totalTokens }}</td>
                   <td>{{ item.elapsedMs }}ms</td><td>{{ formatLlmCost(item.estimatedCost) }}</td>
                 </tr></tbody>
@@ -445,8 +459,12 @@
             <div class="evaluation-form-grid">
               <div class="dialog-form-group"><label>类别</label><input v-model.trim="llmCostCaseForm.category" maxlength="50" /></div>
               <div class="dialog-form-group"><label>期望意图</label><select v-model="llmCostCaseForm.expectedIntent"><option v-for="intent in llmCostIntents" :key="intent" :value="intent">{{ intent }}</option></select></div>
+              <div class="dialog-form-group"><label>期望策略</label><select v-model="llmCostCaseForm.expectedStrategy"><option v-for="strategy in llmCostStrategies" :key="strategy" :value="strategy">{{ strategy }}</option></select></div>
+              <div class="dialog-form-group"><label>执行目标</label><select v-model="llmCostCaseForm.executionTarget" @change="handleLlmCostExecutionTargetChange"><option value="production">生产链路</option><option value="agent_native">Agent 原生</option></select></div>
+              <div class="dialog-form-group"><label>成本预算</label><select v-model="llmCostCaseForm.costBudget"><option value="low">low</option><option value="standard">standard</option><option value="high">high</option></select></div>
             </div>
             <div class="dialog-form-group"><label>用户问题 <em>*</em></label><textarea v-model.trim="llmCostCaseForm.question" maxlength="500"></textarea></div>
+            <div class="dialog-form-group"><label>期望工具（逗号分隔）</label><input v-model.trim="llmCostCaseForm.expectedTools" placeholder="例如：favorite_search,recommend_songs" /><small class="form-hint">Agent 原生真实评测会检查这些只读工具是否实际执行。</small></div>
             <div class="evaluation-form-grid">
               <div class="dialog-form-group"><label>证据上限</label><input v-model.number="llmCostCaseForm.expectedEvidenceCount" type="number" min="0" max="12" /><small class="form-hint">实际证据可少于此数量，不会为了凑数加入低质量候选。</small></div>
               <div class="dialog-form-group"><label>预期输出 Token</label><input v-model.number="llmCostCaseForm.expectedOutputTokens" type="number" min="1" max="4000" /></div>
@@ -812,9 +830,11 @@ export default {
       llmCostProgress: 0, llmCostCurrentCase: null, llmCostRunning: false,
       llmCostLoading: false, llmCostError: '', llmCostRealCall: false,
       llmCostPricePreset: 'flash-peak', llmCostInputPrice: 3, llmCostOutputPrice: 9, showLlmCostDataset: false,
+      llmCostScope: 'production',
       showLlmCostCaseDialog: false, editingLlmCostCaseId: null, llmCostCaseSaving: false,
-      llmCostIntents: ['AUTO', 'SONG_METADATA', 'GENERAL', 'RECOMMENDATION', 'SOURCE_QUERY', 'GENRE_QUERY', 'LIBRARY_QUERY', 'FAVORITES'],
-      llmCostCaseForm: { category: '', question: '', expectedIntent: 'AUTO', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true }
+      llmCostIntents: ['AUTO', 'AGENT_NATIVE', 'SONG_METADATA', 'GENERAL', 'RECOMMENDATION', 'SOURCE_QUERY', 'GENRE_QUERY', 'LIBRARY_QUERY', 'FAVORITES'],
+      llmCostStrategies: ['AUTO', 'local', 'direct', 'react'],
+      llmCostCaseForm: { category: '', question: '', expectedIntent: 'AUTO', expectedStrategy: 'AUTO', executionTarget: 'production', costBudget: 'standard', expectedTools: '', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true }
     }
   },
   computed: {
@@ -835,7 +855,27 @@ export default {
       return this.evaluationResults.filter(item => item.scorable && !item.passed)
     },
     llmCostProgressPercent() {
-      return this.llmCostCases.length ? Math.round(this.llmCostProgress / this.llmCostCases.length * 100) : 0
+      return this.llmCostSelectedCases.length ? Math.round(this.llmCostProgress / this.llmCostSelectedCases.length * 100) : 0
+    },
+    llmCostSelectedCases() {
+      if (this.llmCostScope === 'all') return this.llmCostCases
+      return this.llmCostCases.filter(item => (item.execution_target || 'production') === this.llmCostScope)
+    },
+    llmCostProductionCount() {
+      return this.llmCostCases.filter(item => (item.execution_target || 'production') === 'production').length
+    },
+    llmCostAgentNativeCount() {
+      return this.llmCostCases.filter(item => item.execution_target === 'agent_native').length
+    },
+    llmCostScopeLabel() {
+      if (this.llmCostScope === 'agent_native') return 'Agent 原生执行'
+      if (this.llmCostScope === 'production') return '生产链路'
+      return '全部成本测试'
+    },
+    llmCostAddButtonText() {
+      if (this.llmCostScope === 'agent_native') return '新增 Agent 原生题'
+      if (this.llmCostScope === 'production') return '新增生产链路题'
+      return '新增成本题'
     }
   },
   mounted() {
@@ -843,6 +883,13 @@ export default {
     this.loadFullAudioList();
   },
   methods: {
+    resetLlmCostRun() {
+      this.llmCostResults = []
+      this.llmCostSummary = null
+      this.llmCostProgress = 0
+      this.llmCostCurrentCase = null
+      this.llmCostError = ''
+    },
     applyLlmCostPricePreset() {
       const prices = {
         'flash-peak': [3, 9], 'flash-offpeak': [1.5, 4.5],
@@ -868,14 +915,35 @@ export default {
         this.llmCostError = error.response?.data?.msg || error.message || '成本测试集加载失败'
       } finally { this.llmCostLoading = false }
     },
-    emptyLlmCostCaseForm() {
-      return { category: '', question: '', expectedIntent: 'AUTO', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true }
+    emptyLlmCostCaseForm(executionTarget = null) {
+      const target = executionTarget || (this.llmCostScope === 'agent_native' ? 'agent_native' : 'production')
+      return {
+        category: '', question: '',
+        expectedIntent: target === 'agent_native' ? 'AGENT_NATIVE' : 'AUTO',
+        expectedStrategy: 'AUTO', executionTarget: target, costBudget: 'standard',
+        expectedTools: '', expectedEvidenceCount: target === 'agent_native' ? 0 : 3,
+        expectedOutputTokens: 300, expectedModelCall: true
+      }
+    },
+    handleLlmCostExecutionTargetChange() {
+      if (this.llmCostCaseForm.executionTarget === 'agent_native') {
+        if (this.llmCostCaseForm.expectedIntent === 'AUTO') this.llmCostCaseForm.expectedIntent = 'AGENT_NATIVE'
+        this.llmCostCaseForm.expectedEvidenceCount = 0
+        this.llmCostCaseForm.expectedModelCall = true
+      } else if (this.llmCostCaseForm.expectedIntent === 'AGENT_NATIVE') {
+        this.llmCostCaseForm.expectedIntent = 'AUTO'
+        this.llmCostCaseForm.expectedEvidenceCount = 3
+      }
     },
     openLlmCostCaseDialog(testCase = null) {
       this.editingLlmCostCaseId = testCase?.id || null
       this.llmCostCaseForm = testCase ? {
         category: testCase.category || '', question: testCase.question || '',
         expectedIntent: testCase.expected_intent || 'AUTO',
+        expectedStrategy: testCase.expected_strategy || 'AUTO',
+        executionTarget: testCase.execution_target || 'production',
+        costBudget: testCase.cost_budget || 'standard',
+        expectedTools: (testCase.expected_tools || []).join(','),
         expectedEvidenceCount: Number(testCase.expected_evidence_count ?? 3),
         expectedOutputTokens: Number(testCase.expected_output_tokens ?? 300),
         expectedModelCall: Boolean(testCase.expected_model_call)
@@ -893,6 +961,10 @@ export default {
       const payload = {
         category: this.llmCostCaseForm.category || '未分类', question: this.llmCostCaseForm.question,
         expected_intent: this.llmCostCaseForm.expectedIntent,
+        expected_strategy: this.llmCostCaseForm.expectedStrategy,
+        execution_target: this.llmCostCaseForm.executionTarget,
+        cost_budget: this.llmCostCaseForm.costBudget,
+        expected_tools: this.llmCostCaseForm.expectedTools.split(/[,，]/).map(item => item.trim()).filter(Boolean),
         expected_evidence_count: this.llmCostCaseForm.expectedEvidenceCount,
         expected_output_tokens: this.llmCostCaseForm.expectedOutputTokens,
         expected_model_call: this.llmCostCaseForm.expectedModelCall
@@ -903,6 +975,7 @@ export default {
           ? await request.put(`/admin/llm-cost-evaluation/cases/${this.editingLlmCostCaseId}`, payload)
           : await request.post('/admin/llm-cost-evaluation/cases', payload)
         if (res.data.code !== 200) throw new Error(res.data.msg || '保存失败')
+        if (this.llmCostScope !== 'all') this.llmCostScope = payload.execution_target
         await this.loadLlmCostCases()
         this.llmCostSummary = null
         this.llmCostResults = []
@@ -921,7 +994,7 @@ export default {
       } catch (error) { alert(error.response?.data?.msg || error.message || '删除失败') }
     },
     async runLlmCostEvaluation() {
-      if (this.llmCostRunning || !this.llmCostCases.length) return
+      if (this.llmCostRunning || !this.llmCostSelectedCases.length) return
       if (this.llmCostRealCall && !confirm('真实调用会逐题请求 DeepSeek 并产生 API 费用，确定继续吗？')) return
       this.llmCostRunning = true
       this.llmCostError = ''
@@ -929,7 +1002,7 @@ export default {
       this.llmCostResults = []
       this.llmCostSummary = null
       try {
-        for (const testCase of this.llmCostCases) {
+        for (const testCase of this.llmCostSelectedCases) {
           this.llmCostCurrentCase = testCase
           const res = await request.post('/admin/llm-cost-evaluation/evaluate', {
             question: testCase.question, history: testCase.history || [],
@@ -937,7 +1010,10 @@ export default {
             realCall: this.llmCostRealCall,
             inputPricePerMillion: this.llmCostInputPrice,
             outputPricePerMillion: this.llmCostOutputPrice,
-            userId: Number(localStorage.getItem('userId')) || null
+            userId: Number(localStorage.getItem('userId')) || null,
+            executionTarget: testCase.execution_target || 'production',
+            requestedStrategy: testCase.requested_strategy || 'auto',
+            costBudget: testCase.cost_budget || 'standard'
           }, { timeout: this.llmCostRealCall ? 60000 : 30000 })
           if (res.data.code !== 200) throw new Error(`${testCase.id}: ${res.data.msg || '成本评测失败'}`)
           const item = res.data.data
@@ -945,8 +1021,13 @@ export default {
           const evidenceLimit = Number(testCase.expected_evidence_count)
           const evidenceCount = Number(item.evidenceCount)
           const evidencePassed = evidenceLimit === 0 ? evidenceCount === 0 : evidenceCount > 0 && evidenceCount <= evidenceLimit
-          const callPassed = Boolean(testCase.expected_model_call) === Boolean(item.modelRequired)
-          this.llmCostResults.push({ ...item, id: testCase.id, category: testCase.category, question: testCase.question, expectedEvidenceLimit: evidenceLimit, passed: intentPassed && evidencePassed && callPassed })
+          const callPassed = Boolean(testCase.expected_model_call) === (Number(item.modelCalls) > 0)
+          const expectedStrategy = testCase.expected_strategy || 'AUTO'
+          const strategyPassed = expectedStrategy === 'AUTO' || expectedStrategy === item.selectedStrategy
+          const expectedTools = testCase.expected_tools || []
+          const actualTools = (item.toolExecutions || []).filter(tool => tool.success).map(tool => tool.tool)
+          const toolPassed = !this.llmCostRealCall || expectedTools.every(tool => actualTools.includes(tool))
+          this.llmCostResults.push({ ...item, id: testCase.id, category: testCase.category, question: testCase.question, expectedEvidenceLimit: evidenceLimit, expectedTools, toolPassed, passed: intentPassed && evidencePassed && callPassed && strategyPassed && toolPassed })
           this.llmCostProgress++
         }
         this.buildLlmCostSummary()
@@ -956,13 +1037,21 @@ export default {
     buildLlmCostSummary() {
       const total = this.llmCostResults.length
       const sum = key => this.llmCostResults.reduce((value, item) => value + Number(item[key] || 0), 0)
-      const modelCalls = this.llmCostResults.filter(item => item.modelRequired).length
+      const modelCalls = sum('modelCalls')
+      const latencies = this.llmCostResults.map(item => Number(item.elapsedMs || 0)).sort((a, b) => a - b)
+      const p95Index = latencies.length ? Math.min(latencies.length - 1, Math.ceil(latencies.length * 0.95) - 1) : 0
       this.llmCostSummary = {
-        totalCases: total, modelCalls,
-        localBypassRate: total ? (total - modelCalls) / total : 0,
+        evaluationVersion: '2.0', evaluationScope: this.llmCostScope, totalCases: total, modelCalls,
+        localBypassRate: total ? this.llmCostResults.filter(item => Number(item.modelCalls || 0) === 0).length / total : 0,
         inputTokens: sum('inputTokens'), outputTokens: sum('outputTokens'), totalTokens: sum('totalTokens'),
         averageTokens: total ? sum('totalTokens') / total : 0,
         averageTokensPerModelCall: modelCalls ? sum('totalTokens') / modelCalls : 0,
+        directCases: this.llmCostResults.filter(item => item.selectedStrategy === 'direct').length,
+        reactCases: this.llmCostResults.filter(item => item.selectedStrategy === 'react').length,
+        toolCalls: sum('toolCalls'), toolRounds: sum('toolRounds'),
+        averageLatencyMs: total ? sum('elapsedMs') / total : 0,
+        p95LatencyMs: latencies.length ? latencies[p95Index] : 0,
+        budgetExceededCases: this.llmCostResults.filter(item => item.budgetExceeded).length,
         estimatedCost: sum('estimatedCost'),
         passedCases: this.llmCostResults.filter(item => item.passed).length,
         passRate: total ? this.llmCostResults.filter(item => item.passed).length / total : 0
@@ -971,12 +1060,17 @@ export default {
     hasLlmTokenPrice() {
       return Number(this.llmCostInputPrice) > 0 || Number(this.llmCostOutputPrice) > 0
     },
+    toolExecutionTitle(item) {
+      const tools = Array.isArray(item.toolExecutions) ? item.toolExecutions : []
+      const toolSummary = tools.map(tool => `${tool.tool}:${tool.success ? 'ok' : (tool.errorCode || 'error')}(${tool.durationMs || 0}ms)`).join(', ')
+      return toolSummary || (item.plannedTool ? `模拟计划：${item.plannedTool}` : '') || item.stopReason || item.finishReason || '未调用工具'
+    },
     formatLlmCost(value) {
       return this.hasLlmTokenPrice() ? `¥${Number(value || 0).toFixed(6)}` : '未配置价格'
     },
     downloadLlmCostReport() {
       if (!this.llmCostSummary) return
-      const report = { generatedAt: new Date().toISOString(), mode: this.llmCostRealCall ? 'real' : 'simulation', prices: { input: this.llmCostInputPrice, output: this.llmCostOutputPrice }, summary: this.llmCostSummary, cases: this.llmCostResults }
+      const report = { schemaVersion: '2.0', generatedAt: new Date().toISOString(), mode: this.llmCostRealCall ? 'real' : 'simulation', scope: this.llmCostScope, prices: { input: this.llmCostInputPrice, output: this.llmCostOutputPrice }, summary: this.llmCostSummary, cases: this.llmCostResults }
       const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -1261,14 +1355,14 @@ export default {
         if (dailyRes.data.code === 200) this.monthlyDailyPlayList = dailyRes.data.data
       } catch (err) { console.error('load statistics failed:', err) }
     },
-    topSongs() { return this.monthlyPlayList.slice(0, 8) },
+    topSongs() { return this.monthlyPlayList.filter(item => Number(item.playCount) > 0).slice(0, 8) },
     totalMonthlyPlays() {
       return this.monthlyPlayList.reduce((total, item) => total + Number(item.playCount || 0), 0)
     },
     playedSongCount() { return this.monthlyPlayList.filter(item => Number(item.playCount) > 0).length },
-    topSongPlays() { return Math.max(1, ...this.monthlyPlayList.map(item => Number(item.playCount || 0))) },
+    topSongPlays() { return Math.max(0, ...this.monthlyPlayList.map(item => Number(item.playCount || 0))) },
     maxDailyPlays() {
-      return Math.max(1, ...this.monthlyDailyPlayList.map(item => Number(item.playCount || 0)))
+      return Math.max(0, ...this.monthlyDailyPlayList.map(item => Number(item.playCount || 0)))
     },
     barHeight(value, max) {
       return (Number(value || 0) / Math.max(1, Number(max))) * 100 + '%'

@@ -6,6 +6,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from app.contracts import AgentOptions
 from app.graph import agent_graph, call_model, execute_tools, prepare_strategy
 from app.strategies import DirectStrategy, StrategyRouter
+from app.main import strategy_preview
+from app.contracts import StrategyPreviewRequest
 from app.tools.models import ToolExecutionResult
 
 
@@ -58,6 +60,21 @@ class StrategyRouterTest(unittest.TestCase):
     def test_contract_rejects_unknown_strategy(self):
         with self.assertRaises(ValueError):
             AgentOptions(strategy="tree")
+
+    def test_strategy_preview_is_side_effect_free_and_exposes_direct_plan(self):
+        preview = strategy_preview(StrategyPreviewRequest(message="我收藏了哪些动漫歌曲？"))
+
+        self.assertEqual("direct", preview.selectedStrategy)
+        self.assertEqual("favorite_search", preview.plannedTool)
+        self.assertEqual(1, preview.maxToolCalls)
+
+    def test_strategy_preview_leaves_react_tool_choice_to_model(self):
+        preview = strategy_preview(StrategyPreviewRequest(
+            message="结合我的收藏推荐适合雨夜听的歌曲"
+        ))
+
+        self.assertEqual("react", preview.selectedStrategy)
+        self.assertEqual("", preview.plannedTool)
 
 
 class DirectStrategyTest(unittest.TestCase):

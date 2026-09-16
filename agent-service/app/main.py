@@ -1,24 +1,31 @@
 import logging
 import time
+from types import SimpleNamespace
 from typing import List
 
 from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .config import api_key, base_url, default_model
+from .audit import audit_repository
 from .contracts import (
     AgentChatRequest,
     AgentChatResponse,
     AgentMessage,
     ExecutionBudgetReport,
+    ExecutionAuditRecord,
     MemoryCaptureRequest,
     MemoryRecord,
     MemorySettingsUpdate,
     MemoryUpdate,
+    StrategyPreviewRequest,
+    StrategyPreviewResponse,
     TokenUsage,
+    ToolExecutionAudit,
 )
 from .graph import agent_graph
 from .memory import memory_repository
+from .strategies import strategy_router
 from .tools import tool_registry
 from .tools.models import ToolCatalogResponse
 
@@ -39,6 +46,33 @@ def to_langchain_message(role: str, content: str):
     return HumanMessage(content=content)
 
 
+def save_failed_audit(payload: AgentChatRequest, model_name: str, trace_id: str,
+                      started: float, state: dict, error_code: str) -> None:
+    audit_repository.save({
+        "traceId": trace_id,
+        "requestId": payload.requestId,
+        "provider": payload.options.provider,
+        "model": model_name,
+        "requestedStrategy": payload.options.strategy,
+        "selectedStrategy": state.get("selected_strategy", ""),
+        "strategyReason": state.get("strategy_reason", ""),
+        "costBudget": state.get("cost_budget", payload.options.costBudget),
+        "modelCalls": state.get("model_calls", 0),
+        "toolCalls": state.get("tool_calls", 0),
+        "toolRounds": state.get("tool_rounds", 0),
+        "toolExecutions": state.get("tool_executions", []),
+        "inputTokens": state.get("input_tokens", 0),
+        "outputTokens": state.get("output_tokens", 0),
+        "totalTokens": state.get("total_tokens", 0),
+        "latencyMs": round((time.perf_counter() - started) * 1000),
+        "budgetExceeded": state.get("budget_exhausted", False),
+        "stopReason": state.get("budget_stop_reason", ""),
+        "finishReason": "error",
+        "status": "error",
+        "errorCode": error_code,
+    })
+
+
 @app.get("/health")
 def health() -> dict:
     return {
@@ -50,6 +84,7 @@ def health() -> dict:
         "protocolVersion": "1.0",
         "memoryStore": "mysql",
         "memoryAvailable": memory_repository.available(),
+        "auditAvailable": audit_repository.available(),
         "tools": [item.name for item in tool_registry.descriptors()],
         "strategies": ["auto", "direct", "react"],
         "defaultStrategy": "auto",
@@ -63,19 +98,47 @@ def tools() -> ToolCatalogResponse:
     return ToolCatalogResponse(tools=tool_registry.descriptors())
 
 
+@app.post("/v1/strategy/preview", response_model=StrategyPreviewResponse)
+def strategy_preview(payload: StrategyPreviewRequest) -> StrategyPreviewResponse:
+    """Preview routing without calling an LLM, executing tools, or persisting user data."""
+    decision = strategy_router.select(
+        payload.strategy, payload.message, tools_enabled=True, cost_budget=payload.costBudget
+    )
+    plan = strategy_router.direct.plan(payload.message) if decision.selected == "direct" else None
+    budget = decision.budget
+    return StrategyPreviewResponse(
+        selectedStrategy=decision.selected,
+        strategyReason=decision.reason,
+        costBudget=budget.level,
+        plannedTool=plan.tool if plan else "",
+        maxModelCalls=budget.max_model_calls,
+        maxToolCalls=budget.max_tool_calls,
+        maxToolRounds=budget.max_tool_rounds,
+        maxTotalTokens=budget.max_total_tokens,
+        maxExecutionMs=budget.max_execution_ms,
+    )
+
+
 @app.post("/v1/chat", response_model=AgentChatResponse)
 def chat(payload: AgentChatRequest) -> AgentChatResponse:
     if payload.protocolVersion != "1.0":
         raise HTTPException(status_code=400, detail="Unsupported protocol version")
     started = time.perf_counter()
     model_name = payload.options.model or default_model()
+    trace_id = payload.metadata.get("traceId", payload.requestId)
+    state = {}
     try:
         system_messages = [item for item in payload.messages if item.role == "system"]
         conversation_messages = [item for item in payload.messages if item.role != "system"]
         current_message = conversation_messages[-1]
         incoming_history = conversation_messages[:-1]
         raw_user_message = payload.metadata.get("userMessage", current_message.content)
-        memory = memory_repository.load(payload.conversationId, payload.userId, raw_user_message)
+        evaluation_only = payload.metadata.get("evaluationMode") == "agent_native"
+        memory = (
+            memory_repository.load(payload.conversationId, payload.userId, raw_user_message)
+            if not evaluation_only
+            else SimpleNamespace(summary="", long_term_memories=[], recent_messages=[])
+        )
         memory_notes = []
         if memory.summary:
             memory_notes.append("此前对话摘要：" + memory.summary)
@@ -96,8 +159,7 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             effective_messages.append(AgentMessage(role="system", content="\n".join(memory_notes)))
         effective_messages.extend(memory.recent_messages or incoming_history[-6:])
         effective_messages.append(current_message)
-        state = agent_graph.invoke(
-            {
+        state = {
                 "messages": [to_langchain_message(item.role, item.content) for item in effective_messages],
                 "provider": payload.options.provider,
                 "model": model_name,
@@ -110,6 +172,7 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "user_id": payload.userId,
                 "tool_rounds": 0,
                 "tool_calls": 0,
+                "tool_executions": [],
                 "model_calls": 0,
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -119,23 +182,24 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "budget_stop_reason": "",
                 "tools_enabled": should_enable_tools(payload.messages),
             }
-        )
+        state = agent_graph.invoke(state)
         response = state["response"]
-        memory_repository.save(
-            payload.conversationId,
-            payload.userId,
-            memory.summary,
-            memory.recent_messages,
-            incoming_history,
-            raw_user_message,
-            str(response.content),
-        )
-        memory_repository.capture_preferences(
-            payload.userId,
-            payload.conversationId,
-            payload.requestId,
-            raw_user_message,
-        )
+        if not evaluation_only:
+            memory_repository.save(
+                payload.conversationId,
+                payload.userId,
+                memory.summary,
+                memory.recent_messages,
+                incoming_history,
+                raw_user_message,
+                str(response.content),
+            )
+            memory_repository.capture_preferences(
+                payload.userId,
+                payload.conversationId,
+                payload.requestId,
+                raw_user_message,
+            )
         LOGGER.info(
             "Agent budget usage: level=%s modelCalls=%s toolCalls=%s toolRounds=%s "
             "totalTokens=%s elapsedMs=%s exceeded=%s stopReason=%s traceId=%s",
@@ -149,8 +213,15 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             state.get("budget_stop_reason", ""),
             payload.metadata.get("traceId", payload.requestId),
         )
-        return AgentChatResponse(
+        elapsed = round((time.perf_counter() - started) * 1000)
+        finish_reason = (
+            "budget"
+            if state.get("budget_exhausted", False)
+            else str(response.response_metadata.get("finish_reason", "stop"))
+        )
+        result = AgentChatResponse(
             requestId=payload.requestId,
+            traceId=trace_id,
             answer=str(response.content),
             provider=payload.options.provider,
             model=model_name,
@@ -171,21 +242,59 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 maxToolRounds=state["max_tool_rounds"],
                 maxTotalTokens=state["max_total_tokens"],
                 maxExecutionMs=state["max_execution_ms"],
-                elapsedMs=round((time.perf_counter() - started) * 1000),
+                elapsedMs=elapsed,
                 exceeded=state.get("budget_exhausted", False),
                 stopReason=state.get("budget_stop_reason", ""),
             ),
-            finishReason=(
-                "budget"
-                if state.get("budget_exhausted", False)
-                else str(response.response_metadata.get("finish_reason", "stop"))
-            ),
-            latencyMs=round((time.perf_counter() - started) * 1000),
+            toolExecutions=[ToolExecutionAudit(**item) for item in state.get("tool_executions", [])],
+            finishReason=finish_reason,
+            latencyMs=elapsed,
         )
+        audit_repository.save({
+            "traceId": trace_id,
+            "requestId": payload.requestId,
+            "provider": payload.options.provider,
+            "model": model_name,
+            "requestedStrategy": payload.options.strategy,
+            "selectedStrategy": state["selected_strategy"],
+            "strategyReason": state["strategy_reason"],
+            "costBudget": state["cost_budget"],
+            "modelCalls": state.get("model_calls", 0),
+            "toolCalls": state.get("tool_calls", 0),
+            "toolRounds": state.get("tool_rounds", 0),
+            "toolExecutions": state.get("tool_executions", []),
+            "inputTokens": state.get("input_tokens", 0),
+            "outputTokens": state.get("output_tokens", 0),
+            "totalTokens": state.get("total_tokens", 0),
+            "latencyMs": elapsed,
+            "budgetExceeded": state.get("budget_exhausted", False),
+            "stopReason": state.get("budget_stop_reason", ""),
+            "finishReason": finish_reason,
+            "status": "budget" if state.get("budget_exhausted", False) else "success",
+            "errorCode": "",
+        })
+        return result
     except ValueError as error:
+        save_failed_audit(payload, model_name, trace_id, started, state, "INVALID_REQUEST")
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
+        save_failed_audit(payload, model_name, trace_id, started, state, "MODEL_INVOCATION_FAILED")
         raise HTTPException(status_code=502, detail="Model invocation failed: " + str(error)) from error
+
+
+@app.get("/v1/audit/traces/{trace_id}", response_model=ExecutionAuditRecord)
+def execution_audit(trace_id: str) -> ExecutionAuditRecord:
+    if not trace_id or len(trace_id) > 191:
+        raise HTTPException(status_code=400, detail="Invalid traceId")
+    try:
+        record = audit_repository.get(trace_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Execution audit not found")
+        return ExecutionAuditRecord(**record)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Execution audit store unavailable") from error
 
 
 @app.get("/v1/memory/users/{user_id}/settings")

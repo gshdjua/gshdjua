@@ -128,9 +128,11 @@ Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`�
 
 策略路由支持 `low`、`standard` 和 `high` 三档成本预算。低预算强制使用单步 Direct；标准预算允许最多 3 次模型调用、2 轮及 4 次工具调用；高预算允许最多 4 次模型调用、3 轮及 6 次工具调用。每档还限制累计 Token 和总执行时间，DeepSeek 单次请求使用当前剩余时间作为超时值，并关闭 SDK 隐式重试。达到模型、工具、Token 或时间限制后不再继续推理，响应通过 `budget` 返回实际模型调用数、工具调用数、工具轮次、累计 Token、耗时和停止原因。多轮 ReAct 的 Token 会跨所有模型调用汇总，而不是只统计最终回答。
 
+每次 Agent 执行会按 `traceId` 将策略、原因码、预算档位、模型/工具调用量、Token、延迟、停止原因和工具执行摘要保存到 MySQL。工具摘要只包含工具名、成功状态、尝试次数、耗时和错误码；审计表不保存用户问题、模型回答、工具参数、工具返回数据或隐藏思维链。审计记录默认保留 30 天，可通过 `AGENT_AUDIT_RETENTION_DAYS` 调整。`GET /v1/audit/traces/{traceId}` 可查询单次执行摘要，Spring Boot 管理接口使用 `GET /api/admin/llm-cost-evaluation/traces/{traceId}` 转发查询。审计存储故障只影响记录，不阻断正常回答。
+
 ### 9. 检索效果可以量化评估
 
-管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。独立的 LLM 成本评测支持模拟或真实调用，统计输入/输出 Token、本地绕过率、平均调用成本和规则通过率。修改检索权重、Rerank、拒答阈值或证据预算后，可以使用统一题库比较优化效果。
+管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。LLM 成本评测 V2 支持模拟或真实调用，逐题展示本地/Agent 执行路径、Direct/ReAct 策略、模型/工具/轮次、证据量、Token、延迟、预算状态和费用，并汇总本地绕过率、策略分布、P95 延迟、预算停止数和规则通过率。测试集与导出报告带有 `2.0` 版本：原有 6 题作为生产链路历史基线，新增 5 题“Agent 原生执行”题组，分别检查 `favorite_search`、`recommend_songs`、`vector_search`、`song_detail` 和 ReAct 多工具协作。原生题组直接把原始问题交给 Agent，不预先由 Java 准备证据；模拟模式只预览路由和 Direct 工具计划，真实模式才检查工具是否实际执行并产生 API 费用。原生评测不写入会话状态或长期记忆，审计仍只保存不含问题、回答和工具数据的元数据。
 
 ### 10. 本地数据与外部模型解耦
 

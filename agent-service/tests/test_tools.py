@@ -277,6 +277,10 @@ class ToolRegistryTest(unittest.TestCase):
 
         self.assertEqual(1, update["tool_rounds"])
         self.assertEqual("call-1", update["messages"][0].tool_call_id)
+        self.assertEqual([{
+            "tool": "song_search", "success": True, "attempts": 0,
+            "durationMs": 0, "errorCode": "",
+        }], update["tool_executions"])
         invoke.assert_called_once()
         context = invoke.call_args.args[2]
         self.assertEqual("7", context.user_id)

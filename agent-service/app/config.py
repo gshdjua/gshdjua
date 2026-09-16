@@ -80,3 +80,7 @@ def tool_circuit_failure_threshold() -> int:
 
 def tool_circuit_recovery_seconds() -> float:
     return max(0.0, float(first_config("AGENT_TOOL_CIRCUIT_RECOVERY_SECONDS", default="30")))
+
+
+def audit_retention_days() -> int:
+    return max(1, int(first_config("AGENT_AUDIT_RETENTION_DAYS", default="30")))

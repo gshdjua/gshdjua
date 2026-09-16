@@ -1,4 +1,5 @@
 import logging
+import operator
 import time
 from typing import Annotated, Any, Dict, List, TypedDict
 
@@ -35,6 +36,7 @@ class AgentState(TypedDict):
     user_id: str | None
     tool_rounds: int
     tool_calls: int
+    tool_executions: Annotated[List[Dict[str, Any]], operator.add]
     model_calls: int
     input_tokens: int
     output_tokens: int
@@ -202,6 +204,7 @@ def execute_tools(state: AgentState) -> Dict[str, Any]:
         ),
     )
     messages = []
+    tool_executions = []
     tool_calls = state.get("tool_calls", 0)
     budget_exhausted = state.get("budget_exhausted", False)
     stop_reason = state.get("budget_stop_reason", "")
@@ -227,8 +230,16 @@ def execute_tools(state: AgentState) -> Dict[str, Any]:
                 name=call["name"],
             )
         )
+        tool_executions.append({
+            "tool": result.tool,
+            "success": result.success,
+            "attempts": result.attempts,
+            "durationMs": result.durationMs,
+            "errorCode": result.error.code if result.error else "",
+        })
     return {
         "messages": messages,
+        "tool_executions": tool_executions,
         "tool_rounds": state.get("tool_rounds", 0) + 1,
         "tool_calls": tool_calls,
         "budget_exhausted": budget_exhausted,

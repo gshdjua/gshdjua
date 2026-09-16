@@ -191,6 +191,35 @@ CREATE TABLE IF NOT EXISTS agent_memory_capture (
     FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Agent 策略执行审计：只保存策略、工具元数据和资源用量，不保存用户问题、回答或隐藏思维链
+CREATE TABLE IF NOT EXISTS agent_execution_audit (
+    trace_id VARCHAR(191) PRIMARY KEY,
+    request_id VARCHAR(100) NOT NULL,
+    provider VARCHAR(30) NOT NULL,
+    model VARCHAR(100) NOT NULL,
+    requested_strategy VARCHAR(20) NOT NULL,
+    selected_strategy VARCHAR(20) NOT NULL,
+    strategy_reason VARCHAR(50) NOT NULL,
+    cost_budget VARCHAR(20) NOT NULL,
+    model_calls INT NOT NULL DEFAULT 0,
+    tool_calls INT NOT NULL DEFAULT 0,
+    tool_rounds INT NOT NULL DEFAULT 0,
+    tool_executions JSON NOT NULL,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
+    total_tokens INT NOT NULL DEFAULT 0,
+    latency_ms INT NOT NULL DEFAULT 0,
+    budget_exceeded TINYINT(1) NOT NULL DEFAULT 0,
+    stop_reason VARCHAR(50) NOT NULL DEFAULT '',
+    finish_reason VARCHAR(50) NOT NULL DEFAULT '',
+    status VARCHAR(20) NOT NULL DEFAULT 'success',
+    error_code VARCHAR(80) NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_agent_audit_created (created_at),
+    KEY idx_agent_audit_strategy (selected_strategy, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- 默认管理员账号 (密码: 123456)
 INSERT INTO user (username, password, role) VALUES ('admin', '123456', 'admin')
 ON DUPLICATE KEY UPDATE username = username;
