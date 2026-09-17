@@ -471,6 +471,35 @@
         </div>
 
         <p class="prompt-notice">发布后新请求立即使用新版本；停用当前版本会切回内置兜底规则。固定的隐私与本地证据安全规则不能在这里修改。</p>
+        <div class="evaluation-panel prompt-rollout-panel">
+          <div class="evaluation-panel-head"><div><p>STAGED RELEASE</p><h3>灰度发布</h3></div><span>{{ promptRollout.enabled ? '运行中' : '未开启' }}</span></div>
+          <div class="prompt-rollout-body">
+            <p>同一用户稳定分流；未命中候选版本的用户继续使用已发布基线。灰度期间不能停用或更换基线。</p>
+            <template v-if="promptRollout.enabled">
+              <p>基线 v{{ promptRollout.baselineVersion }} · 候选 v{{ promptRollout.candidateVersion }} · 候选流量 {{ promptRollout.trafficPercent }}%</p>
+              <button type="button" :disabled="promptBusy" @click="stopPromptRollout">停止灰度并保留基线</button>
+            </template>
+            <template v-else>
+              <select v-model.number="promptCandidateId" aria-label="灰度候选版本"><option :value="null">选择草稿或已停用版本</option><option v-for="item in promptVersions.filter(version => ['draft', 'inactive'].includes(version.status))" :key="item.id" :value="item.id">v{{ item.version }} · {{ promptStatusLabel(item.status) }}</option></select>
+              <label>候选流量 <input v-model.number="promptTrafficPercent" type="number" min="1" max="99" />%</label>
+              <button type="button" :disabled="promptBusy || !promptCandidateId" @click="startPromptRollout">开始灰度</button>
+            </template>
+          </div>
+        </div>
+        <div class="evaluation-panel prompt-compare-panel">
+          <div class="evaluation-panel-head"><div><p>PROMPT COMPARISON</p><h3>同题版本对比</h3></div><span>可比较 {{ promptComparableCases.length }} 题</span></div>
+          <div class="prompt-rollout-body">
+            <p>用相同生产链路题对比结构规则、Token、费用和延迟；规则通过率不等于回答准确率。模拟模式不调用模型，仅估算成本；真实模式才可人工阅读回答。</p>
+            <select v-model.number="promptCompareBase" aria-label="基线 Prompt 版本" @change="promptCompareResults=[]"><option :value="null">选择基线版本</option><option v-for="item in promptVersions" :key="item.id" :value="item.version">v{{ item.version }}</option></select>
+            <select v-model.number="promptCompareCandidate" aria-label="候选 Prompt 版本" @change="promptCompareResults=[]"><option :value="null">选择候选版本</option><option v-for="item in promptVersions" :key="item.id" :value="item.version">v{{ item.version }}</option></select>
+            <label><input v-model="promptCompareRealCall" type="checkbox" :disabled="promptCompareRunning" /> 真实调用 DeepSeek（产生费用）</label>
+            <button type="button" :disabled="promptCompareRunning || !promptCompareBase || !promptCompareCandidate || promptCompareBase === promptCompareCandidate" @click="comparePromptVersions">{{ promptCompareRunning ? '对比中…' : '开始对比' }}</button>
+            <span v-if="promptCompareRunning">{{ promptCompareProgress }} / {{ promptComparableCases.length * 2 }}</span>
+          </div>
+          <p v-if="promptCompareError" class="evaluation-state error">{{ promptCompareError }}</p>
+          <div v-if="promptCompareResults.length" class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>版本</th><th>结构规则</th><th>输入 / 输出 Token</th><th>费用</th><th>平均延迟</th></tr></thead><tbody><tr v-for="group in promptCompareSummary" :key="group.version"><td>v{{ group.version }}</td><td>{{ group.passed }}/{{ group.count }}</td><td>{{ group.inputTokens }} / {{ group.outputTokens }}</td><td>{{ formatLlmCost(group.cost) }}</td><td>{{ formatDecimal(group.averageLatency) }}ms</td></tr></tbody></table></div>
+          <div v-if="promptCompareRealCall && promptCompareResults.length" class="prompt-answer-review"><details v-for="row in promptCompareResults" :key="`${row.caseId}-${row.version}`"><summary>{{ row.caseId }} · v{{ row.version }} · {{ row.passed ? '规则通过' : '规则未通过' }}</summary><p>问题：{{ row.question }}</p><p>回答：{{ row.answerPreview || '无模型回答' }}</p></details></div>
+        </div>
         <p v-if="promptError" class="evaluation-state error">{{ promptError }}</p>
         <p v-if="promptSuccess" class="prompt-success">{{ promptSuccess }}</p>
         <div v-if="promptLoading" class="evaluation-state">正在加载 Prompt 版本…</div>
@@ -491,7 +520,7 @@
                   <button v-if="item.status === 'draft'" type="button" :disabled="promptBusy" @click="publishPrompt(item)">发布</button>
                   <button v-if="item.status === 'published'" type="button" class="danger" :disabled="promptBusy" @click="disablePrompt(item)">停用</button>
                   <button v-if="item.status === 'inactive'" type="button" :disabled="promptBusy" @click="restorePrompt(item)">{{ canRollbackPrompt(item) ? '回滚到此版本' : '重新发布' }}</button>
-                  <button type="button" class="danger" :disabled="promptBusy || item.status === 'published'" :title="item.status === 'published' ? '先停用当前版本才能删除' : '删除后不可恢复模板正文'" @click="deletePromptVersion(item)">删除此版本</button>
+                  <button type="button" class="danger" :disabled="promptBusy || ['published', 'gray'].includes(item.status)" :title="['published', 'gray'].includes(item.status) ? '先停用或停止灰度才能删除' : '删除后不可恢复模板正文'" @click="deletePromptVersion(item)">删除此版本</button>
                 </div>
               </article>
             </div>
@@ -899,7 +928,10 @@ export default {
       llmCostStrategies: ['AUTO', 'local', 'direct', 'react'],
       llmCostCaseForm: { category: '', question: '', expectedIntent: 'AUTO', expectedStrategy: 'AUTO', executionTarget: 'production', costBudget: 'standard', expectedTools: '', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true },
       promptVersions: [], promptLoading: false, promptBusy: false, promptError: '', promptSuccess: '',
-      editingPromptId: null, editingPromptVersion: null, viewingPromptId: null, viewingPromptVersion: null, promptTemplate: ''
+      editingPromptId: null, editingPromptVersion: null, viewingPromptId: null, viewingPromptVersion: null, promptTemplate: '',
+      promptRollout: { enabled: false, trafficPercent: 0 }, promptCandidateId: null, promptTrafficPercent: 10,
+      promptCompareBase: null, promptCompareCandidate: null, promptCompareRealCall: false,
+      promptCompareRunning: false, promptCompareProgress: 0, promptCompareError: '', promptCompareResults: []
     }
   },
   computed: {
@@ -941,6 +973,19 @@ export default {
       if (this.llmCostScope === 'agent_native') return '新增 Agent 原生题'
       if (this.llmCostScope === 'production') return '新增生产链路题'
       return '新增成本题'
+    },
+    promptCompareSummary() {
+      return [this.promptCompareBase, this.promptCompareCandidate].map(version => {
+        const rows = this.promptCompareResults.filter(row => row.version === version)
+        return { version, count: rows.length, passed: rows.filter(row => row.passed).length,
+          inputTokens: rows.reduce((sum, row) => sum + Number(row.inputTokens || 0), 0),
+          outputTokens: rows.reduce((sum, row) => sum + Number(row.outputTokens || 0), 0),
+          cost: rows.reduce((sum, row) => sum + Number(row.estimatedCost || 0), 0),
+          averageLatency: rows.length ? rows.reduce((sum, row) => sum + Number(row.elapsedMs || 0), 0) / rows.length : 0 }
+      })
+    },
+    promptComparableCases() {
+      return this.llmCostCases.filter(item => (item.execution_target || 'production') === 'production' && item.expected_model_call)
     }
   },
   mounted() {
@@ -950,7 +995,71 @@ export default {
   methods: {
     async openPromptVersions() {
       this.currentMenu = 'prompts'
-      await this.loadPromptVersions()
+      await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadLlmCostCases()])
+    },
+    async loadPromptRollout() {
+      try {
+        const res = await request.get('/admin/prompts/rollout')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '加载灰度状态失败')
+        this.promptRollout = res.data.data || { enabled: false, trafficPercent: 0 }
+      } catch (error) { this.promptError = error.response?.data?.msg || error.message || '加载灰度状态失败' }
+    },
+    async startPromptRollout() {
+      if (this.promptBusy || !this.promptCandidateId) return
+      if (!Number.isInteger(this.promptTrafficPercent) || this.promptTrafficPercent < 1 || this.promptTrafficPercent > 99) { this.promptError = '灰度比例须在 1% 到 99% 之间'; return }
+      if (!confirm(`将 v${this.promptVersions.find(item => item.id === this.promptCandidateId)?.version} 分配给 ${this.promptTrafficPercent}% 用户？`)) return
+      this.promptBusy = true; this.promptError = ''
+      try {
+        const res = await request.post('/admin/prompts/rollout', { candidateId: this.promptCandidateId, trafficPercent: this.promptTrafficPercent })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '开启灰度失败')
+        await Promise.all([this.loadPromptRollout(), this.loadPromptVersions()])
+        this.promptSuccess = '灰度已开启；同一用户稳定命中相同版本。'
+      } catch (error) { this.promptError = error.response?.data?.msg || error.message || '开启灰度失败' }
+      finally { this.promptBusy = false }
+    },
+    async stopPromptRollout() {
+      if (this.promptBusy || !confirm('停止灰度？候选版本将停用，所有用户回到已发布基线。')) return
+      this.promptBusy = true; this.promptError = ''
+      try {
+        const res = await request.delete('/admin/prompts/rollout')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '停止灰度失败')
+        await Promise.all([this.loadPromptRollout(), this.loadPromptVersions()])
+        this.promptSuccess = '灰度已停止，用户回到基线版本。'
+      } catch (error) { this.promptError = error.response?.data?.msg || error.message || '停止灰度失败' }
+      finally { this.promptBusy = false }
+    },
+    async comparePromptVersions() {
+      if (this.promptCompareRunning || !this.promptCompareBase || !this.promptCompareCandidate || this.promptCompareBase === this.promptCompareCandidate) return
+      const cases = this.promptComparableCases
+      if (!cases.length) { this.promptCompareError = '题库中没有需要模型回答的生产链路题'; return }
+      if (this.promptCompareRealCall && !confirm(`将分别对两个版本调用 ${cases.length} 题，共最多 ${cases.length * 2} 次模型请求，可能产生费用。继续吗？`)) return
+      this.promptCompareRunning = true; this.promptCompareProgress = 0; this.promptCompareResults = []; this.promptCompareError = ''
+      try {
+        for (const testCase of cases) {
+          for (const version of [this.promptCompareBase, this.promptCompareCandidate]) {
+            const res = await request.post('/admin/llm-cost-evaluation/evaluate', {
+              question: testCase.question, history: testCase.history || [], promptVersion: version,
+              includeAnswerPreview: this.promptCompareRealCall, realCall: this.promptCompareRealCall,
+              expectedOutputTokens: testCase.expected_output_tokens || 300,
+              inputPricePerMillion: this.llmCostInputPrice, outputPricePerMillion: this.llmCostOutputPrice,
+              userId: Number(localStorage.getItem('userId')) || null, executionTarget: 'production',
+              requestedStrategy: testCase.requested_strategy || 'auto', costBudget: testCase.cost_budget || 'standard'
+            }, { timeout: this.promptCompareRealCall ? 60000 : 30000 })
+            if (res.data.code !== 200) throw new Error(`${testCase.id} v${version}: ${res.data.msg || '评测失败'}`)
+            const row = res.data.data
+            const expectedIntent = testCase.expected_intent || 'AUTO'
+            const expectedStrategy = testCase.expected_strategy || 'AUTO'
+            const evidenceLimit = Number(testCase.expected_evidence_count)
+            const evidenceCount = Number(row.evidenceCount)
+            const passed = (expectedIntent === 'AUTO' || row.intent === expectedIntent) &&
+              (expectedStrategy === 'AUTO' || row.selectedStrategy === expectedStrategy) &&
+              (evidenceLimit === 0 ? evidenceCount === 0 : evidenceCount > 0 && evidenceCount <= evidenceLimit) && Number(row.modelCalls) > 0
+            this.promptCompareResults.push({ ...row, version, caseId: testCase.id, question: testCase.question, passed })
+            this.promptCompareProgress++
+          }
+        }
+      } catch (error) { this.promptCompareError = error.response?.data?.msg || error.message || '版本对比失败' }
+      finally { this.promptCompareRunning = false }
     },
     async loadPromptVersions() {
       this.promptLoading = true
@@ -970,7 +1079,7 @@ export default {
       }
     },
     promptStatusLabel(status) {
-      return { published: '已发布', draft: '草稿', inactive: '已停用' }[status] || status
+      return { published: '已发布', draft: '草稿', inactive: '已停用', gray: '灰度中' }[status] || status
     },
     formatPromptDate(value) {
       const date = new Date(value)
@@ -2007,6 +2116,7 @@ export default {
 .evaluation-empty { display: grid; min-height: 180px; place-items: center; color: #9e97aa; font-size: 13px; }.evaluation-failures { overflow-y: auto; max-height: 430px; padding: 12px; }.evaluation-failures article { margin-bottom: 10px; padding: 12px; border: 1px solid #f0dbe0; border-radius: 11px; background: #fff9fa; }.evaluation-failures article:last-child { margin-bottom: 0; }.evaluation-failures article div { display: flex; align-items: center; gap: 8px; }.evaluation-failures article strong { color: #c04b61; font-size: 12px; }.evaluation-failures article span { padding: 2px 6px; border-radius: 99px; color: #98717a; background: #f8e8eb; font-size: 9px; }.evaluation-failures p { margin: 7px 0; color: #544b5e; font-size: 12px; line-height: 1.45; }.evaluation-failures small { color: #9b8690; font-size: 10px; }
 .llm-cost-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.llm-cost-mode { display: inline-flex !important; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.32); border-radius: 9px; color: #fff !important; background: rgba(255,255,255,.1); white-space: nowrap; }.llm-cost-mode input { accent-color: #a889ee; }.llm-cost-settings { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 16px; padding: 14px 18px; border: 1px solid #e6e0f3; border-radius: 14px; background: #fff; }.llm-cost-settings label { display: grid; gap: 6px; color: #625978; font-size: 11px; }.llm-cost-settings input { width: 150px; padding: 8px 10px; border: 1px solid #ded7ec; border-radius: 8px; }.llm-cost-settings small { flex: 1; color: #928aa1; line-height: 1.5; }.llm-cost-result-table { max-height: 520px; }.llm-cost-result-table table { min-width: 1050px; }.llm-cost-mismatch { background: #fff8f9; }.llm-cost-mismatch td:first-child strong { color: #ca5365; }.llm-cost-metrics .evaluation-metric strong { font-size: 24px; }
 .prompt-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.prompt-notice, .prompt-success { margin: 0 0 18px; padding: 13px 16px; border: 1px solid #e2d9f3; border-radius: 12px; color: #64587b; background: #fff; font-size: 13px; line-height: 1.6; }.prompt-success { border-color: #bde5d5; color: #277255; background: #f0fbf6; }.prompt-dashboard .evaluation-state { margin-bottom: 18px; }.prompt-layout { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(320px,.9fr); gap: 18px; align-items: start; }.prompt-version-list { overflow-y: auto; max-height: 680px; padding: 15px; }.prompt-version-item { margin-bottom: 12px; padding: 16px; border: 1px solid #e7e1f3; border-radius: 12px; background: #fff; }.prompt-version-item:last-child { margin-bottom: 0; }.prompt-version-current { border-color: #9270d0; background: #faf7ff; }.prompt-version-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }.prompt-version-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }.prompt-version-heading strong { color: #3c3159; font-size: 14px; }.prompt-version-heading small { color: #8f869e; font-size: 11px; white-space: nowrap; }.prompt-status { padding: 3px 8px; border-radius: 99px; background: #f0ecf7; color: #736784; font-size: 10px; }.prompt-status-published { color: #1e7956; background: #def5e9; }.prompt-status-draft { color: #7854b5; background: #eee7ff; }.prompt-version-preview { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; margin: 12px 0; color: #6f667e; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }.prompt-version-actions { display: flex; gap: 8px; flex-wrap: wrap; }.prompt-version-actions button { padding: 7px 11px; border: 1px solid #c9b8e9; border-radius: 8px; color: #6545a7; background: #fff; font: inherit; font-size: 11px; cursor: pointer; }.prompt-version-actions button.danger { border-color: #efbec6; color: #bd4f64; }.prompt-version-actions button:disabled { cursor: not-allowed; opacity: .5; }.prompt-editor-body { padding: 18px; }.prompt-editor-body label { display: block; margin-bottom: 9px; color: #4b3f65; font-size: 13px; font-weight: 700; }.prompt-editor-body textarea { box-sizing: border-box; width: 100%; min-height: 360px; padding: 13px; resize: vertical; border: 1px solid #d9d0e9; border-radius: 10px; color: #3d3550; background: #fcfbff; font: inherit; font-size: 12px; line-height: 1.7; }.prompt-editor-body small { display: block; margin-top: 7px; color: #91869e; font-size: 11px; }.prompt-editor-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }.prompt-editor-actions button { padding: 9px 15px; border-radius: 9px; font: inherit; font-size: 12px; cursor: pointer; }.prompt-editor-actions button:disabled { cursor: not-allowed; opacity: .5; }
+.prompt-rollout-panel, .prompt-compare-panel { margin-bottom: 18px; }.prompt-rollout-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px; color: #5b5271; font-size: 13px; }.prompt-rollout-body p { flex-basis: 100%; margin: 0; line-height: 1.6; }.prompt-rollout-body select, .prompt-rollout-body input[type=number] { padding: 7px; border: 1px solid #d9d0e9; border-radius: 8px; background: #fff; }.prompt-rollout-body input[type=number] { width: 58px; }.prompt-rollout-body button { padding: 8px 12px; border: 1px solid #8666c3; border-radius: 8px; color: #fff; background: #7454b4; cursor: pointer; }.prompt-rollout-body button:disabled { opacity: .5; cursor: not-allowed; }.prompt-answer-review { padding: 0 16px 16px; }.prompt-answer-review details { margin-top: 8px; padding: 9px; border: 1px solid #e7e1f3; border-radius: 8px; }.prompt-answer-review summary { cursor: pointer; }.prompt-answer-review p { white-space: pre-wrap; }.prompt-status-gray { color: #915d1e; background: #fff0d1; }
 @media (max-width: 800px) { .statistics-dashboard { padding: 18px; }.stats-toolbar { align-items: flex-start; flex-direction: column; }.stats-kpis { grid-template-columns: 1fr; }.song-bar-chart { overflow-x: auto; }.song-bar-chart .bar-column { min-width: 84px; }.daily-chart-wrap { overflow-x: auto; }.daily-bar-chart { min-width: 600px; } }
 @media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 1100px) { .prompt-layout { grid-template-columns: 1fr; } }

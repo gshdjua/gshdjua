@@ -136,6 +136,10 @@ Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`�
 
 管理后台侧边栏的「Prompt 版本管理」可查看完整模板、从现有版本创建草稿、编辑草稿、发布、停用、回滚和删除版本。当前已发布版本不能直接删除，须先停用；删除草稿或已停用版本会清空模板正文并从列表移除，但保留版本号标识用于审计和避免编号重复。对应接口为 `GET /api/admin/prompts`、`POST /api/admin/prompts`、`PUT /api/admin/prompts/{id}`、`DELETE /api/admin/prompts/{id}`、`POST /api/admin/prompts/{id}/publish`、`POST /api/admin/prompts/{id}/disable` 和 `POST /api/admin/prompts/{id}/rollback`。只有管理员令牌能访问这些接口。Agent 原生评测仍使用其独立规则，不受这个正式回答 Prompt 影响。
 
+管理员还可在同一页面用生产链路中需要模型回答的成本题，将两个 Prompt 版本按相同题目对比。模拟模式不请求 DeepSeek，只估算输入 Token 和费用；勾选真实调用并二次确认后，页面展示结构规则通过数、实际 Token、费用、延迟和本次返回的回答，供人工审阅。结构规则通过率不是事实准确率，回答正文不写入评测审计表。
+
+灰度发布可选草稿或已停用版本作为候选，设置 1%–99% 的流量比例；同一登录用户按固定桶号稳定命中基线或候选，未登录或分流表不可用时继续使用已发布基线。灰度期间不能停用或更换基线，候选模板也不能编辑或删除。停止灰度会停用候选并让所有用户回到基线；如需全量发布，先停止灰度，再发布候选版本。管理员接口为 `GET/POST/DELETE /api/admin/prompts/rollout`；成本评测接口可用 `promptVersion` 指定评测版本，不改变普通聊天的灰度设置。
+
 ### 9. 检索效果可以量化评估
 
 管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。LLM 成本评测 V2 支持模拟或真实调用，逐题展示本地/Agent 执行路径、Direct/ReAct 策略、模型/工具/轮次、证据量、Token、延迟、预算状态和费用，并汇总本地绕过率、策略分布、P95 延迟、预算停止数和规则通过率。测试集与导出报告带有 `2.0` 版本：原有 6 题作为生产链路历史基线，新增 5 题“Agent 原生执行”题组，分别检查 `favorite_search`、`recommend_songs`、`vector_search`、`song_detail` 和 ReAct 多工具协作。原生题组直接把原始问题交给 Agent，不预先由 Java 准备证据；模拟模式只预览路由和 Direct 工具计划，真实模式才检查工具是否实际执行并产生 API 费用。原生评测不写入会话状态或长期记忆，审计仍只保存不含问题、回答和工具数据的元数据。

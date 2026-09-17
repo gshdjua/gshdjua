@@ -30,6 +30,9 @@ class AssistantQueryUnderstandingServiceTest {
         assertEquals(AssistantIntent.GENERAL, service.classify("我喜欢轻松的音乐"));
         assertEquals(java.util.Arrays.asList("轻音乐", "动漫"), service.requestedGenres("推荐动漫类型的轻音乐歌曲"));
         assertTrue(service.requestedGenres("请推荐一些轻松的歌曲").isEmpty());
+        String normalized = service.normalize("推荐三首轻松的动漫歌曲");
+        assertEquals("推荐三首轻松的动画歌曲", normalized);
+        assertEquals(java.util.Collections.singletonList("动漫"), service.requestedGenres(normalized));
     }
 
     @Test

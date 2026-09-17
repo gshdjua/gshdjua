@@ -72,10 +72,17 @@ public class LlmCostEvaluationController {
         String executionTarget = text(payload.get("executionTarget"));
         String requestedStrategy = text(payload.get("requestedStrategy"));
         String costBudget = text(payload.get("costBudget"));
+        Integer promptVersion = nullableInteger(payload.get("promptVersion"));
+        if (payload.get("promptVersion") != null && promptVersion == null) {
+            return response(400, "Prompt 版本号不合法", null);
+        }
+        boolean includeAnswerPreview = booleanValue(payload.get("includeAnswerPreview"));
         try {
             return response(200, "success", musicAgent.evaluateLlmCost(question, userId,
                     history(payload.get("history")), realCall, expectedOutputTokens, inputPrice, outputPrice,
-                    executionTarget, requestedStrategy, costBudget));
+                    executionTarget, requestedStrategy, costBudget, promptVersion, includeAnswerPreview));
+        } catch (IllegalArgumentException exception) {
+            return response(400, exception.getMessage(), null);
         } catch (Exception exception) {
             return response(500, "成本评测失败：" + exception.getMessage(), null);
         }

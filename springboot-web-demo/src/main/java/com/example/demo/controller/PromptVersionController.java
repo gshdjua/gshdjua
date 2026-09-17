@@ -29,6 +29,22 @@ public class PromptVersionController {
         return run(service::list);
     }
 
+    @GetMapping("/rollout")
+    public Map<String, Object> rollout() {
+        return run(service::rollout);
+    }
+
+    @PostMapping("/rollout")
+    public Map<String, Object> startRollout(@RequestBody Map<String, Object> payload) {
+        return run(() -> service.startRollout(Long.parseLong(text(payload.get("candidateId"))),
+                Integer.parseInt(text(payload.get("trafficPercent")))));
+    }
+
+    @DeleteMapping("/rollout")
+    public Map<String, Object> stopRollout() {
+        return run(service::stopRollout);
+    }
+
     @PostMapping
     public Map<String, Object> createDraft(@RequestBody Map<String, Object> payload) {
         return run(() -> service.createDraft(text(payload.get("template"))));

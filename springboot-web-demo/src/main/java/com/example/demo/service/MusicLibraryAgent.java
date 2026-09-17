@@ -136,7 +136,7 @@ public class MusicLibraryAgent {
         int favoriteExcludedCount = 0;
         if (userId != null && !requestedGenres.isEmpty()) {
             for (Audio favorite : audioMapper.selectUserCollects(userId)) {
-                if (MusicGenreUtils.containsAll(favorite.getGenre(), requestedGenres)) favoriteExcludedCount++;
+                if (matchesExplicitRecommendationConstraints(favorite, message, requestedGenres)) favoriteExcludedCount++;
             }
         }
         String shortfallReason = selected.size() >= safeRequestedCount ? ""
@@ -171,7 +171,7 @@ public class MusicLibraryAgent {
     private String shortageExplanation(RecommendationOutcome outcome, String answer) {
         if (!outcome.hasShortfall()) return answer;
         if (outcome.getFavoriteExcludedCount() > 0) {
-            return answer + "\n\n你希望获得 " + outcome.getRequestedCount() + " 首；符合类型的歌曲中有 "
+            return answer + "\n\n你希望获得 " + outcome.getRequestedCount() + " 首；符合条件的歌曲中有 "
                     + outcome.getFavoriteExcludedCount() + " 首已在你的收藏中，排除后目前只有 "
                     + outcome.getAvailableCount() + " 首可推荐，因此本次没有为了凑数加入已收藏或不符合条件的歌曲。";
         }
@@ -304,13 +304,31 @@ public class MusicLibraryAgent {
         Map<Integer, Integer> semanticRanks = semanticRanks(message, excludedIds);
         List<Audio> candidates = songs.stream()
                 .filter(song -> !excludedIds.contains(song.getId()))
-                .filter(song -> MusicGenreUtils.containsAll(song.getGenre(), requestedGenres))
+                .filter(song -> matchesExplicitRecommendationConstraints(song, message, requestedGenres))
                 .sorted(Comparator.comparingInt((Audio song) -> isMoodRecommendation(message) ? moodKeywordScore(song, message) : 0).reversed()
                         .thenComparingInt(song -> semanticRanks.getOrDefault(song.getId(), Integer.MAX_VALUE))
                         .thenComparing((Audio song) -> song.getCollectCount() == null ? 0 : song.getCollectCount(), Comparator.reverseOrder())
                         .thenComparing(Audio::getUploadTime, Comparator.nullsLast(Comparator.reverseOrder())))
                 .collect(Collectors.toList());
         return candidates.subList(0, Math.min(Math.max(1, limit), candidates.size()));
+    }
+
+    private boolean matchesExplicitRecommendationConstraints(Audio song, String message, List<String> requestedGenres) {
+        if (!MusicGenreUtils.containsAll(song.getGenre(), requestedGenres)) return false;
+        // Mood is inferred later from the candidate's description and model judgment, not a required DB tag.
+        // For the combined anime + relaxed request, a genre tag alone does not prove anime provenance.
+        return !requestedGenres.contains("动漫") || !requiresStrictRelaxedMood(message) || hasAnimeProvenance(song);
+    }
+
+    private boolean requiresStrictRelaxedMood(String message) {
+        return queryUnderstandingService.normalize(message).contains("轻松");
+    }
+
+    private boolean hasAnimeProvenance(Audio song) {
+        String source = song.getSource() == null ? "" : song.getSource().trim();
+        if (!source.isEmpty() && !"未填写".equals(source) && !"未知".equals(source)) return true;
+        String introduction = song.getIntroduction() == null ? "" : song.getIntroduction().toLowerCase(Locale.ROOT);
+        return containsAny(introduction, "动画《", "动漫《", "番剧《", "tv动画《", "アニメ《");
     }
 
     private Map<Integer, Integer> semanticRanks(String message, Set<Integer> excludedIds) {
@@ -335,7 +353,7 @@ public class MusicLibraryAgent {
                 + (song.getIntroduction() == null ? "" : song.getIntroduction())).toLowerCase(Locale.ROOT);
         String normalized = queryUnderstandingService.normalize(message);
         int score = 0;
-        if (normalized.contains("轻松") && containsAny(text, "轻松", "轻音乐", "纯音乐", "钢琴", "治愈", "舒缓", "欢快", "日常", "明快", "放松", "温柔", "宁静")) score += 20;
+        if (normalized.contains("轻松") && containsAny(text, "轻松", "轻快", "轻音乐", "纯音乐", "钢琴", "治愈", "舒缓", "欢快", "日常", "明快", "放松", "温柔", "宁静")) score += 20;
         if (normalized.contains("治愈") && containsAny(text, "治愈", "温柔", "舒缓", "宁静", "轻音乐", "钢琴")) score += 20;
         if (normalized.contains("舒缓") && containsAny(text, "舒缓", "宁静", "温柔", "轻音乐", "纯音乐", "钢琴", "放松")) score += 20;
         if (normalized.contains("欢快") && containsAny(text, "欢快", "明快", "活泼", "轻快")) score += 20;

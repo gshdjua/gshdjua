@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @Service
@@ -46,16 +47,112 @@ public class PromptVersionService {
     }
 
     public SelectedPrompt currentAnswerPrompt() {
+        return currentAnswerPrompt(null);
+    }
+
+    public SelectedPrompt currentAnswerPrompt(Integer userId) {
+        SelectedPrompt baseline;
         try {
             List<SelectedPrompt> prompts = jdbc.query(
                     "SELECT version, template_text FROM prompt_version WHERE name=? AND status='published' LIMIT 1",
                     (rs, rowNum) -> new SelectedPrompt(rs.getString("template_text"),
                             "music_answer:v" + rs.getInt("version")), ANSWER_PROMPT);
-            if (!prompts.isEmpty() && !prompts.get(0).template.trim().isEmpty()) return prompts.get(0);
+            baseline = !prompts.isEmpty() && !prompts.get(0).template.trim().isEmpty()
+                    ? prompts.get(0) : new SelectedPrompt(FALLBACK_TEMPLATE, "music_answer:fallback");
         } catch (DataAccessException exception) {
             LOGGER.warn("Published answer prompt unavailable; using built-in fallback: {}", exception.getClass().getSimpleName());
+            return new SelectedPrompt(FALLBACK_TEMPLATE, "music_answer:fallback");
         }
-        return new SelectedPrompt(FALLBACK_TEMPLATE, "music_answer:fallback");
+        if (userId == null || "music_answer:fallback".equals(baseline.version)) return baseline;
+        try {
+            List<RolloutCandidate> candidates = jdbc.query(
+                    "SELECT pv.version,pv.template_text,pr.traffic_percent FROM prompt_rollout pr "
+                            + "JOIN prompt_version pv ON pv.id=pr.candidate_id "
+                            + "WHERE pr.name=? AND pr.enabled=1 AND pv.status='gray' LIMIT 1",
+                    (rs, rowNum) -> new RolloutCandidate(
+                            new SelectedPrompt(rs.getString("template_text"), "music_answer:v" + rs.getInt("version")),
+                            rs.getInt("traffic_percent")), ANSWER_PROMPT);
+            if (!candidates.isEmpty() && !candidates.get(0).prompt.template.trim().isEmpty()
+                    && stableBucket(userId) < candidates.get(0).percent) return candidates.get(0).prompt;
+        } catch (DataAccessException exception) {
+            LOGGER.warn("Prompt rollout unavailable; using published baseline: {}", exception.getClass().getSimpleName());
+        }
+        return baseline;
+    }
+
+    public SelectedPrompt forEvaluation(int version) {
+        List<SelectedPrompt> prompts = jdbc.query(
+                "SELECT version,template_text FROM prompt_version WHERE name=? AND version=? AND status<>'deleted'",
+                (rs, rowNum) -> new SelectedPrompt(rs.getString("template_text"),
+                        "music_answer:v" + rs.getInt("version")), ANSWER_PROMPT, version);
+        if (prompts.isEmpty() || prompts.get(0).template.trim().isEmpty()) {
+            throw new IllegalArgumentException("指定的 Prompt 版本不存在或已删除");
+        }
+        return prompts.get(0);
+    }
+
+    int stableBucket(Integer userId) {
+        return Math.floorMod((ANSWER_PROMPT + ":" + userId).hashCode(), 100);
+    }
+
+    public Map<String, Object> rollout() {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT pr.enabled,pr.traffic_percent AS trafficPercent,pv.id AS candidateId,"
+                        + "pv.version AS candidateVersion,base.version AS baselineVersion "
+                        + "FROM prompt_rollout pr LEFT JOIN prompt_version pv ON pv.id=pr.candidate_id "
+                        + "LEFT JOIN prompt_version base ON base.name=pr.name AND base.status='published' "
+                        + "WHERE pr.name=?", ANSWER_PROMPT);
+        if (!rows.isEmpty()) return rows.get(0);
+        Map<String, Object> empty = new LinkedHashMap<>();
+        empty.put("enabled", false);
+        empty.put("trafficPercent", 0);
+        return empty;
+    }
+
+    @Transactional
+    public Map<String, Object> startRollout(long candidateId, int percent) {
+        if (percent < 1 || percent > 99) throw new IllegalArgumentException("灰度比例须在 1% 到 99% 之间");
+        lockPromptName();
+        if (rolloutEnabled()) throw new IllegalArgumentException("已有灰度发布在运行，请先停止");
+        Map<String, Object> candidate = byId(candidateId);
+        String status = String.valueOf(candidate.get("status"));
+        if (!"draft".equals(status) && !"inactive".equals(status)) {
+            throw new IllegalArgumentException("只能将草稿或已停用版本设为灰度候选");
+        }
+        List<Map<String, Object>> baseline = jdbc.queryForList(
+                "SELECT id FROM prompt_version WHERE name=? AND status='published'", ANSWER_PROMPT);
+        if (baseline.isEmpty()) throw new IllegalArgumentException("灰度发布前必须有一个已发布的基线版本");
+        jdbc.update("UPDATE prompt_version SET status='gray' WHERE id=? AND name=? AND status IN ('draft','inactive')",
+                candidateId, ANSWER_PROMPT);
+        jdbc.update("INSERT INTO prompt_rollout(name,candidate_id,traffic_percent,enabled) VALUES(?,?,?,1) "
+                        + "ON DUPLICATE KEY UPDATE candidate_id=VALUES(candidate_id),"
+                        + "traffic_percent=VALUES(traffic_percent),enabled=1",
+                ANSWER_PROMPT, candidateId, percent);
+        return rollout();
+    }
+
+    @Transactional
+    public Map<String, Object> stopRollout() {
+        lockPromptName();
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT candidate_id FROM prompt_rollout WHERE name=? AND enabled=1 FOR UPDATE", ANSWER_PROMPT);
+        if (rows.isEmpty()) throw new IllegalArgumentException("当前没有运行中的灰度发布");
+        Object candidateId = rows.get(0).get("candidate_id");
+        jdbc.update("UPDATE prompt_rollout SET enabled=0,traffic_percent=0 WHERE name=?", ANSWER_PROMPT);
+        if (candidateId != null) jdbc.update(
+                "UPDATE prompt_version SET status='inactive' WHERE id=? AND name=? AND status='gray'",
+                candidateId, ANSWER_PROMPT);
+        return rollout();
+    }
+
+    private boolean rolloutEnabled() {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT enabled FROM prompt_rollout WHERE name=? AND enabled=1", ANSWER_PROMPT);
+        return !rows.isEmpty();
+    }
+
+    private void lockPromptName() {
+        jdbc.queryForList("SELECT id FROM prompt_version WHERE name=? ORDER BY id LIMIT 1 FOR UPDATE", ANSWER_PROMPT);
     }
 
     public List<Map<String, Object>> list() {
@@ -96,7 +193,8 @@ public class PromptVersionService {
 
     @Transactional
     public Map<String, Object> publish(long id) {
-        jdbc.queryForList("SELECT id FROM prompt_version WHERE name=? ORDER BY id LIMIT 1 FOR UPDATE", ANSWER_PROMPT);
+        lockPromptName();
+        if (rolloutEnabled()) throw new IllegalArgumentException("灰度发布运行中，请先停止灰度再正式发布");
         Map<String, Object> target = byId(id);
         if ("published".equals(target.get("status"))) return target;
         if (!"draft".equals(target.get("status")) && !"inactive".equals(target.get("status"))) {
@@ -109,7 +207,10 @@ public class PromptVersionService {
         return byId(id);
     }
 
+    @Transactional
     public Map<String, Object> disable(long id) {
+        lockPromptName();
+        if (rolloutEnabled()) throw new IllegalArgumentException("灰度发布运行中，请先停止灰度再停用基线版本");
         int changed = jdbc.update("UPDATE prompt_version SET status='inactive' WHERE id=? AND name=? AND status='published'",
                 id, ANSWER_PROMPT);
         if (changed != 1) throw new IllegalArgumentException("只有已发布版本可以停用");
@@ -174,5 +275,15 @@ public class PromptVersionService {
 
         public String getTemplate() { return template; }
         public String getVersion() { return version; }
+    }
+
+    private static final class RolloutCandidate {
+        private final SelectedPrompt prompt;
+        private final int percent;
+
+        private RolloutCandidate(SelectedPrompt prompt, int percent) {
+            this.prompt = prompt;
+            this.percent = percent;
+        }
     }
 }

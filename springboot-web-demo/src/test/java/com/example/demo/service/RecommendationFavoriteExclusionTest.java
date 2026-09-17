@@ -128,6 +128,43 @@ class RecommendationFavoriteExclusionTest {
     }
 
     @Test
+    void relaxedAnimeCandidatesRequireAnimeProvenanceButNotAMoodTag() {
+        AudioMapper audioMapper = mock(AudioMapper.class);
+        AssistantQueryUnderstandingService understanding = new AssistantQueryUnderstandingService();
+        VectorRagClient vectorRagClient = mock(VectorRagClient.class);
+        MusicRagRetriever keywordRetriever = mock(MusicRagRetriever.class);
+        MusicLibraryAgent agent = new MusicLibraryAgent();
+        ReflectionTestUtils.setField(agent, "audioMapper", audioMapper);
+        ReflectionTestUtils.setField(agent, "queryUnderstandingService", understanding);
+        ReflectionTestUtils.setField(agent, "vectorRagClient", vectorRagClient);
+        ReflectionTestUtils.setField(agent, "musicRagRetriever", keywordRetriever);
+
+        Audio flowerDance = audio(1, "Flower Dance", "DJ Okawari", "动漫,轻音乐");
+        flowerDance.setIntroduction("钢琴旋律舒缓，但本地未填写动画出处");
+        Audio energeticAnime = audio(2, "激昂动画歌曲", "歌手A", "动漫");
+        energeticAnime.setSource("TV动画《作品A》");
+        energeticAnime.setIntroduction("激烈的摇滚和热血节奏");
+        Audio relaxedNonAnime = audio(3, "普通钢琴曲", "歌手B", "轻音乐");
+        relaxedNonAnime.setIntroduction("轻快舒缓的钢琴曲");
+        Audio relaxedAnime = audio(4, "轻快动画歌曲", "歌手C", "动漫");
+        relaxedAnime.setSource("TV动画《作品B》");
+        relaxedAnime.setIntroduction("旋律轻快，适合轻松时听");
+        String question = "推荐三首轻松的动漫歌曲";
+        when(audioMapper.selectAll()).thenReturn(java.util.Arrays.asList(flowerDance, energeticAnime, relaxedNonAnime, relaxedAnime));
+        when(audioMapper.selectUserCollects(10)).thenReturn(Collections.emptyList());
+        when(vectorRagClient.search(understanding.normalize(question), 20)).thenReturn(Collections.singletonList(flowerDance));
+        when(keywordRetriever.retrieve(question, null, 20)).thenReturn(Collections.emptyList());
+
+        assertEquals(Collections.singletonList("动漫"), understanding.requestedGenres(understanding.normalize(question)));
+        MusicLibraryAgent.RecommendationOutcome outcome = agent.getRecommendationOutcome(
+                understanding.normalize(question), 10, 3, Collections.emptySet());
+        assertEquals(java.util.Arrays.asList(4, 2), outcome.getSongs().stream().map(Audio::getId)
+                .collect(java.util.stream.Collectors.toList()));
+        assertEquals(2, outcome.getAvailableCount());
+        assertTrue(agent.formatRecommendationReply(question, outcome).contains("只有 2 首"));
+    }
+
+    @Test
     void recommendationOutcomeExplainsFavoriteShortfallAndReturnsEveryAvailableCandidate() {
         AudioMapper audioMapper = mock(AudioMapper.class);
         AssistantQueryUnderstandingService understanding = new AssistantQueryUnderstandingService();

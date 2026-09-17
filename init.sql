@@ -147,6 +147,15 @@ CREATE TABLE IF NOT EXISTS prompt_version (
     UNIQUE KEY uk_prompt_active_name (active_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS prompt_rollout (
+    name VARCHAR(100) PRIMARY KEY,
+    candidate_id BIGINT NULL,
+    traffic_percent INT NOT NULL DEFAULT 0,
+    enabled TINYINT(1) NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (candidate_id) REFERENCES prompt_version(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS assistant_prompt_usage (
     assistant_message_id BIGINT PRIMARY KEY,
     prompt_version VARCHAR(120) NOT NULL,

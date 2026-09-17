@@ -27,8 +27,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -49,6 +51,7 @@ public class DeepSeekMusicAgent {
     private final ThreadLocal<Integer> currentUserId = new ThreadLocal<>();
     private final ThreadLocal<String> currentRequestId = new ThreadLocal<>();
     private final ThreadLocal<String> lastPromptVersion = new ThreadLocal<>();
+    private final ThreadLocal<Integer> evaluationPromptVersion = new ThreadLocal<>();
 
     @Autowired
     private AudioMapper audioMapper;
@@ -93,9 +96,12 @@ public class DeepSeekMusicAgent {
         }
         AssistantIntent intent = queryUnderstandingService.classify(message);
         String normalizedMessage = queryUnderstandingService.normalize(message);
-        List<Audio> exactSourceSongs = musicLibraryAgent.findExactSourceSongs(normalizedMessage, 5);
-        if (asksForSourceSongList(normalizedMessage) && !exactSourceSongs.isEmpty()) {
-            return replyWithLocalEvidence(normalizedMessage, userId, history, exactSourceSongs, "出处精确 SQL", AssistantIntent.SOURCE_QUERY);
+        if (intent != AssistantIntent.RECOMMENDATION && asksForSourceSongList(normalizedMessage)) {
+            List<Audio> exactSourceSongs = musicLibraryAgent.findExactSourceSongs(normalizedMessage, 5);
+            if (!exactSourceSongs.isEmpty()) {
+                return replyWithLocalEvidence(normalizedMessage, userId, history, exactSourceSongs,
+                        "出处精确 SQL", AssistantIntent.SOURCE_QUERY);
+            }
         }
         if (intent == AssistantIntent.RECOMMENDATION && isMoodQuestion(normalizedMessage)) {
             boolean asksForAlternatives = asksForAlternatives(normalizedMessage);
@@ -185,17 +191,50 @@ public class DeepSeekMusicAgent {
     private String replyWithRecommendationEvidence(String message, List<Map<String, String>> history,
                                                    MusicLibraryAgent.RecommendationOutcome outcome,
                                                    String retrievalMethod) {
-        String localAnswer = musicLibraryAgent.formatRecommendationReply(message, outcome);
         List<Audio> songs = outcome.getSongs();
-        if (songs.isEmpty() || outcome.hasShortfall() || getApiKey().isEmpty()) return localAnswer;
+        boolean modelJudgesMood = isAnimeMoodQuestion(message);
+        String localAnswer = modelJudgesMood
+                ? unverifiedMoodCandidateReply(outcome) : musicLibraryAgent.formatRecommendationReply(message, outcome);
+        if (songs.isEmpty() || getApiKey().isEmpty() || (outcome.hasShortfall() && !modelJudgesMood)) {
+            if (modelJudgesMood) currentRecommendationOutcome.remove();
+            return localAnswer;
+        }
         EvidenceContext evidenceContext = buildSongEvidenceContext(
                 retrievalMethod, songs, outcome.getRequestedCount());
         try {
             String answer = requestDeepSeek(message, evidenceContext, history);
-            return answer.isEmpty() || !mentionsEverySong(answer, songs) ? localAnswer : answer;
+            if (answer.isEmpty() || (!modelJudgesMood && !mentionsEverySong(answer, songs))
+                    || mentionsUnselectedSong(answer, songs)) {
+                if (modelJudgesMood) currentRecommendationOutcome.remove();
+                return localAnswer;
+            }
+            if (modelJudgesMood) currentRecommendationOutcome.set(recommendationsMentionedInAnswer(outcome, answer));
+            return answer;
         } catch (Exception exception) {
+            if (modelJudgesMood) currentRecommendationOutcome.remove();
             return localAnswer;
         }
+    }
+
+    private String unverifiedMoodCandidateReply(MusicLibraryAgent.RecommendationOutcome outcome) {
+        List<Audio> songs = outcome.getSongs();
+        if (songs.isEmpty()) return "本地歌库没有找到可核实动漫出处的候选歌曲，无法确认有符合轻松听感的歌曲。";
+        return "本地歌库找到 " + songs.size() + " 首有动漫类型和出处证据的候选："
+                + songs.stream().map(song -> "《" + song.getSongName() + "》- " + song.getSinger())
+                .collect(Collectors.joining("；"))
+                + "。当前无法核实这些歌曲是否符合轻松听感，因此不把它们算作已确认的推荐。";
+    }
+
+    MusicLibraryAgent.RecommendationOutcome recommendationsMentionedInAnswer(
+            MusicLibraryAgent.RecommendationOutcome candidates, String answer) {
+        String normalized = answer.toLowerCase(Locale.ROOT);
+        List<Audio> mentioned = candidates.getSongs().stream()
+                .filter(song -> song.getSongName() != null && !song.getSongName().isEmpty()
+                        && normalized.contains(song.getSongName().toLowerCase(Locale.ROOT)))
+                .collect(Collectors.toList());
+        return new MusicLibraryAgent.RecommendationOutcome(candidates.getRequestedCount(),
+                mentioned.size(), candidates.getFavoriteExcludedCount(),
+                mentioned.size() < candidates.getRequestedCount() ? "INSUFFICIENT_MATCHES" : "", mentioned);
     }
 
     private boolean mentionsEverySong(String answer, List<Audio> songs) {
@@ -206,6 +245,19 @@ public class DeepSeekMusicAgent {
             if (songName.isEmpty() || !normalized.contains(songName)) return false;
         }
         return true;
+    }
+
+    boolean mentionsUnselectedSong(String answer, List<Audio> selectedSongs) {
+        if (answer == null || answer.isEmpty()) return false;
+        Set<Integer> selectedIds = new LinkedHashSet<>();
+        for (Audio selected : selectedSongs) selectedIds.add(selected.getId());
+        String normalizedAnswer = answer.toLowerCase(Locale.ROOT);
+        for (Audio song : audioMapper.selectAll()) {
+            String songName = song.getSongName();
+            if (!selectedIds.contains(song.getId()) && songName != null && songName.length() >= 3
+                    && normalizedAnswer.contains(songName.toLowerCase(Locale.ROOT))) return true;
+        }
+        return false;
     }
 
     private String replyWithStrictEntityEvidence(String message, List<Map<String, String>> history,
@@ -498,9 +550,13 @@ public class DeepSeekMusicAgent {
 
     void appendAnswerSystemMessages(JSONArray messages) {
         messages.add(message("system", "安全规则：不得披露用户个人信息；本地歌库收录、歌曲名称、歌手、类型和出处只以本地证据为准；证据不足时明确说明，禁止编造歌曲或事实。"));
-        PromptVersionService.SelectedPrompt prompt = promptVersionService.currentAnswerPrompt();
+        Integer requestedVersion = evaluationPromptVersion.get();
+        PromptVersionService.SelectedPrompt prompt = requestedVersion == null
+                ? promptVersionService.currentAnswerPrompt(currentUserId.get())
+                : promptVersionService.forEvaluation(requestedVersion);
         lastPromptVersion.set(prompt.getVersion());
         messages.add(message("system", prompt.getTemplate()));
+        messages.add(message("system", "推荐规则：用户同时要求动漫出处与轻松听感时，只从本地提供的动漫候选中判断听感；轻松不是数据库必填标签，应依据候选简介谨慎判断。不要为凑够数量纳入不合适的歌曲；不足时说明只能确认几首。不要在最终回答中点名未推荐的候选歌曲。"));
     }
 
     public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
@@ -514,6 +570,41 @@ public class DeepSeekMusicAgent {
                                                 boolean realCall, int expectedOutputTokens,
                                                 double inputPricePerMillion, double outputPricePerMillion,
                                                 String executionTarget, String requestedStrategy, String costBudget) {
+        return evaluateLlmCost(message, userId, history, realCall, expectedOutputTokens,
+                inputPricePerMillion, outputPricePerMillion, executionTarget, requestedStrategy, costBudget,
+                null, false);
+    }
+
+    public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
+                                                boolean realCall, int expectedOutputTokens,
+                                                double inputPricePerMillion, double outputPricePerMillion,
+                                                String executionTarget, String requestedStrategy, String costBudget,
+                                                Integer promptVersion, boolean includeAnswerPreview) {
+        if (promptVersion != null && promptVersion < 1) throw new IllegalArgumentException("Prompt 版本号不合法");
+        if (promptVersion != null && "agent_native".equalsIgnoreCase(executionTarget)) {
+            throw new IllegalArgumentException("Agent 原生链路不使用 music_answer Prompt，不能指定版本");
+        }
+        try {
+            currentUserId.set(userId);
+            if (promptVersion != null) evaluationPromptVersion.set(promptVersion);
+            return evaluateLlmCostInternal(message, userId, history, realCall, expectedOutputTokens,
+                    inputPricePerMillion, outputPricePerMillion, executionTarget, requestedStrategy,
+                    costBudget, includeAnswerPreview);
+        } finally {
+            currentUserId.remove();
+            evaluationPromptVersion.remove();
+            lastPromptVersion.remove();
+            lastApiUsage.remove();
+            lastAgentResult.remove();
+        }
+    }
+
+    private Map<String, Object> evaluateLlmCostInternal(String message, Integer userId,
+                                                         List<Map<String, String>> history, boolean realCall,
+                                                         int expectedOutputTokens, double inputPricePerMillion,
+                                                         double outputPricePerMillion, String executionTarget,
+                                                         String requestedStrategy, String costBudget,
+                                                         boolean includeAnswerPreview) {
         if ("agent_native".equalsIgnoreCase(executionTarget)) {
             return evaluateAgentNativeCost(message, userId, realCall, expectedOutputTokens,
                     inputPricePerMillion, outputPricePerMillion, requestedStrategy, costBudget);
@@ -526,10 +617,12 @@ public class DeepSeekMusicAgent {
         int outputTokens = preview.modelRequired ? Math.max(1, expectedOutputTokens) : 0;
         boolean actualUsage = false;
         AgentServiceClient.AgentResult agentExecution = null;
+        String answerPreview = "";
         if (realCall && preview.modelRequired && isExternalModelConfigured()) {
             lastApiUsage.remove();
             lastAgentResult.remove();
-            reply(message, userId, history);
+            String answer = reply(message, userId, history);
+            if (includeAnswerPreview) answerPreview = answer;
             ApiUsage usage = lastApiUsage.get();
             agentExecution = lastAgentResult.get();
             if (usage != null) {
@@ -575,6 +668,7 @@ public class DeepSeekMusicAgent {
         result.put("totalTokens", totalTokens);
         result.put("estimatedCost", estimatedCost);
         result.put("elapsedMs", agentExecution == null ? System.currentTimeMillis() - startTime : agentExecution.getLatencyMs());
+        if (includeAnswerPreview && realCall) result.put("answerPreview", answerPreview);
         lastPromptVersion.remove();
         return result;
     }
@@ -673,16 +767,21 @@ public class DeepSeekMusicAgent {
                     Math.min(limit, songs.size()), buildSongEvidenceContext("严格实体 SQL", songs, limit));
         }
         AssistantIntent intent = queryUnderstandingService.classify(normalized);
-        List<Audio> exactSourceSongs = musicLibraryAgent.findExactSourceSongs(normalized, 5);
-        if (asksForSourceSongList(normalized) && !exactSourceSongs.isEmpty()) {
-            int limit = evidenceLimitForIntent(AssistantIntent.SOURCE_QUERY, normalized);
-            return new CostPreview(normalized, AssistantIntent.SOURCE_QUERY, true, limit,
-                    Math.min(limit, exactSourceSongs.size()), buildSongEvidenceContext("出处精确 SQL", exactSourceSongs, limit));
+        if (intent != AssistantIntent.RECOMMENDATION && asksForSourceSongList(normalized)) {
+            List<Audio> exactSourceSongs = musicLibraryAgent.findExactSourceSongs(normalized, 5);
+            if (!exactSourceSongs.isEmpty()) {
+                int limit = evidenceLimitForIntent(AssistantIntent.SOURCE_QUERY, normalized);
+                return new CostPreview(normalized, AssistantIntent.SOURCE_QUERY, true, limit,
+                        Math.min(limit, exactSourceSongs.size()), buildSongEvidenceContext("出处精确 SQL", exactSourceSongs, limit));
+            }
         }
         if (intent == AssistantIntent.RECOMMENDATION && isAnimeMoodQuestion(normalized)) {
             int limit = evidenceLimitForIntent(intent, normalized);
-            List<Audio> songs = musicLibraryAgent.getRecommendationsForQuery(normalized, userId, limit, new LinkedHashSet<>());
-            return new CostPreview(normalized, intent, !songs.isEmpty(), limit, Math.min(limit, songs.size()),
+            MusicLibraryAgent.RecommendationOutcome outcome = musicLibraryAgent.getRecommendationOutcome(
+                    normalized, userId, limit, new LinkedHashSet<>());
+            List<Audio> songs = outcome.getSongs();
+            return new CostPreview(normalized, intent, !songs.isEmpty(),
+                    limit, Math.min(limit, songs.size()),
                     buildSongEvidenceContext("动画出处筛选 + 本地向量 RAG", songs, limit));
         }
         if (intent == AssistantIntent.RECOMMENDATION || intent == AssistantIntent.FAVORITES

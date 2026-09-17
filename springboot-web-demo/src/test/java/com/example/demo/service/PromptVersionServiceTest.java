@@ -8,12 +8,15 @@ import org.springframework.jdbc.core.RowMapper;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.sql.ResultSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -42,6 +45,92 @@ class PromptVersionServiceTest {
                 .thenReturn(Collections.emptyList());
         assertEquals(PromptVersionService.FALLBACK_TEMPLATE, service.currentAnswerPrompt().getTemplate());
     }
+
+    @Test
+    void stableBucketDoesNotChangeForSameUserAndCanSelectGrayCandidate() {
+        assertEquals(service.stableBucket(123), service.stableBucket(123));
+        assertTrue(service.stableBucket(123) >= 0 && service.stableBucket(123) < 100);
+        when(jdbc.query(argThat(sql -> sql != null && sql.contains("status='published'")), any(RowMapper.class),
+                eq(PromptVersionService.ANSWER_PROMPT)))
+                .thenReturn(Collections.singletonList(new PromptVersionService.SelectedPrompt("基线规则", "music_answer:v1")));
+        when(jdbc.query(argThat(sql -> sql != null && sql.contains("prompt_rollout")), any(RowMapper.class),
+                eq(PromptVersionService.ANSWER_PROMPT)))
+                .thenAnswer(invocation -> {
+                    RowMapper<?> mapper = invocation.getArgument(1);
+                    ResultSet row = mock(ResultSet.class);
+                    when(row.getString("template_text")).thenReturn("候选规则");
+                    when(row.getInt("version")).thenReturn(2);
+                    when(row.getInt("traffic_percent")).thenReturn(100);
+                    return Collections.singletonList(mapper.mapRow(row, 0));
+                });
+        assertEquals("music_answer:v2", service.currentAnswerPrompt(123).getVersion());
+        assertEquals("music_answer:v2", service.currentAnswerPrompt(123).getVersion());
+    }
+
+    @Test
+    void missingRolloutTableKeepsPublishedBaseline() {
+        when(jdbc.query(argThat(sql -> sql != null && sql.contains("status='published'")), any(RowMapper.class),
+                eq(PromptVersionService.ANSWER_PROMPT)))
+                .thenReturn(Collections.singletonList(new PromptVersionService.SelectedPrompt("基线规则", "music_answer:v1")));
+        when(jdbc.query(argThat(sql -> sql != null && sql.contains("prompt_rollout")), any(RowMapper.class),
+                eq(PromptVersionService.ANSWER_PROMPT)))
+                .thenThrow(new DataAccessResourceFailureException("rollout unavailable"));
+        assertEquals("music_answer:v1", service.currentAnswerPrompt(123).getVersion());
+    }
+
+    @Test
+    void startRolloutRequiresBaselineAndValidPercent() {
+        when(jdbc.queryForList(argThat(sql -> sql.contains("AND id=?")),
+                eq(PromptVersionService.ANSWER_PROMPT), eq(7L)))
+                .thenReturn(Collections.singletonList(version(7L, 2, "draft")));
+        assertThrows(IllegalArgumentException.class, () -> service.startRollout(7L, 0));
+        assertThrows(IllegalArgumentException.class, () -> service.startRollout(7L, 10));
+        when(jdbc.queryForList("SELECT id FROM prompt_version WHERE name=? AND status='published'",
+                PromptVersionService.ANSWER_PROMPT))
+                .thenReturn(Collections.singletonList(Collections.singletonMap("id", 1L)));
+        when(jdbc.queryForList(argThat(sql -> sql.contains("FROM prompt_rollout pr LEFT")),
+                eq(PromptVersionService.ANSWER_PROMPT)))
+                .thenReturn(Collections.singletonList(Collections.singletonMap("enabled", 1)));
+        assertEquals(1, service.startRollout(7L, 10).get("enabled"));
+        verify(jdbc).update("UPDATE prompt_version SET status='gray' WHERE id=? AND name=? AND status IN ('draft','inactive')",
+                7L, PromptVersionService.ANSWER_PROMPT);
+    }
+
+    @Test
+    void activeRolloutBlocksBaselinePublish() {
+        when(jdbc.queryForList("SELECT enabled FROM prompt_rollout WHERE name=? AND enabled=1",
+                PromptVersionService.ANSWER_PROMPT))
+                .thenReturn(Collections.singletonList(Collections.singletonMap("enabled", 1)));
+        assertThrows(IllegalArgumentException.class, () -> service.publish(7L));
+        assertThrows(IllegalArgumentException.class, () -> service.disable(7L));
+    }
+
+    @Test
+    void evaluationCanSelectDraftWithoutPublishingIt() {
+        when(jdbc.query(anyString(), any(RowMapper.class), eq(PromptVersionService.ANSWER_PROMPT), eq(2)))
+                .thenAnswer(invocation -> {
+                    RowMapper<?> mapper = invocation.getArgument(1);
+                    ResultSet row = mock(ResultSet.class);
+                    when(row.getString("template_text")).thenReturn("候选草稿规则");
+                    when(row.getInt("version")).thenReturn(2);
+                    return Collections.singletonList(mapper.mapRow(row, 0));
+                });
+        assertEquals("music_answer:v2", service.forEvaluation(2).getVersion());
+        assertThrows(IllegalArgumentException.class, () -> service.forEvaluation(3));
+    }
+
+    @Test
+    void stopRolloutDisablesCandidateWithoutChangingBaseline() {
+        when(jdbc.queryForList("SELECT candidate_id FROM prompt_rollout WHERE name=? AND enabled=1 FOR UPDATE",
+                PromptVersionService.ANSWER_PROMPT))
+                .thenReturn(Collections.singletonList(Collections.singletonMap("candidate_id", 7L)));
+        assertEquals(false, service.stopRollout().get("enabled"));
+        verify(jdbc).update("UPDATE prompt_rollout SET enabled=0,traffic_percent=0 WHERE name=?",
+                PromptVersionService.ANSWER_PROMPT);
+        verify(jdbc).update("UPDATE prompt_version SET status='inactive' WHERE id=? AND name=? AND status='gray'",
+                7L, PromptVersionService.ANSWER_PROMPT);
+    }
+
 
     @Test
     void createsDraftWithoutPublishingAndRejectsBlankTemplate() {

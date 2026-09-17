@@ -126,7 +126,9 @@ public class AssistantQueryUnderstandingService {
             if (normalized.contains(genre)) genres.add("r&b".equals(genre) ? "R&B" : genre);
         }
         if (raw.contains("动漫") || raw.contains("动漫类型") || raw.contains("动画类型")
-                || raw.contains("番剧类型") || raw.contains("动漫歌")) {
+                || raw.contains("番剧类型") || raw.contains("动漫歌")
+                || normalized.contains("动画歌曲") || normalized.contains("动画歌")
+                || normalized.contains("动画音乐")) {
             genres.add("动漫");
         }
         if (raw.contains("游戏类型") || raw.contains("游戏音乐") || raw.contains("游戏歌曲")) {

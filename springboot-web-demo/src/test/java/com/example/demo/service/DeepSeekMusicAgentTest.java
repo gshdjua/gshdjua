@@ -1,6 +1,8 @@
 package com.example.demo.service;
 
 import com.alibaba.fastjson.JSONArray;
+import com.example.demo.entity.Audio;
+import com.example.demo.mapper.AudioMapper;
 import com.example.demo.service.retrieval.EntityType;
 import com.example.demo.service.retrieval.EntityQueryParser;
 import org.junit.jupiter.api.Test;
@@ -9,6 +11,8 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Arrays;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -19,6 +23,7 @@ import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 class DeepSeekMusicAgentTest {
 
@@ -27,16 +32,103 @@ class DeepSeekMusicAgentTest {
     @Test
     void productionAnswerUsesPublishedPromptAfterFixedSafetyRules() {
         PromptVersionService prompts = mock(PromptVersionService.class);
-        when(prompts.currentAnswerPrompt()).thenReturn(
+        when(prompts.currentAnswerPrompt(null)).thenReturn(
                 new PromptVersionService.SelectedPrompt("新版回答风格：简洁说明推荐理由。", "music_answer:v2"));
         ReflectionTestUtils.setField(agent, "promptVersionService", prompts);
         JSONArray messages = new JSONArray();
 
         agent.appendAnswerSystemMessages(messages);
 
-        assertEquals(2, messages.size());
+        assertEquals(3, messages.size());
         assertTrue(messages.getJSONObject(0).getString("content").contains("禁止编造"));
         assertEquals("新版回答风格：简洁说明推荐理由。", messages.getJSONObject(1).getString("content"));
+    }
+
+    @Test
+    void explicitEvaluationVersionOverridesUserRolloutOnlyForThatRequest() {
+        PromptVersionService prompts = mock(PromptVersionService.class);
+        when(prompts.forEvaluation(2)).thenReturn(
+                new PromptVersionService.SelectedPrompt("候选版本回答规则", "music_answer:v2"));
+        ReflectionTestUtils.setField(agent, "promptVersionService", prompts);
+        @SuppressWarnings("unchecked")
+        ThreadLocal<Integer> override = (ThreadLocal<Integer>) ReflectionTestUtils.getField(agent, "evaluationPromptVersion");
+        override.set(2);
+        try {
+            JSONArray messages = new JSONArray();
+            agent.appendAnswerSystemMessages(messages);
+            assertEquals("候选版本回答规则", messages.getJSONObject(1).getString("content"));
+            verify(prompts).forEvaluation(2);
+            verify(prompts, never()).currentAnswerPrompt(any());
+        } finally {
+            override.remove();
+        }
+    }
+
+    @Test
+    void recommendationAnswerRejectsSongOutsideVerifiedCandidates() {
+        AudioMapper audioMapper = mock(AudioMapper.class);
+        Audio verified = new Audio();
+        verified.setId(1);
+        verified.setSongName("轻快动画歌曲");
+        Audio flowerDance = new Audio();
+        flowerDance.setId(2);
+        flowerDance.setSongName("Flower Dance");
+        when(audioMapper.selectAll()).thenReturn(Arrays.asList(verified, flowerDance));
+        ReflectionTestUtils.setField(agent, "audioMapper", audioMapper);
+
+        assertTrue(agent.mentionsUnselectedSong("推荐轻快动画歌曲和 Flower Dance", Collections.singletonList(verified)));
+        assertFalse(agent.mentionsUnselectedSong("推荐轻快动画歌曲", Collections.singletonList(verified)));
+    }
+
+    @Test
+    void modelJudgedRecommendationCardsOnlyContainNamedSongs() {
+        Audio first = new Audio();
+        first.setId(1);
+        first.setSongName("轻快动画歌曲");
+        Audio second = new Audio();
+        second.setId(2);
+        second.setSongName("激昂动画歌曲");
+        MusicLibraryAgent.RecommendationOutcome candidates = new MusicLibraryAgent.RecommendationOutcome(
+                3, 2, 0, "INSUFFICIENT_MATCHES", Arrays.asList(first, second));
+
+        MusicLibraryAgent.RecommendationOutcome shown = agent.recommendationsMentionedInAnswer(
+                candidates, "目前只能确认《轻快动画歌曲》更适合轻松听感。 ");
+
+        assertEquals(1, shown.getSongs().size());
+        assertEquals(Integer.valueOf(1), shown.getSongs().get(0).getId());
+        assertTrue(shown.hasShortfall());
+    }
+
+    @Test
+    void animeMoodCostPreviewCallsModelToJudgeCandidatesEvenWhenFewerThanRequested() {
+        AssistantQueryUnderstandingService understanding = new AssistantQueryUnderstandingService();
+        EntityQueryParser parser = new EntityQueryParser();
+        ReflectionTestUtils.setField(parser, "queryUnderstandingService", understanding);
+        MusicLibraryAgent libraryAgent = mock(MusicLibraryAgent.class);
+        DeepSeekMusicAgent evaluatedAgent = new DeepSeekMusicAgent();
+        ReflectionTestUtils.setField(evaluatedAgent, "entityQueryParser", parser);
+        ReflectionTestUtils.setField(evaluatedAgent, "queryUnderstandingService", understanding);
+        ReflectionTestUtils.setField(evaluatedAgent, "musicLibraryAgent", libraryAgent);
+        PromptVersionService prompts = mock(PromptVersionService.class);
+        when(prompts.currentAnswerPrompt(10)).thenReturn(new PromptVersionService.SelectedPrompt(
+                "只根据候选简介判断歌曲听感，不要编造出处或凑数。", "music_answer:v3"));
+        ReflectionTestUtils.setField(evaluatedAgent, "promptVersionService", prompts);
+        String question = "推荐三首轻松的动漫歌曲";
+        Audio verified = new Audio();
+        verified.setId(4);
+        verified.setSongName("轻快动画歌曲");
+        verified.setSinger("歌手");
+        when(libraryAgent.getRecommendationOutcome(eq(understanding.normalize(question)), eq(10), eq(3),
+                org.mockito.ArgumentMatchers.<Set<Integer>>any())).thenReturn(
+                new MusicLibraryAgent.RecommendationOutcome(3, 1, 0, "INSUFFICIENT_MATCHES",
+                        Collections.singletonList(verified)));
+
+        Map<String, Object> preview = evaluatedAgent.evaluateLlmCost(question, 10,
+                Collections.emptyList(), false, 300, 3, 9);
+
+        assertTrue((Boolean) preview.get("modelRequired"));
+        assertEquals("estimated_agent", preview.get("executionPath"));
+        assertEquals(1, preview.get("modelCalls"));
     }
 
     @Test
