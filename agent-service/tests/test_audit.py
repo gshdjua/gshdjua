@@ -8,6 +8,7 @@ class _Cursor:
     def __init__(self):
         self.params = None
         self.all_params = []
+        self.sql = []
 
     def __enter__(self):
         return self
@@ -18,6 +19,10 @@ class _Cursor:
     def execute(self, _sql, params=None):
         self.params = params
         self.all_params.append(params)
+        self.sql.append(_sql)
+
+    def fetchone(self):
+        return None
 
 
 class _Connection:
@@ -43,6 +48,7 @@ class ExecutionAuditRepositoryTest(unittest.TestCase):
             "requestId": "request-1",
             "provider": "deepseek",
             "model": "deepseek-chat",
+            "promptVersion": "music_answer:v2",
             "requestedStrategy": "auto",
             "selectedStrategy": "direct",
             "strategyReason": "single_step_request",
@@ -73,6 +79,20 @@ class ExecutionAuditRepositoryTest(unittest.TestCase):
         self.assertNotIn("隐私查询", persisted)
         self.assertNotIn("隐私结果", persisted)
         self.assertIn("favorite_search", persisted)
+        self.assertIn("music_answer:v2", persisted)
+        self.assertEqual(cursor.sql[0].count("%s"), len(cursor.all_params[0]))
+
+    def test_existing_audit_table_gets_prompt_version_column(self):
+        repository = ExecutionAuditRepository()
+        cursor = _Cursor()
+        with patch.object(repository, "_connect", return_value=_Connection(cursor)):
+            repository._ensure_schema()
+
+        self.assertTrue(any("ADD COLUMN prompt_version" in sql for sql in cursor.sql))
+
+    def test_prompt_version_label_cannot_store_request_content(self):
+        self.assertEqual("unknown", ExecutionAuditRepository._safe_prompt_version("我喜欢摇滚乐"))
+        self.assertEqual("music_answer:v12", ExecutionAuditRepository._safe_prompt_version("music_answer:v12"))
 
 
 if __name__ == "__main__":

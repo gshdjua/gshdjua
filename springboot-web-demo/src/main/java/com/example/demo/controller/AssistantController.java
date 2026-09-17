@@ -8,6 +8,7 @@ import com.example.demo.mapper.AudioMapper;
 import com.example.demo.mapper.AssistantConversationMapper;
 import com.example.demo.mapper.UserMapper;
 import com.example.demo.service.DeepSeekMusicAgent;
+import com.example.demo.service.PromptVersionService;
 import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.util.JwtUtil;
@@ -36,6 +37,9 @@ public class AssistantController {
 
     @Autowired
     private DeepSeekMusicAgent deepSeekMusicAgent;
+
+    @Autowired
+    private PromptVersionService promptVersionService;
 
     @Autowired
     private AgentMemoryClient agentMemoryClient;
@@ -81,6 +85,7 @@ public class AssistantController {
         }
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
+        promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
 
         if ("新对话".equals(conversation.getTitle())) {
             assistantConversationMapper.updateTitle(conversationId, userId, message.substring(0, Math.min(message.length(), 18)));
@@ -89,6 +94,7 @@ public class AssistantController {
         }
         Map<String, Object> data = new HashMap<>();
         data.put("reply", reply);
+        data.put("promptVersion", replyResult.getPromptVersion());
         data.put("userMessage", userMessage);
         data.put("assistantMessage", assistantMessage);
         data.put("recommendations", replyResult.getRecommendations());

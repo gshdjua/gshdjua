@@ -9,6 +9,7 @@ import com.example.demo.mapper.UserMapper;
 import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.DeepSeekMusicAgent;
 import com.example.demo.service.MusicLibraryAgent;
+import com.example.demo.service.PromptVersionService;
 import com.example.demo.util.JwtUtil;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -53,12 +54,14 @@ class AssistantControllerTest {
     void localAnswerStillUsesUnifiedMemoryCaptureEntry() {
         DeepSeekMusicAgent agent = mock(DeepSeekMusicAgent.class);
         AgentMemoryClient memoryClient = mock(AgentMemoryClient.class);
+        PromptVersionService promptVersionService = mock(PromptVersionService.class);
         AssistantConversationMapper conversationMapper = mock(AssistantConversationMapper.class);
         UserMapper userMapper = mock(UserMapper.class);
         HttpServletRequest request = mock(HttpServletRequest.class);
         AssistantController controller = new AssistantController();
         ReflectionTestUtils.setField(controller, "deepSeekMusicAgent", agent);
         ReflectionTestUtils.setField(controller, "agentMemoryClient", memoryClient);
+        ReflectionTestUtils.setField(controller, "promptVersionService", promptVersionService);
         ReflectionTestUtils.setField(controller, "musicLibraryAgent", mock(MusicLibraryAgent.class));
         ReflectionTestUtils.setField(controller, "userMapper", userMapper);
         ReflectionTestUtils.setField(controller, "assistantConversationMapper", conversationMapper);
@@ -91,5 +94,7 @@ class AssistantControllerTest {
 
         assertEquals(200, response.get("code"));
         verify(memoryClient).capture(7, 11L, "assistant-message-41", "我喜欢动漫歌曲");
+        verify(promptVersionService).recordUsage(42L, "none");
+        assertEquals("none", ((Map<?, ?>) response.get("data")).get("promptVersion"));
     }
 }

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -36,12 +37,12 @@ class ExecutionAuditRepository:
             with self._connect() as connection, connection.cursor() as cursor:
                 cursor.execute(
                     "INSERT INTO agent_execution_audit("
-                    "trace_id,request_id,provider,model,requested_strategy,selected_strategy,strategy_reason,"
+                    "trace_id,request_id,provider,model,prompt_version,requested_strategy,selected_strategy,strategy_reason,"
                     "cost_budget,model_calls,tool_calls,tool_rounds,tool_executions,input_tokens,output_tokens,"
                     "total_tokens,latency_ms,budget_exceeded,stop_reason,finish_reason,status,error_code) "
-                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                     "ON DUPLICATE KEY UPDATE request_id=VALUES(request_id),provider=VALUES(provider),"
-                    "model=VALUES(model),requested_strategy=VALUES(requested_strategy),"
+                    "model=VALUES(model),prompt_version=VALUES(prompt_version),requested_strategy=VALUES(requested_strategy),"
                     "selected_strategy=VALUES(selected_strategy),strategy_reason=VALUES(strategy_reason),"
                     "cost_budget=VALUES(cost_budget),model_calls=VALUES(model_calls),tool_calls=VALUES(tool_calls),"
                     "tool_rounds=VALUES(tool_rounds),tool_executions=VALUES(tool_executions),"
@@ -55,6 +56,7 @@ class ExecutionAuditRepository:
                         str(record.get("requestId", ""))[:100],
                         str(record.get("provider", ""))[:30],
                         str(record.get("model", ""))[:100],
+                        self._safe_prompt_version(record.get("promptVersion", "none")),
                         str(record.get("requestedStrategy", ""))[:20],
                         str(record.get("selectedStrategy", ""))[:20],
                         str(record.get("strategyReason", ""))[:50],
@@ -84,7 +86,7 @@ class ExecutionAuditRepository:
         self._ensure_schema()
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
-                "SELECT trace_id,request_id,provider,model,requested_strategy,selected_strategy,strategy_reason,"
+                "SELECT trace_id,request_id,provider,model,prompt_version,requested_strategy,selected_strategy,strategy_reason,"
                 "cost_budget,model_calls,tool_calls,tool_rounds,tool_executions,input_tokens,output_tokens,"
                 "total_tokens,latency_ms,budget_exceeded,stop_reason,finish_reason,status,error_code,created_at "
                 "FROM agent_execution_audit WHERE trace_id=%s",
@@ -95,13 +97,14 @@ class ExecutionAuditRepository:
             return None
         return {
             "traceId": row[0], "requestId": row[1], "provider": row[2], "model": row[3],
-            "requestedStrategy": row[4], "selectedStrategy": row[5], "strategyReason": row[6],
-            "costBudget": row[7], "modelCalls": int(row[8]), "toolCalls": int(row[9]),
-            "toolRounds": int(row[10]), "toolExecutions": self._decode_tools(row[11]),
-            "inputTokens": int(row[12]), "outputTokens": int(row[13]), "totalTokens": int(row[14]),
-            "latencyMs": int(row[15]), "budgetExceeded": bool(row[16]), "stopReason": row[17] or "",
-            "finishReason": row[18] or "", "status": row[19], "errorCode": row[20] or "",
-            "createdAt": row[21],
+            "promptVersion": row[4], "requestedStrategy": row[5], "selectedStrategy": row[6],
+            "strategyReason": row[7], "costBudget": row[8], "modelCalls": int(row[9]),
+            "toolCalls": int(row[10]), "toolRounds": int(row[11]),
+            "toolExecutions": self._decode_tools(row[12]), "inputTokens": int(row[13]),
+            "outputTokens": int(row[14]), "totalTokens": int(row[15]),
+            "latencyMs": int(row[16]), "budgetExceeded": bool(row[17]), "stopReason": row[18] or "",
+            "finishReason": row[19] or "", "status": row[20], "errorCode": row[21] or "",
+            "createdAt": row[22],
         }
 
     @staticmethod
@@ -114,6 +117,11 @@ class ExecutionAuditRepository:
         except (TypeError, ValueError):
             return []
 
+    @staticmethod
+    def _safe_prompt_version(value: Any) -> str:
+        label = str(value)
+        return label if re.fullmatch(r"(?:music_answer:v[1-9][0-9]*|music_answer:fallback|none)", label) else "unknown"
+
     def _ensure_schema(self) -> None:
         if self._schema_ready:
             return
@@ -125,6 +133,7 @@ class ExecutionAuditRepository:
                     "CREATE TABLE IF NOT EXISTS agent_execution_audit ("
                     "trace_id VARCHAR(191) PRIMARY KEY,request_id VARCHAR(100) NOT NULL,"
                     "provider VARCHAR(30) NOT NULL,model VARCHAR(100) NOT NULL,"
+                    "prompt_version VARCHAR(120) NOT NULL DEFAULT 'none',"
                     "requested_strategy VARCHAR(20) NOT NULL,selected_strategy VARCHAR(20) NOT NULL,"
                     "strategy_reason VARCHAR(50) NOT NULL,cost_budget VARCHAR(20) NOT NULL,"
                     "model_calls INT NOT NULL DEFAULT 0,tool_calls INT NOT NULL DEFAULT 0,"
@@ -138,6 +147,10 @@ class ExecutionAuditRepository:
                     "KEY idx_agent_audit_created(created_at),KEY idx_agent_audit_strategy(selected_strategy,created_at)"
                     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
                 )
+                cursor.execute("SHOW COLUMNS FROM agent_execution_audit LIKE 'prompt_version'")
+                if cursor.fetchone() is None:
+                    cursor.execute("ALTER TABLE agent_execution_audit ADD COLUMN "
+                                   "prompt_version VARCHAR(120) NOT NULL DEFAULT 'none' AFTER model")
                 self._cleanup_expired(cursor, force=True)
             self._schema_ready = True
 

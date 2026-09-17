@@ -1,5 +1,6 @@
 package com.example.demo.service;
 
+import com.alibaba.fastjson.JSONArray;
 import com.example.demo.service.retrieval.EntityType;
 import com.example.demo.service.retrieval.EntityQueryParser;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,21 @@ import static org.mockito.Mockito.when;
 class DeepSeekMusicAgentTest {
 
     private final DeepSeekMusicAgent agent = new DeepSeekMusicAgent();
+
+    @Test
+    void productionAnswerUsesPublishedPromptAfterFixedSafetyRules() {
+        PromptVersionService prompts = mock(PromptVersionService.class);
+        when(prompts.currentAnswerPrompt()).thenReturn(
+                new PromptVersionService.SelectedPrompt("新版回答风格：简洁说明推荐理由。", "music_answer:v2"));
+        ReflectionTestUtils.setField(agent, "promptVersionService", prompts);
+        JSONArray messages = new JSONArray();
+
+        agent.appendAnswerSystemMessages(messages);
+
+        assertEquals(2, messages.size());
+        assertTrue(messages.getJSONObject(0).getString("content").contains("禁止编造"));
+        assertEquals("新版回答风格：简洁说明推荐理由。", messages.getJSONObject(1).getString("content"));
+    }
 
     @Test
     void hidesEvidenceReferencesWhenLocalLibraryHasNoReliableMatch() {

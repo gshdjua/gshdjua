@@ -63,6 +63,28 @@ CREATE TABLE IF NOT EXISTS assistant_message (
     FOREIGN KEY (conversation_id) REFERENCES assistant_conversation(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS prompt_version (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    version INT NOT NULL,
+    template_text TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'draft',
+    applicable_strategy VARCHAR(30) NOT NULL DEFAULT 'production',
+    active_name VARCHAR(100) GENERATED ALWAYS AS (CASE WHEN status = 'published' THEN name ELSE NULL END) STORED,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    published_at TIMESTAMP NULL,
+    UNIQUE KEY uk_prompt_name_version (name, version),
+    UNIQUE KEY uk_prompt_active_name (active_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS assistant_prompt_usage (
+    assistant_message_id BIGINT PRIMARY KEY,
+    prompt_version VARCHAR(120) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (assistant_message_id) REFERENCES assistant_message(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS agent_conversation_state (
     conversation_id BIGINT PRIMARY KEY,
     user_id INT NULL,

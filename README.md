@@ -130,6 +130,12 @@ Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`�
 
 每次 Agent 执行会按 `traceId` 将策略、原因码、预算档位、模型/工具调用量、Token、延迟、停止原因和工具执行摘要保存到 MySQL。工具摘要只包含工具名、成功状态、尝试次数、耗时和错误码；审计表不保存用户问题、模型回答、工具参数、工具返回数据或隐藏思维链。审计记录默认保留 30 天，可通过 `AGENT_AUDIT_RETENTION_DAYS` 调整。`GET /v1/audit/traces/{traceId}` 可查询单次执行摘要，Spring Boot 管理接口使用 `GET /api/admin/llm-cost-evaluation/traces/{traceId}` 转发查询。审计存储故障只影响记录，不阻断正常回答。
 
+### 正式回答 Prompt 版本管理
+
+正式用户聊天中需要模型生成的回答使用 MySQL 中已发布的 `music_answer` Prompt。首次启动自动建立 v1；每次请求读取当前已发布版本，因此发布、停用或回滚后，新请求无需重启即可生效。数据库不可用或没有已发布版本时使用内置兜底规则；Java 还会固定附加不可编辑的隐私与证据安全规则。本地直答不消耗该 Prompt，版本记为 `none`。聊天响应与 `assistant_prompt_usage` 保存版本号，Agent 执行审计也只保存版本号，不保存 Prompt 正文。
+
+管理后台侧边栏的「Prompt 版本管理」可查看完整模板、从现有版本创建草稿、编辑草稿、发布、停用、回滚和删除版本。当前已发布版本不能直接删除，须先停用；删除草稿或已停用版本会清空模板正文并从列表移除，但保留版本号标识用于审计和避免编号重复。对应接口为 `GET /api/admin/prompts`、`POST /api/admin/prompts`、`PUT /api/admin/prompts/{id}`、`DELETE /api/admin/prompts/{id}`、`POST /api/admin/prompts/{id}/publish`、`POST /api/admin/prompts/{id}/disable` 和 `POST /api/admin/prompts/{id}/rollback`。只有管理员令牌能访问这些接口。Agent 原生评测仍使用其独立规则，不受这个正式回答 Prompt 影响。
+
 ### 9. 检索效果可以量化评估
 
 管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。LLM 成本评测 V2 支持模拟或真实调用，逐题展示本地/Agent 执行路径、Direct/ReAct 策略、模型/工具/轮次、证据量、Token、延迟、预算状态和费用，并汇总本地绕过率、策略分布、P95 延迟、预算停止数和规则通过率。测试集与导出报告带有 `2.0` 版本：原有 6 题作为生产链路历史基线，新增 5 题“Agent 原生执行”题组，分别检查 `favorite_search`、`recommend_songs`、`vector_search`、`song_detail` 和 ReAct 多工具协作。原生题组直接把原始问题交给 Agent，不预先由 Java 准备证据；模拟模式只预览路由和 Direct 工具计划，真实模式才检查工具是否实际执行并产生 API 费用。原生评测不写入会话状态或长期记忆，审计仍只保存不含问题、回答和工具数据的元数据。

@@ -26,6 +26,10 @@
           <span class="nav-icon">🪙</span>
           <span>LLM 成本评测</span>
         </div>
+        <div class="nav-item" :class="{active: currentMenu === 'prompts'}" @click="openPromptVersions">
+          <span class="nav-icon">📝</span>
+          <span>Prompt 版本管理</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <button class="back-btn" @click="$router.push('/index')">
@@ -436,11 +440,12 @@
             <div class="evaluation-panel-head"><div><p>CASE DETAILS</p><h3>逐题成本明细</h3></div><span>{{ llmCostResults.length }} 条</span></div>
             <div class="evaluation-table-wrap llm-cost-result-table">
               <table class="evaluation-table">
-                <thead><tr><th>ID</th><th>问题</th><th>意图</th><th>路径 / 策略</th><th>模型/工具/轮次</th><th>证据（实际/上限）</th><th>输入</th><th>输出</th><th>总计</th><th>耗时</th><th>费用</th></tr></thead>
+                <thead><tr><th>ID</th><th>问题</th><th>意图</th><th>路径 / 策略</th><th>Prompt 版本</th><th>模型/工具/轮次</th><th>证据（实际/上限）</th><th>输入</th><th>输出</th><th>总计</th><th>耗时</th><th>费用</th></tr></thead>
                 <tbody><tr v-for="item in llmCostResults" :key="item.id" :class="{'llm-cost-mismatch': !item.passed}">
                   <td><strong>{{ item.id }}</strong></td><td class="evaluation-question-cell" :title="item.question">{{ item.question }}</td>
                   <td>{{ item.intent }}</td>
                   <td :title="`${item.strategyReason || ''} · ${item.traceId || '无 traceId'}`">{{ item.executionPath }} / {{ item.selectedStrategy }}</td>
+                  <td>{{ item.promptVersion || 'none' }}</td>
                   <td :title="toolExecutionTitle(item)">{{ item.modelCalls }}/{{ item.toolCalls }}/{{ item.toolRounds }} · {{ item.costBudget }}</td>
                   <td :title="`系统动态预算：${item.plannedEvidenceTopK}`">{{ item.evidenceCount }}/{{ item.expectedEvidenceLimit }}</td>
                   <td>{{ item.inputTokens }}</td><td>{{ item.outputTokens }}</td><td>{{ item.totalTokens }}</td>
@@ -450,6 +455,64 @@
             </div>
           </div>
         </template>
+      </section>
+
+      <section v-if="currentMenu === 'prompts'" class="evaluation-dashboard prompt-dashboard">
+        <div class="evaluation-hero prompt-hero">
+          <div>
+            <p class="evaluation-eyebrow">PROMPT VERSION CONTROL</p>
+            <h2>正式回答 Prompt</h2>
+            <p>仅管理生产聊天链路的 music_answer；本地直答与 Agent 原生评测不受影响。</p>
+          </div>
+          <div class="evaluation-actions">
+            <button type="button" class="evaluation-export-btn" :disabled="promptLoading" @click="loadPromptVersions">刷新版本</button>
+            <button type="button" class="evaluation-add-btn" @click="startPromptDraft">+ 新建草稿</button>
+          </div>
+        </div>
+
+        <p class="prompt-notice">发布后新请求立即使用新版本；停用当前版本会切回内置兜底规则。固定的隐私与本地证据安全规则不能在这里修改。</p>
+        <p v-if="promptError" class="evaluation-state error">{{ promptError }}</p>
+        <p v-if="promptSuccess" class="prompt-success">{{ promptSuccess }}</p>
+        <div v-if="promptLoading" class="evaluation-state">正在加载 Prompt 版本…</div>
+        <div v-else class="prompt-layout">
+          <div class="evaluation-panel prompt-list-panel">
+            <div class="evaluation-panel-head"><div><p>VERSION HISTORY</p><h3>版本记录</h3></div><span>{{ promptVersions.length }} 个版本</span></div>
+            <div class="prompt-version-list">
+              <p v-if="!promptVersions.length" class="evaluation-state">暂无版本，可在右侧创建草稿。</p>
+              <article v-for="item in promptVersions" :key="item.id" class="prompt-version-item" :class="{ 'prompt-version-current': item.status === 'published' }">
+                <div class="prompt-version-heading">
+                  <div><strong>{{ item.name }} · v{{ item.version }}</strong><span class="prompt-status" :class="`prompt-status-${item.status}`">{{ promptStatusLabel(item.status) }}</span></div>
+                  <small>{{ item.publishedAt ? `发布时间：${formatPromptDate(item.publishedAt)}` : `创建时间：${formatPromptDate(item.createdAt)}` }}</small>
+                </div>
+                <p class="prompt-version-preview">{{ item.templateText }}</p>
+                <div class="prompt-version-actions">
+                  <button type="button" @click="viewPromptVersion(item)">查看全文</button>
+                  <button v-if="item.status === 'draft'" type="button" :disabled="promptBusy" @click="editPromptDraft(item)">编辑草稿</button>
+                  <button v-if="item.status === 'draft'" type="button" :disabled="promptBusy" @click="publishPrompt(item)">发布</button>
+                  <button v-if="item.status === 'published'" type="button" class="danger" :disabled="promptBusy" @click="disablePrompt(item)">停用</button>
+                  <button v-if="item.status === 'inactive'" type="button" :disabled="promptBusy" @click="restorePrompt(item)">{{ canRollbackPrompt(item) ? '回滚到此版本' : '重新发布' }}</button>
+                  <button type="button" class="danger" :disabled="promptBusy || item.status === 'published'" :title="item.status === 'published' ? '先停用当前版本才能删除' : '删除后不可恢复模板正文'" @click="deletePromptVersion(item)">删除此版本</button>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <div class="evaluation-panel prompt-editor-panel">
+            <div class="evaluation-panel-head"><div><p>{{ viewingPromptId ? 'VERSION VIEWER' : 'DRAFT EDITOR' }}</p><h3>{{ editingPromptId ? `编辑草稿 v${editingPromptVersion}` : (viewingPromptId ? `查看版本 v${viewingPromptVersion}` : '新建草稿') }}</h3></div></div>
+            <div class="prompt-editor-body">
+              <label for="prompt-template-editor">回答模板</label>
+              <textarea id="prompt-template-editor" v-model="promptTemplate" :readonly="!!viewingPromptId" maxlength="12000" placeholder="输入正式回答规则；建议保留回答格式、推荐说明和不确定时的处理方式。"></textarea>
+              <small>{{ viewingPromptId ? '只读版本；如需调整，请基于此版本创建草稿。' : `${promptTemplate.length}/12000 字符。已发布版本不可直接修改，请新建草稿。` }}</small>
+              <div class="prompt-editor-actions">
+                <button v-if="viewingPromptId" type="button" class="btn-confirm" @click="startPromptDraftFromViewed">基于此版本新建草稿</button>
+                <template v-else>
+                  <button type="button" class="btn-cancel" @click="clearPromptDraft">清空</button>
+                  <button type="button" class="btn-confirm" :disabled="promptBusy || promptTemplate.trim().length < 20" @click="savePromptDraft">{{ promptBusy ? '保存中…' : (editingPromptId ? '保存草稿' : '创建草稿') }}</button>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <div class="dialog-overlay" v-if="showLlmCostCaseDialog" @click.self="closeLlmCostCaseDialog">
@@ -834,15 +897,17 @@ export default {
       showLlmCostCaseDialog: false, editingLlmCostCaseId: null, llmCostCaseSaving: false,
       llmCostIntents: ['AUTO', 'AGENT_NATIVE', 'SONG_METADATA', 'GENERAL', 'RECOMMENDATION', 'SOURCE_QUERY', 'GENRE_QUERY', 'LIBRARY_QUERY', 'FAVORITES'],
       llmCostStrategies: ['AUTO', 'local', 'direct', 'react'],
-      llmCostCaseForm: { category: '', question: '', expectedIntent: 'AUTO', expectedStrategy: 'AUTO', executionTarget: 'production', costBudget: 'standard', expectedTools: '', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true }
+      llmCostCaseForm: { category: '', question: '', expectedIntent: 'AUTO', expectedStrategy: 'AUTO', executionTarget: 'production', costBudget: 'standard', expectedTools: '', expectedEvidenceCount: 3, expectedOutputTokens: 300, expectedModelCall: true },
+      promptVersions: [], promptLoading: false, promptBusy: false, promptError: '', promptSuccess: '',
+      editingPromptId: null, editingPromptVersion: null, viewingPromptId: null, viewingPromptVersion: null, promptTemplate: ''
     }
   },
   computed: {
     menuTitle() {
-      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测' }[this.currentMenu] || '管理后台'
+      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理' }[this.currentMenu] || '管理后台'
     },
     menuIcon() {
-      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙' }[this.currentMenu] || '🎵'
+      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝' }[this.currentMenu] || '🎵'
     },
     canSaveLyrics() {
       return this.lyricEditorLines.length > 0 && this.lyricEditorLines.every(line => line.time !== null)
@@ -883,6 +948,144 @@ export default {
     this.loadFullAudioList();
   },
   methods: {
+    async openPromptVersions() {
+      this.currentMenu = 'prompts'
+      await this.loadPromptVersions()
+    },
+    async loadPromptVersions() {
+      this.promptLoading = true
+      this.promptError = ''
+      try {
+        const res = await request.get('/admin/prompts')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '加载 Prompt 版本失败')
+        this.promptVersions = Array.isArray(res.data.data) ? res.data.data : []
+        if (!this.editingPromptId && !this.viewingPromptId && !this.promptTemplate) {
+          const active = this.promptVersions.find(item => item.status === 'published')
+          if (active) this.viewPromptVersion(active)
+        }
+      } catch (error) {
+        this.promptError = error.response?.data?.msg || error.message || '加载 Prompt 版本失败'
+      } finally {
+        this.promptLoading = false
+      }
+    },
+    promptStatusLabel(status) {
+      return { published: '已发布', draft: '草稿', inactive: '已停用' }[status] || status
+    },
+    formatPromptDate(value) {
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? String(value || '未知') : date.toLocaleString('zh-CN')
+    },
+    canRollbackPrompt(item) {
+      const active = this.promptVersions.find(version => version.status === 'published')
+      return Boolean(active && Number(item.version) < Number(active.version))
+    },
+    startPromptDraft() {
+      const active = this.promptVersions.find(item => item.status === 'published')
+      this.editingPromptId = null
+      this.editingPromptVersion = null
+      this.viewingPromptId = null
+      this.viewingPromptVersion = null
+      this.promptTemplate = active ? active.templateText : ''
+      this.promptError = ''
+      this.promptSuccess = ''
+    },
+    startPromptDraftFromViewed() {
+      const template = this.promptTemplate
+      this.startPromptDraft()
+      this.promptTemplate = template
+    },
+    editPromptDraft(item) {
+      this.editingPromptId = item.id
+      this.editingPromptVersion = item.version
+      this.viewingPromptId = null
+      this.viewingPromptVersion = null
+      this.promptTemplate = item.templateText || ''
+      this.promptError = ''
+      this.promptSuccess = ''
+    },
+    clearPromptDraft() {
+      this.editingPromptId = null
+      this.editingPromptVersion = null
+      this.viewingPromptId = null
+      this.viewingPromptVersion = null
+      this.promptTemplate = ''
+    },
+    viewPromptVersion(item) {
+      this.editingPromptId = null
+      this.editingPromptVersion = null
+      this.viewingPromptId = item.id
+      this.viewingPromptVersion = item.version
+      this.promptTemplate = item.templateText || ''
+    },
+    async savePromptDraft() {
+      if (this.promptBusy || this.promptTemplate.trim().length < 20) return
+      this.promptBusy = true
+      this.promptError = ''
+      try {
+        const payload = { template: this.promptTemplate }
+        const res = this.editingPromptId
+          ? await request.put(`/admin/prompts/${this.editingPromptId}`, payload)
+          : await request.post('/admin/prompts', payload)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '保存草稿失败')
+        this.clearPromptDraft()
+        await this.loadPromptVersions()
+        if (res.data.data) this.editPromptDraft(res.data.data)
+        this.promptSuccess = '草稿已保存；发布前不会影响用户回答。'
+      } catch (error) {
+        this.promptError = error.response?.data?.msg || error.message || '保存草稿失败'
+      } finally {
+        this.promptBusy = false
+      }
+    },
+    async changePromptStatus(item, action, successMessage) {
+      this.promptBusy = true
+      this.promptError = ''
+      this.promptSuccess = ''
+      try {
+        const res = await request.post(`/admin/prompts/${item.id}/${action}`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '操作失败')
+        await this.loadPromptVersions()
+        if (res.data.data) this.viewPromptVersion(res.data.data)
+        this.promptSuccess = successMessage
+      } catch (error) {
+        this.promptError = error.response?.data?.msg || error.message || '操作失败'
+      } finally {
+        this.promptBusy = false
+      }
+    },
+    publishPrompt(item) {
+      if (this.promptBusy || !confirm(`发布 v${item.version}？新请求会立即使用此版本。`)) return
+      this.changePromptStatus(item, 'publish', `v${item.version} 已发布，新请求立即生效。`)
+    },
+    disablePrompt(item) {
+      if (this.promptBusy || !confirm(`停用 v${item.version}？新请求将使用内置兜底规则。`)) return
+      this.changePromptStatus(item, 'disable', `v${item.version} 已停用，当前使用内置兜底规则。`)
+    },
+    restorePrompt(item) {
+      if (this.promptBusy) return
+      const rollback = this.canRollbackPrompt(item)
+      if (!confirm(`${rollback ? '回滚到' : '重新发布'} v${item.version}？新请求会立即使用此版本。`)) return
+      this.changePromptStatus(item, rollback ? 'rollback' : 'publish', `v${item.version} 已${rollback ? '回滚' : '重新发布'}。`)
+    },
+    async deletePromptVersion(item) {
+      if (this.promptBusy || item.status === 'published') return
+      if (!confirm(`确定删除 v${item.version}？模板正文会被清空且无法恢复，版本号仍保留用于审计。`)) return
+      this.promptBusy = true
+      this.promptError = ''
+      this.promptSuccess = ''
+      try {
+        const res = await request.delete(`/admin/prompts/${item.id}`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '删除版本失败')
+        if (this.editingPromptId === item.id || this.viewingPromptId === item.id) this.clearPromptDraft()
+        await this.loadPromptVersions()
+        this.promptSuccess = `v${item.version} 已删除，版本号标识仍保留用于审计。`
+      } catch (error) {
+        this.promptError = error.response?.data?.msg || error.message || '删除版本失败'
+      } finally {
+        this.promptBusy = false
+      }
+    },
     resetLlmCostRun() {
       this.llmCostResults = []
       this.llmCostSummary = null
@@ -1803,7 +2006,9 @@ export default {
 .evaluation-table-wrap { overflow: auto; max-height: 430px; }.evaluation-table { width: 100%; border-collapse: collapse; }.evaluation-table th, .evaluation-table td { padding: 11px 14px; border-bottom: 1px solid #f0edf6; font-size: 12px; text-align: left; }.evaluation-table th { position: sticky; top: 0; color: #8a8295; background: #faf9fc; }.evaluation-table td:not(:first-child) { font-variant-numeric: tabular-nums; }
 .evaluation-empty { display: grid; min-height: 180px; place-items: center; color: #9e97aa; font-size: 13px; }.evaluation-failures { overflow-y: auto; max-height: 430px; padding: 12px; }.evaluation-failures article { margin-bottom: 10px; padding: 12px; border: 1px solid #f0dbe0; border-radius: 11px; background: #fff9fa; }.evaluation-failures article:last-child { margin-bottom: 0; }.evaluation-failures article div { display: flex; align-items: center; gap: 8px; }.evaluation-failures article strong { color: #c04b61; font-size: 12px; }.evaluation-failures article span { padding: 2px 6px; border-radius: 99px; color: #98717a; background: #f8e8eb; font-size: 9px; }.evaluation-failures p { margin: 7px 0; color: #544b5e; font-size: 12px; line-height: 1.45; }.evaluation-failures small { color: #9b8690; font-size: 10px; }
 .llm-cost-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.llm-cost-mode { display: inline-flex !important; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.32); border-radius: 9px; color: #fff !important; background: rgba(255,255,255,.1); white-space: nowrap; }.llm-cost-mode input { accent-color: #a889ee; }.llm-cost-settings { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 16px; padding: 14px 18px; border: 1px solid #e6e0f3; border-radius: 14px; background: #fff; }.llm-cost-settings label { display: grid; gap: 6px; color: #625978; font-size: 11px; }.llm-cost-settings input { width: 150px; padding: 8px 10px; border: 1px solid #ded7ec; border-radius: 8px; }.llm-cost-settings small { flex: 1; color: #928aa1; line-height: 1.5; }.llm-cost-result-table { max-height: 520px; }.llm-cost-result-table table { min-width: 1050px; }.llm-cost-mismatch { background: #fff8f9; }.llm-cost-mismatch td:first-child strong { color: #ca5365; }.llm-cost-metrics .evaluation-metric strong { font-size: 24px; }
+.prompt-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.prompt-notice, .prompt-success { margin: 0 0 18px; padding: 13px 16px; border: 1px solid #e2d9f3; border-radius: 12px; color: #64587b; background: #fff; font-size: 13px; line-height: 1.6; }.prompt-success { border-color: #bde5d5; color: #277255; background: #f0fbf6; }.prompt-dashboard .evaluation-state { margin-bottom: 18px; }.prompt-layout { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(320px,.9fr); gap: 18px; align-items: start; }.prompt-version-list { overflow-y: auto; max-height: 680px; padding: 15px; }.prompt-version-item { margin-bottom: 12px; padding: 16px; border: 1px solid #e7e1f3; border-radius: 12px; background: #fff; }.prompt-version-item:last-child { margin-bottom: 0; }.prompt-version-current { border-color: #9270d0; background: #faf7ff; }.prompt-version-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }.prompt-version-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }.prompt-version-heading strong { color: #3c3159; font-size: 14px; }.prompt-version-heading small { color: #8f869e; font-size: 11px; white-space: nowrap; }.prompt-status { padding: 3px 8px; border-radius: 99px; background: #f0ecf7; color: #736784; font-size: 10px; }.prompt-status-published { color: #1e7956; background: #def5e9; }.prompt-status-draft { color: #7854b5; background: #eee7ff; }.prompt-version-preview { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; margin: 12px 0; color: #6f667e; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }.prompt-version-actions { display: flex; gap: 8px; flex-wrap: wrap; }.prompt-version-actions button { padding: 7px 11px; border: 1px solid #c9b8e9; border-radius: 8px; color: #6545a7; background: #fff; font: inherit; font-size: 11px; cursor: pointer; }.prompt-version-actions button.danger { border-color: #efbec6; color: #bd4f64; }.prompt-version-actions button:disabled { cursor: not-allowed; opacity: .5; }.prompt-editor-body { padding: 18px; }.prompt-editor-body label { display: block; margin-bottom: 9px; color: #4b3f65; font-size: 13px; font-weight: 700; }.prompt-editor-body textarea { box-sizing: border-box; width: 100%; min-height: 360px; padding: 13px; resize: vertical; border: 1px solid #d9d0e9; border-radius: 10px; color: #3d3550; background: #fcfbff; font: inherit; font-size: 12px; line-height: 1.7; }.prompt-editor-body small { display: block; margin-top: 7px; color: #91869e; font-size: 11px; }.prompt-editor-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }.prompt-editor-actions button { padding: 9px 15px; border-radius: 9px; font: inherit; font-size: 12px; cursor: pointer; }.prompt-editor-actions button:disabled { cursor: not-allowed; opacity: .5; }
 @media (max-width: 800px) { .statistics-dashboard { padding: 18px; }.stats-toolbar { align-items: flex-start; flex-direction: column; }.stats-kpis { grid-template-columns: 1fr; }.song-bar-chart { overflow-x: auto; }.song-bar-chart .bar-column { min-width: 84px; }.daily-chart-wrap { overflow-x: auto; }.daily-bar-chart { min-width: 600px; } }
 @media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions { justify-content: flex-start; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; } }
+@media (max-width: 1100px) { .prompt-layout { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions { justify-content: flex-start; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; }.prompt-version-heading { flex-direction: column; }.prompt-editor-body textarea { min-height: 280px; } }
 </style>

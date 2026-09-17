@@ -48,6 +48,7 @@ public class DeepSeekMusicAgent {
     private final ThreadLocal<Long> currentConversationId = new ThreadLocal<>();
     private final ThreadLocal<Integer> currentUserId = new ThreadLocal<>();
     private final ThreadLocal<String> currentRequestId = new ThreadLocal<>();
+    private final ThreadLocal<String> lastPromptVersion = new ThreadLocal<>();
 
     @Autowired
     private AudioMapper audioMapper;
@@ -69,6 +70,9 @@ public class DeepSeekMusicAgent {
 
     @Autowired
     private AgentServiceClient agentServiceClient;
+
+    @Autowired
+    private PromptVersionService promptVersionService;
 
     public String reply(String message, Integer userId, List<Map<String, String>> history) {
         StructuredEntityQuery entityQuery = entityQueryParser.parse(message);
@@ -162,9 +166,11 @@ public class DeepSeekMusicAgent {
         currentUserId.set(userId);
         currentRequestId.set(requestId);
         currentRecommendationOutcome.remove();
+        lastPromptVersion.remove();
         try {
             String reply = reply(message, userId, history);
-            return new ReplyResult(reply, currentRecommendationOutcome.get());
+            return new ReplyResult(reply, currentRecommendationOutcome.get(),
+                    lastPromptVersion.get() == null ? "none" : lastPromptVersion.get());
         } finally {
             currentConversationId.remove();
             currentUserId.remove();
@@ -172,6 +178,7 @@ public class DeepSeekMusicAgent {
             currentRecommendationOutcome.remove();
             lastApiUsage.remove();
             lastAgentResult.remove();
+            lastPromptVersion.remove();
         }
     }
 
@@ -432,7 +439,7 @@ public class DeepSeekMusicAgent {
         JSONArray messages = buildRequestMessages(message, evidenceContext, history);
         AgentServiceClient.AgentResult agentResult = agentServiceClient.chat(
                 messages, modelName, 0.4, message, currentConversationId.get(), currentUserId.get(),
-                currentRequestId.get());
+                currentRequestId.get(), lastPromptVersion.get());
         if (agentResult != null) {
             lastAgentResult.set(agentResult);
             lastApiUsage.set(new ApiUsage(agentResult.getInputTokens(), agentResult.getOutputTokens(), agentResult.getTotalTokens()));
@@ -483,16 +490,17 @@ public class DeepSeekMusicAgent {
     private JSONArray buildRequestMessages(String message, EvidenceContext evidenceContext,
                                             List<Map<String, String>> history) {
         JSONArray messages = new JSONArray();
-        messages.add(message("system", "你是 MusicHub 的歌曲背景助手。只根据公开、可靠的常识介绍歌曲背景；不确定时必须说明不确定。回答使用简洁中文，不编造发行年份、创作经历或人物关系。不得要求或披露用户个人信息。"));
-        messages.add(message("system", "当用户询问歌曲是否来自某部动漫、影视或游戏时，先直接给出“是”“不是”或“无法确认”的结论，再补充已知出处；不要改为介绍整个歌库，也不要回避问题。"));
-        messages.add(message("system", "本地检索证据用于确认歌库是否收录、歌曲名称、歌手、类型、出处和简介。只有证据中出现的歌曲才能说成歌库已收录；没有证据必须明确说本地未找到。发行时间等未写入证据的公开背景信息仍需谨慎回答，不得编造。"));
-        messages.add(message("system", "如果本地上下文明确写着未找到足够可靠的歌曲记录，说明候选未通过置信度阈值。此时必须拒绝依据本地歌库给出具体歌曲结论，并说明“本地歌库未检索到足够可靠的证据”，可以建议用户补充准确歌名、歌手、类型或出处。禁止用模型猜测填补本地检索结果。"));
-        messages.add(message("system", "本地证据编号和检索方式仅供内部推理使用。面向用户回答时不得输出 [S1] 等证据编号，不得展示候选证据列表、融合分数、检索来源或检索方式。只使用与问题直接相关的歌曲证据组织自然、详细的回答，忽略仅因语义相似而召回但不匹配明确歌名、歌手或出处的候选。公开背景知识若不来自本地证据，应明确写为公开背景信息，不得伪装成本地事实。"));
-        messages.add(message("system", "面向用户的回答必须使用干净的纯文本，不要使用 Markdown 粗体符号 **，也不要在段落或条目前添加减号。可直接使用“歌手与出处：”这类自然小标题。"));
-        messages.add(message("system", "当用户要求推荐时，先说明推荐依据，再逐首列出“歌名 - 歌手”，并在有证据时补充类型、出处和一句简介。只介绍本地证据中的歌曲；出处未填写时要明确标注，不能自行猜测。用户说“别的、其他、再来、换一些”时，严禁重复对话中已经推荐的歌曲。"));
+        appendAnswerSystemMessages(messages);
         appendConversationHistory(messages, history);
         messages.add(message("user", "用户问题：" + message + "\n\n本地歌库提供的最小歌曲元数据：\n" + evidenceContext.getPrompt()));
         return messages;
+    }
+
+    void appendAnswerSystemMessages(JSONArray messages) {
+        messages.add(message("system", "安全规则：不得披露用户个人信息；本地歌库收录、歌曲名称、歌手、类型和出处只以本地证据为准；证据不足时明确说明，禁止编造歌曲或事实。"));
+        PromptVersionService.SelectedPrompt prompt = promptVersionService.currentAnswerPrompt();
+        lastPromptVersion.set(prompt.getVersion());
+        messages.add(message("system", prompt.getTemplate()));
     }
 
     public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
@@ -546,6 +554,8 @@ public class DeepSeekMusicAgent {
         boolean modelExecutedOrEstimated = preview.modelRequired && (!realCall || actualUsage);
         result.put("executionPath", !preview.modelRequired ? "local" : agentExecution != null ? "agent"
                 : !realCall ? "estimated_agent" : actualUsage ? "direct_model_fallback" : "model_unavailable");
+        result.put("promptVersion", preview.modelRequired && (!realCall || actualUsage)
+                ? lastPromptVersion.get() : "none");
         result.put("traceId", agentExecution == null ? "" : agentExecution.getTraceId());
         result.put("selectedStrategy", agentExecution == null ? (preview.modelRequired ? "direct" : "local") : agentExecution.getStrategy());
         result.put("strategyReason", agentExecution == null ? (preview.modelRequired ? "estimated" : "local_rule") : agentExecution.getStrategyReason());
@@ -565,6 +575,7 @@ public class DeepSeekMusicAgent {
         result.put("totalTokens", totalTokens);
         result.put("estimatedCost", estimatedCost);
         result.put("elapsedMs", agentExecution == null ? System.currentTimeMillis() - startTime : agentExecution.getLatencyMs());
+        lastPromptVersion.remove();
         return result;
     }
 
@@ -600,6 +611,7 @@ public class DeepSeekMusicAgent {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("evaluationVersion", "2.0");
         result.put("executionTarget", "agent_native");
+        result.put("promptVersion", "none");
         result.put("intent", "AGENT_NATIVE");
         result.put("modelRequired", true);
         result.put("modelConfigured", isExternalModelConfigured());
@@ -816,13 +828,20 @@ public class DeepSeekMusicAgent {
     public static class ReplyResult {
         private final String reply;
         private final MusicLibraryAgent.RecommendationOutcome recommendationOutcome;
+        private final String promptVersion;
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
+            this(reply, recommendationOutcome, "none");
+        }
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome, String promptVersion) {
             this.reply = reply;
             this.recommendationOutcome = recommendationOutcome;
+            this.promptVersion = promptVersion;
         }
 
         public String getReply() { return reply; }
+        public String getPromptVersion() { return promptVersion; }
 
         public List<Audio> getRecommendations() {
             return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();

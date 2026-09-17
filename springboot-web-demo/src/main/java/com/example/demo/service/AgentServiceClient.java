@@ -29,11 +29,16 @@ public class AgentServiceClient {
 
     public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId) {
-        return chat(messages, model, temperature, userMessage, conversationId, userId, null);
+        return chat(messages, model, temperature, userMessage, conversationId, userId, null, null);
     }
 
     public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId, String requestId) {
+        return chat(messages, model, temperature, userMessage, conversationId, userId, requestId, null);
+    }
+
+    public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
+                            Long conversationId, Integer userId, String requestId, String promptVersion) {
         if (baseUrl == null || baseUrl.trim().isEmpty()) return null;
         try {
             JSONObject options = new JSONObject();
@@ -52,6 +57,7 @@ public class AgentServiceClient {
             request.put("options", options);
             JSONObject metadata = new JSONObject();
             metadata.put("userMessage", userMessage);
+            if (promptVersion != null) metadata.put("promptVersion", promptVersion);
             request.put("metadata", metadata);
             return sendChatRequest(request);
         } catch (Exception ignored) {
