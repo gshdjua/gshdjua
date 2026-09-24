@@ -477,7 +477,10 @@
             <p>同一用户稳定分流；未命中候选版本的用户继续使用已发布基线。灰度期间不能停用或更换基线。</p>
             <template v-if="promptRollout.enabled">
               <p>基线 v{{ promptRollout.baselineVersion }} · 候选 v{{ promptRollout.candidateVersion }} · 候选流量 {{ promptRollout.trafficPercent }}%</p>
+              <label>候选流量 <input v-model.number="promptTrafficPercent" type="number" min="1" max="99" />%</label>
+              <button type="button" :disabled="promptBusy || promptTrafficPercent === Number(promptRollout.trafficPercent)" @click="updatePromptRollout">调整比例</button>
               <button type="button" :disabled="promptBusy" @click="stopPromptRollout">停止灰度并保留基线</button>
+              <button type="button" class="prompt-promote-btn" :disabled="promptBusy || !promptCanDecide" :title="promptCanDecide ? '将候选设为正式版本' : '基线和候选都达到最小样本量后才能发布'" @click="promotePromptRollout">全量发布候选</button>
             </template>
             <template v-else>
               <select v-model.number="promptCandidateId" aria-label="灰度候选版本"><option :value="null">选择草稿或已停用版本</option><option v-for="item in promptVersions.filter(version => ['draft', 'inactive'].includes(version.status))" :key="item.id" :value="item.id">v{{ item.version }} · {{ promptStatusLabel(item.status) }}</option></select>
@@ -485,6 +488,18 @@
               <button type="button" :disabled="promptBusy || !promptCandidateId" @click="startPromptRollout">开始灰度</button>
             </template>
           </div>
+        </div>
+        <div class="evaluation-panel prompt-metrics-panel">
+          <div class="evaluation-panel-head">
+            <div><p>ONLINE OBSERVABILITY</p><h3>线上灰度效果</h3></div>
+            <div class="prompt-metrics-filters"><select v-model.number="promptMetricsDays" @change="loadPromptMetrics"><option :value="1">最近 24 小时</option><option :value="7">最近 7 天</option><option :value="30">最近 30 天</option><option :value="90">最近 90 天</option></select><button type="button" :disabled="promptMetricsLoading" @click="loadPromptMetrics">刷新</button></div>
+          </div>
+          <p class="prompt-metrics-privacy">{{ promptMetrics.privacy || '只统计版本号、调用状态、Token 与耗时，不保存用户、问题或回答。' }}</p>
+          <p v-if="promptMetricsError" class="evaluation-state error">{{ promptMetricsError }}</p>
+          <div v-if="promptMetricsLoading" class="evaluation-state">正在加载线上指标…</div>
+          <div v-else-if="!promptMetricRows.length" class="evaluation-state">当前时间范围内暂无使用 Prompt 的真实聊天请求。请先产生实际聊天流量。</div>
+          <div v-else class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>版本</th><th>角色</th><th>请求数</th><th>模型调用</th><th>输入 / 输出 Token</th><th>费用</th><th>平均 / P95 延迟</th><th>模型错误率</th><th>决策状态</th></tr></thead><tbody><tr v-for="row in promptMetricRows" :key="row.promptVersion"><td>{{ row.promptVersion }}</td><td>{{ promptMetricRole(row.promptVersion) }}</td><td>{{ row.requestCount }}</td><td>{{ row.modelCalls }}</td><td>{{ row.inputTokens }} / {{ row.outputTokens }}</td><td>{{ formatLlmCost(row.estimatedCost) }}</td><td>{{ formatDecimal(row.averageLatencyMs) }} / {{ row.p95LatencyMs }}ms</td><td>{{ formatPercent(row.errorRate) }}</td><td><span class="prompt-sample-status" :class="{'ready': row.sampleSufficient}">{{ row.sampleSufficient ? '样本充足' : `数据不足（至少 ${promptMetrics.minimumSampleSize || 30} 条）` }}</span></td></tr></tbody></table></div>
+          <p class="prompt-decision-note">系统只提供客观运行指标，不自动判断回答质量。全量发布前还应结合固定题评测和人工阅读；两个版本都达到最小样本量后才开放发布按钮。</p>
         </div>
         <div class="evaluation-panel prompt-compare-panel">
           <div class="evaluation-panel-head"><div><p>PROMPT COMPARISON</p><h3>同题版本对比</h3></div><span>可比较 {{ promptComparableCases.length }} 题</span></div>
@@ -930,6 +945,8 @@ export default {
       promptVersions: [], promptLoading: false, promptBusy: false, promptError: '', promptSuccess: '',
       editingPromptId: null, editingPromptVersion: null, viewingPromptId: null, viewingPromptVersion: null, promptTemplate: '',
       promptRollout: { enabled: false, trafficPercent: 0 }, promptCandidateId: null, promptTrafficPercent: 10,
+      promptMetricsDays: 7, promptMetrics: { versions: [], minimumSampleSize: 30 },
+      promptMetricsLoading: false, promptMetricsError: '',
       promptCompareBase: null, promptCompareCandidate: null, promptCompareRealCall: false,
       promptCompareRunning: false, promptCompareProgress: 0, promptCompareError: '', promptCompareResults: []
     }
@@ -986,6 +1003,15 @@ export default {
     },
     promptComparableCases() {
       return this.llmCostCases.filter(item => (item.execution_target || 'production') === 'production' && item.expected_model_call)
+    },
+    promptMetricRows() {
+      return Array.isArray(this.promptMetrics.versions) ? this.promptMetrics.versions : []
+    },
+    promptCanDecide() {
+      if (!this.promptRollout.enabled) return false
+      const baseline = `music_answer:v${this.promptRollout.baselineVersion}`
+      const candidate = `music_answer:v${this.promptRollout.candidateVersion}`
+      return [baseline, candidate].every(version => this.promptMetricRows.some(row => row.promptVersion === version && row.sampleSufficient))
     }
   },
   mounted() {
@@ -995,14 +1021,29 @@ export default {
   methods: {
     async openPromptVersions() {
       this.currentMenu = 'prompts'
-      await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadLlmCostCases()])
+      await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadPromptMetrics(), this.loadLlmCostCases()])
     },
     async loadPromptRollout() {
       try {
         const res = await request.get('/admin/prompts/rollout')
         if (res.data.code !== 200) throw new Error(res.data.msg || '加载灰度状态失败')
         this.promptRollout = res.data.data || { enabled: false, trafficPercent: 0 }
+        if (this.promptRollout.enabled) this.promptTrafficPercent = Number(this.promptRollout.trafficPercent)
       } catch (error) { this.promptError = error.response?.data?.msg || error.message || '加载灰度状态失败' }
+    },
+    async loadPromptMetrics() {
+      this.promptMetricsLoading = true; this.promptMetricsError = ''
+      try {
+        const res = await request.get('/admin/prompts/metrics', { params: { days: this.promptMetricsDays } })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '加载线上指标失败')
+        this.promptMetrics = res.data.data || { versions: [], minimumSampleSize: 30 }
+      } catch (error) { this.promptMetricsError = error.response?.data?.msg || error.message || '加载线上指标失败' }
+      finally { this.promptMetricsLoading = false }
+    },
+    promptMetricRole(version) {
+      if (version === `music_answer:v${this.promptRollout.baselineVersion}`) return '基线'
+      if (version === `music_answer:v${this.promptRollout.candidateVersion}`) return '候选'
+      return '历史版本'
     },
     async startPromptRollout() {
       if (this.promptBusy || !this.promptCandidateId) return
@@ -1026,6 +1067,28 @@ export default {
         await Promise.all([this.loadPromptRollout(), this.loadPromptVersions()])
         this.promptSuccess = '灰度已停止，用户回到基线版本。'
       } catch (error) { this.promptError = error.response?.data?.msg || error.message || '停止灰度失败' }
+      finally { this.promptBusy = false }
+    },
+    async updatePromptRollout() {
+      if (this.promptBusy || !Number.isInteger(this.promptTrafficPercent) || this.promptTrafficPercent < 1 || this.promptTrafficPercent > 99) { this.promptError = '灰度比例须在 1% 到 99% 之间'; return }
+      this.promptBusy = true; this.promptError = ''; this.promptSuccess = ''
+      try {
+        const res = await request.put('/admin/prompts/rollout', { trafficPercent: this.promptTrafficPercent })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '调整灰度比例失败')
+        await this.loadPromptRollout()
+        this.promptSuccess = `候选流量已调整为 ${this.promptTrafficPercent}%。`
+      } catch (error) { this.promptError = error.response?.data?.msg || error.message || '调整灰度比例失败' }
+      finally { this.promptBusy = false }
+    },
+    async promotePromptRollout() {
+      if (this.promptBusy || !this.promptCanDecide || !confirm(`将候选 v${this.promptRollout.candidateVersion} 全量发布？原基线会保留为已停用版本，可在之后回滚。`)) return
+      this.promptBusy = true; this.promptError = ''; this.promptSuccess = ''
+      try {
+        const res = await request.post('/admin/prompts/rollout/promote')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '全量发布失败')
+        await Promise.all([this.loadPromptRollout(), this.loadPromptVersions(), this.loadPromptMetrics()])
+        this.promptSuccess = `v${res.data.data.version} 已全量发布；原基线已保留为历史版本。`
+      } catch (error) { this.promptError = error.response?.data?.msg || error.message || '全量发布失败' }
       finally { this.promptBusy = false }
     },
     async comparePromptVersions() {
@@ -2116,7 +2179,7 @@ export default {
 .evaluation-empty { display: grid; min-height: 180px; place-items: center; color: #9e97aa; font-size: 13px; }.evaluation-failures { overflow-y: auto; max-height: 430px; padding: 12px; }.evaluation-failures article { margin-bottom: 10px; padding: 12px; border: 1px solid #f0dbe0; border-radius: 11px; background: #fff9fa; }.evaluation-failures article:last-child { margin-bottom: 0; }.evaluation-failures article div { display: flex; align-items: center; gap: 8px; }.evaluation-failures article strong { color: #c04b61; font-size: 12px; }.evaluation-failures article span { padding: 2px 6px; border-radius: 99px; color: #98717a; background: #f8e8eb; font-size: 9px; }.evaluation-failures p { margin: 7px 0; color: #544b5e; font-size: 12px; line-height: 1.45; }.evaluation-failures small { color: #9b8690; font-size: 10px; }
 .llm-cost-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.llm-cost-mode { display: inline-flex !important; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.32); border-radius: 9px; color: #fff !important; background: rgba(255,255,255,.1); white-space: nowrap; }.llm-cost-mode input { accent-color: #a889ee; }.llm-cost-settings { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 16px; padding: 14px 18px; border: 1px solid #e6e0f3; border-radius: 14px; background: #fff; }.llm-cost-settings label { display: grid; gap: 6px; color: #625978; font-size: 11px; }.llm-cost-settings input { width: 150px; padding: 8px 10px; border: 1px solid #ded7ec; border-radius: 8px; }.llm-cost-settings small { flex: 1; color: #928aa1; line-height: 1.5; }.llm-cost-result-table { max-height: 520px; }.llm-cost-result-table table { min-width: 1050px; }.llm-cost-mismatch { background: #fff8f9; }.llm-cost-mismatch td:first-child strong { color: #ca5365; }.llm-cost-metrics .evaluation-metric strong { font-size: 24px; }
 .prompt-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.prompt-notice, .prompt-success { margin: 0 0 18px; padding: 13px 16px; border: 1px solid #e2d9f3; border-radius: 12px; color: #64587b; background: #fff; font-size: 13px; line-height: 1.6; }.prompt-success { border-color: #bde5d5; color: #277255; background: #f0fbf6; }.prompt-dashboard .evaluation-state { margin-bottom: 18px; }.prompt-layout { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(320px,.9fr); gap: 18px; align-items: start; }.prompt-version-list { overflow-y: auto; max-height: 680px; padding: 15px; }.prompt-version-item { margin-bottom: 12px; padding: 16px; border: 1px solid #e7e1f3; border-radius: 12px; background: #fff; }.prompt-version-item:last-child { margin-bottom: 0; }.prompt-version-current { border-color: #9270d0; background: #faf7ff; }.prompt-version-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }.prompt-version-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }.prompt-version-heading strong { color: #3c3159; font-size: 14px; }.prompt-version-heading small { color: #8f869e; font-size: 11px; white-space: nowrap; }.prompt-status { padding: 3px 8px; border-radius: 99px; background: #f0ecf7; color: #736784; font-size: 10px; }.prompt-status-published { color: #1e7956; background: #def5e9; }.prompt-status-draft { color: #7854b5; background: #eee7ff; }.prompt-version-preview { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; margin: 12px 0; color: #6f667e; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }.prompt-version-actions { display: flex; gap: 8px; flex-wrap: wrap; }.prompt-version-actions button { padding: 7px 11px; border: 1px solid #c9b8e9; border-radius: 8px; color: #6545a7; background: #fff; font: inherit; font-size: 11px; cursor: pointer; }.prompt-version-actions button.danger { border-color: #efbec6; color: #bd4f64; }.prompt-version-actions button:disabled { cursor: not-allowed; opacity: .5; }.prompt-editor-body { padding: 18px; }.prompt-editor-body label { display: block; margin-bottom: 9px; color: #4b3f65; font-size: 13px; font-weight: 700; }.prompt-editor-body textarea { box-sizing: border-box; width: 100%; min-height: 360px; padding: 13px; resize: vertical; border: 1px solid #d9d0e9; border-radius: 10px; color: #3d3550; background: #fcfbff; font: inherit; font-size: 12px; line-height: 1.7; }.prompt-editor-body small { display: block; margin-top: 7px; color: #91869e; font-size: 11px; }.prompt-editor-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }.prompt-editor-actions button { padding: 9px 15px; border-radius: 9px; font: inherit; font-size: 12px; cursor: pointer; }.prompt-editor-actions button:disabled { cursor: not-allowed; opacity: .5; }
-.prompt-rollout-panel, .prompt-compare-panel { margin-bottom: 18px; }.prompt-rollout-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px; color: #5b5271; font-size: 13px; }.prompt-rollout-body p { flex-basis: 100%; margin: 0; line-height: 1.6; }.prompt-rollout-body select, .prompt-rollout-body input[type=number] { padding: 7px; border: 1px solid #d9d0e9; border-radius: 8px; background: #fff; }.prompt-rollout-body input[type=number] { width: 58px; }.prompt-rollout-body button { padding: 8px 12px; border: 1px solid #8666c3; border-radius: 8px; color: #fff; background: #7454b4; cursor: pointer; }.prompt-rollout-body button:disabled { opacity: .5; cursor: not-allowed; }.prompt-answer-review { padding: 0 16px 16px; }.prompt-answer-review details { margin-top: 8px; padding: 9px; border: 1px solid #e7e1f3; border-radius: 8px; }.prompt-answer-review summary { cursor: pointer; }.prompt-answer-review p { white-space: pre-wrap; }.prompt-status-gray { color: #915d1e; background: #fff0d1; }
+.prompt-rollout-panel, .prompt-compare-panel, .prompt-metrics-panel { margin-bottom: 18px; }.prompt-rollout-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px; color: #5b5271; font-size: 13px; }.prompt-rollout-body p { flex-basis: 100%; margin: 0; line-height: 1.6; }.prompt-rollout-body select, .prompt-rollout-body input[type=number] { padding: 7px; border: 1px solid #d9d0e9; border-radius: 8px; background: #fff; }.prompt-rollout-body input[type=number] { width: 58px; }.prompt-rollout-body button { padding: 8px 12px; border: 1px solid #8666c3; border-radius: 8px; color: #fff; background: #7454b4; cursor: pointer; }.prompt-rollout-body button:disabled { opacity: .5; cursor: not-allowed; }.prompt-rollout-body .prompt-promote-btn { border-color: #2d9168; background: #2d9168; }.prompt-answer-review { padding: 0 16px 16px; }.prompt-answer-review details { margin-top: 8px; padding: 9px; border: 1px solid #e7e1f3; border-radius: 8px; }.prompt-answer-review summary { cursor: pointer; }.prompt-answer-review p { white-space: pre-wrap; }.prompt-status-gray { color: #915d1e; background: #fff0d1; }.prompt-metrics-filters { display: flex; gap: 8px; }.prompt-metrics-filters select, .prompt-metrics-filters button { padding: 7px 10px; border: 1px solid #d4c7ea; border-radius: 8px; color: #5f4695; background: #fff; }.prompt-metrics-privacy, .prompt-decision-note { margin: 0; padding: 13px 16px; color: #6d6380; background: #faf8ff; font-size: 12px; line-height: 1.6; }.prompt-decision-note { border-top: 1px solid #eee8f7; }.prompt-sample-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #9b651d; background: #fff1d7; font-size: 11px; }.prompt-sample-status.ready { color: #247454; background: #def5e9; }
 @media (max-width: 800px) { .statistics-dashboard { padding: 18px; }.stats-toolbar { align-items: flex-start; flex-direction: column; }.stats-kpis { grid-template-columns: 1fr; }.song-bar-chart { overflow-x: auto; }.song-bar-chart .bar-column { min-width: 84px; }.daily-chart-wrap { overflow-x: auto; }.daily-bar-chart { min-width: 600px; } }
 @media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 1100px) { .prompt-layout { grid-template-columns: 1fr; } }

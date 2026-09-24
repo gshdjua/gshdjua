@@ -145,6 +145,37 @@ public class PromptVersionService {
         return rollout();
     }
 
+    @Transactional
+    public Map<String, Object> updateRolloutPercent(int percent) {
+        if (percent < 1 || percent > 99) throw new IllegalArgumentException("灰度比例须在 1% 到 99% 之间");
+        lockPromptName();
+        int changed = jdbc.update("UPDATE prompt_rollout SET traffic_percent=? WHERE name=? AND enabled=1",
+                percent, ANSWER_PROMPT);
+        if (changed != 1) throw new IllegalArgumentException("当前没有运行中的灰度发布");
+        return rollout();
+    }
+
+    @Transactional
+    public Map<String, Object> promoteRollout() {
+        lockPromptName();
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT candidate_id FROM prompt_rollout WHERE name=? AND enabled=1 FOR UPDATE", ANSWER_PROMPT);
+        if (rows.isEmpty() || rows.get(0).get("candidate_id") == null) {
+            throw new IllegalArgumentException("当前没有可全量发布的灰度候选");
+        }
+        long candidateId = ((Number) rows.get(0).get("candidate_id")).longValue();
+        Map<String, Object> candidate = byId(candidateId);
+        if (!"gray".equals(String.valueOf(candidate.get("status")))) {
+            throw new IllegalArgumentException("灰度候选状态异常，无法全量发布");
+        }
+        jdbc.update("UPDATE prompt_version SET status='inactive' WHERE name=? AND status='published'", ANSWER_PROMPT);
+        int changed = jdbc.update("UPDATE prompt_version SET status='published',published_at=CURRENT_TIMESTAMP "
+                + "WHERE id=? AND name=? AND status='gray'", candidateId, ANSWER_PROMPT);
+        if (changed != 1) throw new IllegalArgumentException("灰度候选全量发布失败");
+        jdbc.update("UPDATE prompt_rollout SET enabled=0,traffic_percent=0 WHERE name=?", ANSWER_PROMPT);
+        return byId(candidateId);
+    }
+
     private boolean rolloutEnabled() {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT enabled FROM prompt_rollout WHERE name=? AND enabled=1", ANSWER_PROMPT);

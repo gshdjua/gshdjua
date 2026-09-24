@@ -1,12 +1,14 @@
 package com.example.demo.controller;
 
 import com.example.demo.service.PromptVersionService;
+import com.example.demo.service.PromptOnlineMetricsService;
 import org.springframework.dao.DataAccessException;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,9 +21,11 @@ import java.util.function.Supplier;
 @RequestMapping("/api/admin/prompts")
 public class PromptVersionController {
     private final PromptVersionService service;
+    private final PromptOnlineMetricsService metricsService;
 
-    public PromptVersionController(PromptVersionService service) {
+    public PromptVersionController(PromptVersionService service, PromptOnlineMetricsService metricsService) {
         this.service = service;
+        this.metricsService = metricsService;
     }
 
     @GetMapping
@@ -43,6 +47,21 @@ public class PromptVersionController {
     @DeleteMapping("/rollout")
     public Map<String, Object> stopRollout() {
         return run(service::stopRollout);
+    }
+
+    @PutMapping("/rollout")
+    public Map<String, Object> updateRollout(@RequestBody Map<String, Object> payload) {
+        return run(() -> service.updateRolloutPercent(Integer.parseInt(text(payload.get("trafficPercent")))));
+    }
+
+    @PostMapping("/rollout/promote")
+    public Map<String, Object> promoteRollout() {
+        return run(service::promoteRollout);
+    }
+
+    @GetMapping("/metrics")
+    public Map<String, Object> metrics(@RequestParam(value = "days", defaultValue = "7") int days) {
+        return run(() -> metricsService.summary(days));
     }
 
     @PostMapping

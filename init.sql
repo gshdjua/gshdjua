@@ -163,6 +163,19 @@ CREATE TABLE IF NOT EXISTS assistant_prompt_usage (
     FOREIGN KEY (assistant_message_id) REFERENCES assistant_message(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS prompt_online_metric (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    prompt_version VARCHAR(120) NOT NULL,
+    model_calls INT NOT NULL DEFAULT 0,
+    success TINYINT(1) NOT NULL DEFAULT 1,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
+    latency_ms INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_prompt_metric_version_time (prompt_version, created_at),
+    KEY idx_prompt_metric_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS agent_conversation_state (
     conversation_id BIGINT PRIMARY KEY,
     user_id INT NULL,

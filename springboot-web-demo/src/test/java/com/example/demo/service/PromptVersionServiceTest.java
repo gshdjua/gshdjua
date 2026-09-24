@@ -131,6 +131,35 @@ class PromptVersionServiceTest {
                 7L, PromptVersionService.ANSWER_PROMPT);
     }
 
+    @Test
+    void adjustsActiveRolloutPercentage() {
+        when(jdbc.update("UPDATE prompt_rollout SET traffic_percent=? WHERE name=? AND enabled=1",
+                30, PromptVersionService.ANSWER_PROMPT)).thenReturn(1);
+        when(jdbc.queryForList(argThat(sql -> sql.contains("FROM prompt_rollout pr LEFT")),
+                eq(PromptVersionService.ANSWER_PROMPT)))
+                .thenReturn(Collections.singletonList(Collections.singletonMap("trafficPercent", 30)));
+        assertEquals(30, service.updateRolloutPercent(30).get("trafficPercent"));
+        assertThrows(IllegalArgumentException.class, () -> service.updateRolloutPercent(0));
+    }
+
+    @Test
+    void promotesGrayCandidateAndKeepsOldBaselineInactive() {
+        when(jdbc.queryForList("SELECT candidate_id FROM prompt_rollout WHERE name=? AND enabled=1 FOR UPDATE",
+                PromptVersionService.ANSWER_PROMPT))
+                .thenReturn(Collections.singletonList(Collections.singletonMap("candidate_id", 7L)));
+        when(jdbc.queryForList(anyString(), eq(PromptVersionService.ANSWER_PROMPT), eq(7L)))
+                .thenReturn(Collections.singletonList(version(7L, 3, "gray")),
+                        Collections.singletonList(version(7L, 3, "published")));
+        when(jdbc.update("UPDATE prompt_version SET status='published',published_at=CURRENT_TIMESTAMP WHERE id=? AND name=? AND status='gray'",
+                7L, PromptVersionService.ANSWER_PROMPT)).thenReturn(1);
+
+        assertEquals("published", service.promoteRollout().get("status"));
+        verify(jdbc).update("UPDATE prompt_version SET status='inactive' WHERE name=? AND status='published'",
+                PromptVersionService.ANSWER_PROMPT);
+        verify(jdbc).update("UPDATE prompt_rollout SET enabled=0,traffic_percent=0 WHERE name=?",
+                PromptVersionService.ANSWER_PROMPT);
+    }
+
 
     @Test
     void createsDraftWithoutPublishingAndRejectsBlankTemplate() {

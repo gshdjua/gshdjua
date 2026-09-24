@@ -52,6 +52,7 @@ public class DeepSeekMusicAgent {
     private final ThreadLocal<String> currentRequestId = new ThreadLocal<>();
     private final ThreadLocal<String> lastPromptVersion = new ThreadLocal<>();
     private final ThreadLocal<Integer> evaluationPromptVersion = new ThreadLocal<>();
+    private final ThreadLocal<ModelInvocationMetrics> currentModelMetrics = new ThreadLocal<>();
 
     @Autowired
     private AudioMapper audioMapper;
@@ -168,15 +169,24 @@ public class DeepSeekMusicAgent {
 
     public ReplyResult replyWithResult(String message, Integer userId, List<Map<String, String>> history,
                                        Long conversationId, String requestId) {
+        long startedAt = System.currentTimeMillis();
         currentConversationId.set(conversationId);
         currentUserId.set(userId);
         currentRequestId.set(requestId);
         currentRecommendationOutcome.remove();
         lastPromptVersion.remove();
+        currentModelMetrics.set(new ModelInvocationMetrics());
         try {
             String reply = reply(message, userId, history);
+            ModelInvocationMetrics metrics = currentModelMetrics.get();
+            ApiUsage usage = lastApiUsage.get();
             return new ReplyResult(reply, currentRecommendationOutcome.get(),
-                    lastPromptVersion.get() == null ? "none" : lastPromptVersion.get());
+                    lastPromptVersion.get() == null ? "none" : lastPromptVersion.get(),
+                    metrics == null ? 0 : metrics.modelCalls,
+                    metrics == null || metrics.modelCalls == 0 || metrics.success,
+                    usage == null ? 0 : usage.promptTokens,
+                    usage == null ? 0 : usage.completionTokens,
+                    System.currentTimeMillis() - startedAt);
         } finally {
             currentConversationId.remove();
             currentUserId.remove();
@@ -185,6 +195,7 @@ public class DeepSeekMusicAgent {
             lastApiUsage.remove();
             lastAgentResult.remove();
             lastPromptVersion.remove();
+            currentModelMetrics.remove();
         }
     }
 
@@ -483,6 +494,8 @@ public class DeepSeekMusicAgent {
     }
 
     private String requestDeepSeek(String message, EvidenceContext evidenceContext, List<Map<String, String>> history) throws Exception {
+        ModelInvocationMetrics metrics = currentModelMetrics.get();
+        if (metrics != null) metrics.modelCalls = Math.max(1, metrics.modelCalls);
         String baseUrl = getFirstConfig("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL");
         if (baseUrl.isEmpty()) baseUrl = "https://api.deepseek.com";
         String endpoint = baseUrl.replaceAll("/+$", "") + "/chat/completions";
@@ -493,9 +506,12 @@ public class DeepSeekMusicAgent {
                 messages, modelName, 0.4, message, currentConversationId.get(), currentUserId.get(),
                 currentRequestId.get(), lastPromptVersion.get());
         if (agentResult != null) {
+            if (metrics != null) metrics.modelCalls = Math.max(1, agentResult.getModelCalls());
             lastAgentResult.set(agentResult);
             lastApiUsage.set(new ApiUsage(agentResult.getInputTokens(), agentResult.getOutputTokens(), agentResult.getTotalTokens()));
-            return ensureEvidenceReferences(agentResult.getAnswer(), evidenceContext);
+            String answer = ensureEvidenceReferences(agentResult.getAnswer(), evidenceContext);
+            if (metrics != null) metrics.success = answer != null && !answer.trim().isEmpty();
+            return answer;
         }
 
         JSONObject requestBody = new JSONObject();
@@ -535,6 +551,7 @@ public class DeepSeekMusicAgent {
         JSONObject responseMessage = firstChoice.getJSONObject("message");
         String answer = responseMessage == null ? "" : responseMessage.getString("content");
         if (answer == null || answer.trim().isEmpty()) return "";
+        if (metrics != null) metrics.success = true;
         return "Agent Service 当前不可用，已临时直连 DeepSeek；本轮长期记忆可能未保存。\n"
                 + ensureEvidenceReferences(answer, evidenceContext);
     }
@@ -928,19 +945,41 @@ public class DeepSeekMusicAgent {
         private final String reply;
         private final MusicLibraryAgent.RecommendationOutcome recommendationOutcome;
         private final String promptVersion;
+        private final int modelCalls;
+        private final boolean success;
+        private final int inputTokens;
+        private final int outputTokens;
+        private final long latencyMs;
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
             this(reply, recommendationOutcome, "none");
         }
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome, String promptVersion) {
+            this(reply, recommendationOutcome, promptVersion, 0, true, 0, 0, 0);
+        }
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
+                           String promptVersion, int modelCalls, boolean success,
+                           int inputTokens, int outputTokens, long latencyMs) {
             this.reply = reply;
             this.recommendationOutcome = recommendationOutcome;
             this.promptVersion = promptVersion;
+            this.modelCalls = modelCalls;
+            this.success = success;
+            this.inputTokens = inputTokens;
+            this.outputTokens = outputTokens;
+            this.latencyMs = latencyMs;
         }
 
         public String getReply() { return reply; }
         public String getPromptVersion() { return promptVersion; }
+        public boolean isModelCalled() { return modelCalls > 0; }
+        public int getModelCalls() { return modelCalls; }
+        public boolean isSuccess() { return success; }
+        public int getInputTokens() { return inputTokens; }
+        public int getOutputTokens() { return outputTokens; }
+        public long getLatencyMs() { return latencyMs; }
 
         public List<Audio> getRecommendations() {
             return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();
@@ -1017,5 +1056,10 @@ public class DeepSeekMusicAgent {
             this.completionTokens = completionTokens;
             this.totalTokens = totalTokens;
         }
+    }
+
+    private static final class ModelInvocationMetrics {
+        private int modelCalls;
+        private boolean success;
     }
 }

@@ -9,6 +9,7 @@ import com.example.demo.mapper.AssistantConversationMapper;
 import com.example.demo.mapper.UserMapper;
 import com.example.demo.service.DeepSeekMusicAgent;
 import com.example.demo.service.PromptVersionService;
+import com.example.demo.service.PromptOnlineMetricsService;
 import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.util.JwtUtil;
@@ -40,6 +41,9 @@ public class AssistantController {
 
     @Autowired
     private PromptVersionService promptVersionService;
+
+    @Autowired
+    private PromptOnlineMetricsService promptOnlineMetricsService;
 
     @Autowired
     private AgentMemoryClient agentMemoryClient;
@@ -86,6 +90,9 @@ public class AssistantController {
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
+        promptOnlineMetricsService.record(replyResult.getPromptVersion(), replyResult.getModelCalls(),
+                replyResult.isSuccess(), replyResult.getInputTokens(), replyResult.getOutputTokens(),
+                replyResult.getLatencyMs());
 
         if ("新对话".equals(conversation.getTitle())) {
             assistantConversationMapper.updateTitle(conversationId, userId, message.substring(0, Math.min(message.length(), 18)));
