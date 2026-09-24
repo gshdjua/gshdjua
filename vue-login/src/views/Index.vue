@@ -280,6 +280,16 @@
                     <span class="recommendation-play">▶ 播放</span>
                   </button>
                 </div>
+                <div v-if="isPromptFeedbackEligible(message)" class="assistant-feedback">
+                  <span>评价回答</span>
+                  <button type="button" :class="{ active: message.feedbackRating === 'helpful' }" :disabled="message.feedbackSaving" title="这条回答有帮助" @click="saveAssistantFeedback(message, 'helpful')">有帮助</button>
+                  <button type="button" :class="{ active: message.feedbackRating === 'not_helpful' }" :disabled="message.feedbackSaving" title="这条回答没有帮助" @click="saveAssistantFeedback(message, 'not_helpful', message.feedbackReason)">没帮助</button>
+                  <button v-if="message.feedbackRating" type="button" class="feedback-undo" :disabled="message.feedbackSaving" @click="clearAssistantFeedback(message)">撤销</button>
+                  <div v-if="message.feedbackRating === 'not_helpful'" class="feedback-reasons">
+                    <small>可选原因</small>
+                    <button v-for="reason in feedbackReasons" :key="reason.value" type="button" :class="{ active: message.feedbackReason === reason.value }" :disabled="message.feedbackSaving" @click="saveAssistantFeedback(message, 'not_helpful', reason.value)">{{ reason.label }}</button>
+                  </div>
+                </div>
               </div>
             </div>
             <div v-if="assistantLoading" class="chat-row assistant"><div class="message-avatar">✦</div><div class="chat-bubble typing">正在查询歌库数据<span></span><span></span><span></span></div></div>
@@ -380,6 +390,13 @@ export default {
       assistantLoading: false,
       assistantModelReady: null,
       assistantModelName: 'DeepSeek',
+      feedbackReasons: [
+        { value: 'inaccurate', label: '内容不准确' },
+        { value: 'misunderstood', label: '没有理解问题' },
+        { value: 'bad_recommendation', label: '推荐不合适' },
+        { value: 'too_long', label: '内容太长' },
+        { value: 'other', label: '其他原因' }
+      ],
       showAssistantSettingsMenu: false,
       showMemoryDialog: false,
       memoryEnabled: true,
@@ -970,6 +987,39 @@ export default {
       this.assistantInput = question
       this.sendAssistantMessage()
     },
+    isPromptFeedbackEligible(message) {
+      return message && message.role === 'assistant' && message.id && /^music_answer:v\d+$/.test(message.promptVersion || '')
+    },
+    async saveAssistantFeedback(message, rating, reason) {
+      if (!this.isPromptFeedbackEligible(message) || message.feedbackSaving) return
+      this.$set(message, 'feedbackSaving', true)
+      try {
+        const payload = { rating }
+        if (rating === 'not_helpful' && reason) payload.reason = reason
+        const res = await request.put(`/assistant/messages/${message.id}/feedback`, payload)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '反馈保存失败')
+        this.$set(message, 'feedbackRating', res.data.data.rating)
+        this.$set(message, 'feedbackReason', res.data.data.reason || null)
+      } catch (err) {
+        alert(err.response?.data?.msg || err.message || '反馈保存失败，请稍后重试')
+      } finally {
+        this.$set(message, 'feedbackSaving', false)
+      }
+    },
+    async clearAssistantFeedback(message) {
+      if (!this.isPromptFeedbackEligible(message) || message.feedbackSaving) return
+      this.$set(message, 'feedbackSaving', true)
+      try {
+        const res = await request.delete(`/assistant/messages/${message.id}/feedback`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '反馈撤销失败')
+        this.$set(message, 'feedbackRating', null)
+        this.$set(message, 'feedbackReason', null)
+      } catch (err) {
+        alert(err.response?.data?.msg || err.message || '反馈撤销失败，请稍后重试')
+      } finally {
+        this.$set(message, 'feedbackSaving', false)
+      }
+    },
     async sendAssistantMessage() {
       const message = this.assistantInput.trim()
       if (!message || this.assistantLoading || !this.activeConversationId) return
@@ -1156,6 +1206,7 @@ export default {
 .chat-history-toolbar { display: flex; align-items: center; gap: 12px; margin: -4px 0 18px; padding-bottom: 15px; border-bottom: 1px solid #efedf8; }.new-conversation-btn { flex: 0 0 auto; padding: 9px 13px; border: 0; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #6d73e8, #8051ba); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }.conversation-list { display: flex; flex: 1; gap: 8px; overflow-x: auto; padding: 2px; }.conversation-item { position: relative; display: flex; align-items: center; gap: 7px; min-width: 150px; max-width: 220px; padding: 8px 28px 8px 11px; border: 1px solid #e5e1f7; border-radius: 10px; color: #736c8d; background: #faf9ff; cursor: pointer; transition: .2s ease; }.conversation-item:hover { border-color: #b4a6e9; }.conversation-item.active { border-color: #765ad0; color: #49357d; background: #f0edff; box-shadow: 0 4px 12px rgba(106,82,186,.12); }.conversation-title { overflow: hidden; flex: 1; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.conversation-count { flex: 0 0 auto; color: #a49cb7; font-size: 11px; }.conversation-delete { position: absolute; right: 7px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; color: #948aa9; background: transparent; font-size: 17px; cursor: pointer; }.conversation-delete:hover { color: #fff; background: #e26b82; }
 .assistant-settings-wrap { position: relative; flex: 0 0 auto; }.assistant-settings-btn { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid #e1ddef; border-radius: 10px; color: #756b8c; background: #faf9fd; font-size: 17px; cursor: pointer; transition: .2s ease; }.assistant-settings-btn:hover { border-color: #9d8bd7; color: #664caf; background: #f2effd; }.assistant-settings-menu { position: absolute; top: 45px; right: 0; z-index: 12; width: 225px; padding: 7px; border: 1px solid #e7e2f3; border-radius: 13px; background: #fff; box-shadow: 0 14px 35px rgba(44,35,82,.18); }.assistant-settings-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-radius: 9px; color: #4c4264; background: transparent; font: inherit; text-align: left; cursor: pointer; }.assistant-settings-menu > button:hover { background: #f4f1fd; }.assistant-settings-menu > button > span { display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border-radius: 9px; color: #7256be; background: #ece7fb; font-size: 16px; }.assistant-settings-menu strong, .assistant-settings-menu small { display: block; }.assistant-settings-menu strong { font-size: 13px; }.assistant-settings-menu small { margin-top: 3px; color: #91899f; font-size: 11px; }
 .chat-content { min-width: 0; flex: 1; }.chat-row.has-recommendations { max-width: 92%; }.recommendation-picker { display: grid; grid-template-columns: repeat(3, minmax(170px, 1fr)); gap: 12px; margin-top: 12px; }.recommendation-card { display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px; text-align: left; border: 1px solid #e4e0fb; border-radius: 13px; background: #fbfaff; cursor: pointer; transition: .2s ease; }.recommendation-card:hover { border-color: #8061d7; transform: translateY(-2px); box-shadow: 0 8px 18px rgba(99,77,180,.15); }.recommendation-card img, .recommendation-cover { width: 46px; height: 46px; border-radius: 10px; object-fit: cover; }.recommendation-cover { display: grid; place-items: center; background: linear-gradient(135deg, #7177e9, #8c50bc); color: #fff; font-size: 21px; }.recommendation-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.recommendation-info strong, .recommendation-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recommendation-info strong { color: #322b58; font-size: 13px; }.recommendation-info small, .recommendation-info em { color: #807896; font-size: 11px; font-style: normal; }.recommendation-play { grid-column: 1 / -1; padding: 5px 8px; border-radius: 7px; background: #eeeafd; color: #6f56bd; font-size: 11px; font-weight: 700; text-align: center; }
+.assistant-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 7px; color: #938ca4; font-size: 11px; }.assistant-feedback > button, .feedback-reasons button { padding: 3px 8px; border: 1px solid #e3def2; border-radius: 999px; background: transparent; color: #756b8c; font: inherit; cursor: pointer; }.assistant-feedback button:hover:not(:disabled), .assistant-feedback button.active { border-color: #9b82dc; background: #f1edff; color: #674bb4; }.assistant-feedback button:disabled { cursor: wait; opacity: .55; }.assistant-feedback .feedback-undo { border-color: transparent; color: #a29bad; }.feedback-reasons { flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding-top: 2px; }.feedback-reasons small { margin-right: 2px; color: #aaa3b6; }
 .quick-questions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }.quick-questions button { padding: 7px 11px; border: 1px solid #ddd9f7; border-radius: 20px; color: #705bb8; background: #faf9ff; font-size: 12px; cursor: pointer; }.quick-questions button:hover { border-color: #8e75dc; background: #f0edff; }.chat-input-row { display: flex; gap: 10px; }.chat-input-row input { flex: 1; min-width: 0; padding: 13px 15px; border: 1px solid #e2e0ed; border-radius: 12px; outline: none; font: inherit; }.chat-input-row input:focus { border-color: #7961c9; box-shadow: 0 0 0 3px rgba(121,97,201,.1); }.chat-input-row button { padding: 0 21px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #6c73e9, #8051ba); color: #fff; font-weight: 600; cursor: pointer; }.chat-input-row button:disabled { cursor: not-allowed; opacity: .55; }
 @media (max-width: 640px) { .main-area { padding: 16px; }.daily-recommendation-header { align-items: flex-start; flex-direction: column; }.refresh-recommendations { width: 100%; justify-content: center; }.assistant-page { margin: 0; }.assistant-intro { padding: 22px; }.assistant-intro h2 { font-size: 24px; }.chat-panel { min-height: 500px; padding: 16px; }.chat-history-toolbar { align-items: flex-start; flex-direction: column; gap: 9px; }.new-conversation-btn { width: 100%; }.conversation-list { width: 100%; }.conversation-item { min-width: 138px; }.chat-messages { min-height: 330px; }.chat-row { max-width: 92%; }.recommendation-picker { grid-template-columns: 1fr; }.quick-questions { overflow-x: auto; flex-wrap: nowrap; }.quick-questions button { white-space: nowrap; } }
 

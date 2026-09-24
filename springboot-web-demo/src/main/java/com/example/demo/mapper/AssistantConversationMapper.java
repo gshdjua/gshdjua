@@ -40,8 +40,12 @@ public interface AssistantConversationMapper {
     @Update("UPDATE assistant_conversation SET update_time = CURRENT_TIMESTAMP WHERE id = #{conversationId}")
     void touchConversation(Long conversationId);
 
-    @Select("SELECT id, conversation_id AS conversationId, role, content, create_time AS createTime " +
-            "FROM assistant_message WHERE conversation_id = #{conversationId} ORDER BY id ASC")
+    @Select("SELECT m.id, m.conversation_id AS conversationId, m.role, m.content, m.create_time AS createTime, " +
+            "apu.prompt_version AS promptVersion, paf.rating AS feedbackRating, paf.reason AS feedbackReason " +
+            "FROM assistant_message m " +
+            "LEFT JOIN assistant_prompt_usage apu ON apu.assistant_message_id=m.id " +
+            "LEFT JOIN prompt_answer_feedback paf ON paf.assistant_message_id=m.id " +
+            "WHERE m.conversation_id = #{conversationId} ORDER BY m.id ASC")
     List<AssistantMessage> selectMessagesByConversationId(Long conversationId);
 
     @Insert("INSERT INTO assistant_message(conversation_id, role, content) VALUES(#{conversationId}, #{role}, #{content})")

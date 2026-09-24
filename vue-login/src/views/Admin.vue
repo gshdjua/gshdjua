@@ -492,7 +492,7 @@
         <div class="evaluation-panel prompt-metrics-panel">
           <div class="evaluation-panel-head">
             <div><p>ONLINE OBSERVABILITY</p><h3>线上灰度效果</h3></div>
-            <div class="prompt-metrics-filters"><select v-model.number="promptMetricsDays" @change="loadPromptMetrics"><option :value="1">最近 24 小时</option><option :value="7">最近 7 天</option><option :value="30">最近 30 天</option><option :value="90">最近 90 天</option></select><button type="button" :disabled="promptMetricsLoading" @click="loadPromptMetrics">刷新</button></div>
+            <div class="prompt-metrics-filters"><select v-model.number="promptMetricsDays" @change="loadPromptObservability"><option :value="1">最近 24 小时</option><option :value="7">最近 7 天</option><option :value="30">最近 30 天</option><option :value="90">最近 90 天</option></select><button type="button" :disabled="promptMetricsLoading || promptFeedbackLoading" @click="loadPromptObservability">刷新</button></div>
           </div>
           <p class="prompt-metrics-privacy">{{ promptMetrics.privacy || '只统计版本号、调用状态、Token 与耗时，不保存用户、问题或回答。' }}</p>
           <p v-if="promptMetricsError" class="evaluation-state error">{{ promptMetricsError }}</p>
@@ -500,6 +500,15 @@
           <div v-else-if="!promptMetricRows.length" class="evaluation-state">当前时间范围内暂无使用 Prompt 的真实聊天请求。请先产生实际聊天流量。</div>
           <div v-else class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>版本</th><th>角色</th><th>请求数</th><th>模型调用</th><th>输入 / 输出 Token</th><th>费用</th><th>平均 / P95 延迟</th><th>模型错误率</th><th>决策状态</th></tr></thead><tbody><tr v-for="row in promptMetricRows" :key="row.promptVersion"><td>{{ row.promptVersion }}</td><td>{{ promptMetricRole(row.promptVersion) }}</td><td>{{ row.requestCount }}</td><td>{{ row.modelCalls }}</td><td>{{ row.inputTokens }} / {{ row.outputTokens }}</td><td>{{ formatLlmCost(row.estimatedCost) }}</td><td>{{ formatDecimal(row.averageLatencyMs) }} / {{ row.p95LatencyMs }}ms</td><td>{{ formatPercent(row.errorRate) }}</td><td><span class="prompt-sample-status" :class="{'ready': row.sampleSufficient}">{{ row.sampleSufficient ? '样本充足' : `数据不足（至少 ${promptMetrics.minimumSampleSize || 30} 条）` }}</span></td></tr></tbody></table></div>
           <p class="prompt-decision-note">系统只提供客观运行指标，不自动判断回答质量。全量发布前还应结合固定题评测和人工阅读；两个版本都达到最小样本量后才开放发布按钮。</p>
+        </div>
+        <div class="evaluation-panel prompt-metrics-panel">
+          <div class="evaluation-panel-head"><div><p>QUALITY FEEDBACK</p><h3>低打扰反馈质量</h3></div><span>{{ promptFeedbackRows.reduce((sum, row) => sum + Number(row.feedbackCount || 0), 0) }} 条反馈</span></div>
+          <p class="prompt-metrics-privacy">{{ promptFeedbackMetrics.privacy || '只统计消息对应的 Prompt 版本、评价和预设原因，不复制问题或回答正文。' }}</p>
+          <p v-if="promptFeedbackError" class="evaluation-state error">{{ promptFeedbackError }}</p>
+          <div v-if="promptFeedbackLoading" class="evaluation-state">正在加载用户反馈…</div>
+          <div v-else-if="!promptFeedbackRows.length" class="evaluation-state">当前时间范围内暂无自愿反馈。反馈按钮不会强制用户操作。</div>
+          <div v-else class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>版本</th><th>角色</th><th>反馈数</th><th>有帮助</th><th>没帮助</th><th>好评率</th><th>主要差评原因</th><th>参考状态</th></tr></thead><tbody><tr v-for="row in promptFeedbackRows" :key="row.promptVersion"><td>{{ row.promptVersion }}</td><td>{{ promptMetricRole(row.promptVersion) }}</td><td>{{ row.feedbackCount }}</td><td>{{ row.helpfulCount }}</td><td>{{ row.notHelpfulCount }}</td><td>{{ formatPercent(row.helpfulRate) }}</td><td>{{ promptFeedbackReasonSummary(row) }}</td><td><span class="prompt-sample-status" :class="{'ready': row.sampleSufficient}">{{ row.sampleSufficient ? '可供参考' : `反馈较少（建议至少 ${promptFeedbackMetrics.minimumSampleSize || 5} 条）` }}</span></td></tr></tbody></table></div>
+          <p class="prompt-decision-note">反馈为自愿样本，可能存在选择偏差，只作为固定题评测、人工审阅、错误率、延迟和成本之外的补充证据，不会自动改变灰度比例或发布版本。</p>
         </div>
         <div class="evaluation-panel prompt-compare-panel">
           <div class="evaluation-panel-head"><div><p>PROMPT COMPARISON</p><h3>同题版本对比</h3></div><span>可比较 {{ promptComparableCases.length }} 题</span></div>
@@ -947,6 +956,8 @@ export default {
       promptRollout: { enabled: false, trafficPercent: 0 }, promptCandidateId: null, promptTrafficPercent: 10,
       promptMetricsDays: 7, promptMetrics: { versions: [], minimumSampleSize: 30 },
       promptMetricsLoading: false, promptMetricsError: '',
+      promptFeedbackMetrics: { versions: [], minimumSampleSize: 5, reasonLabels: {} },
+      promptFeedbackLoading: false, promptFeedbackError: '',
       promptCompareBase: null, promptCompareCandidate: null, promptCompareRealCall: false,
       promptCompareRunning: false, promptCompareProgress: 0, promptCompareError: '', promptCompareResults: []
     }
@@ -1007,6 +1018,9 @@ export default {
     promptMetricRows() {
       return Array.isArray(this.promptMetrics.versions) ? this.promptMetrics.versions : []
     },
+    promptFeedbackRows() {
+      return Array.isArray(this.promptFeedbackMetrics.versions) ? this.promptFeedbackMetrics.versions : []
+    },
     promptCanDecide() {
       if (!this.promptRollout.enabled) return false
       const baseline = `music_answer:v${this.promptRollout.baselineVersion}`
@@ -1021,7 +1035,7 @@ export default {
   methods: {
     async openPromptVersions() {
       this.currentMenu = 'prompts'
-      await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadPromptMetrics(), this.loadLlmCostCases()])
+      await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadPromptMetrics(), this.loadPromptFeedbackMetrics(), this.loadLlmCostCases()])
     },
     async loadPromptRollout() {
       try {
@@ -1040,9 +1054,29 @@ export default {
       } catch (error) { this.promptMetricsError = error.response?.data?.msg || error.message || '加载线上指标失败' }
       finally { this.promptMetricsLoading = false }
     },
+    async loadPromptFeedbackMetrics() {
+      this.promptFeedbackLoading = true; this.promptFeedbackError = ''
+      try {
+        const res = await request.get('/admin/prompts/feedback-metrics', { params: { days: this.promptMetricsDays } })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '加载反馈质量失败')
+        this.promptFeedbackMetrics = res.data.data || { versions: [], minimumSampleSize: 5, reasonLabels: {} }
+      } catch (error) { this.promptFeedbackError = error.response?.data?.msg || error.message || '加载反馈质量失败' }
+      finally { this.promptFeedbackLoading = false }
+    },
+    loadPromptObservability() {
+      return Promise.all([this.loadPromptMetrics(), this.loadPromptFeedbackMetrics()])
+    },
+    promptFeedbackReasonSummary(row) {
+      const labels = this.promptFeedbackMetrics.reasonLabels || {}
+      const counts = row.reasonCounts || {}
+      const parts = Object.keys(counts).filter(key => Number(counts[key]) > 0)
+        .sort((left, right) => Number(counts[right]) - Number(counts[left]))
+        .map(key => `${labels[key] || key} ${counts[key]}`)
+      return parts.length ? parts.join('、') : '—'
+    },
     promptMetricRole(version) {
       if (version === `music_answer:v${this.promptRollout.baselineVersion}`) return '基线'
-      if (version === `music_answer:v${this.promptRollout.candidateVersion}`) return '候选'
+      if (this.promptRollout.enabled && version === `music_answer:v${this.promptRollout.candidateVersion}`) return '候选'
       return '历史版本'
     },
     async startPromptRollout() {

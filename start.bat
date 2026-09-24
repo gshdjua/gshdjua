@@ -41,7 +41,7 @@ if errorlevel 1 (
 echo [1/4] Starting local vector RAG...
 set RAGDIR=%BATDIR%\rag-service
 set RAGPYTHON=%RAGDIR%\.venv\Scripts\python.exe
-if exist "%RAGPYTHON%" goto check_rag_dependencies
+if exist "%RAGPYTHON%" goto start_rag
 
 echo RAG environment not found. Creating it now...
 python -m venv "%RAGDIR%\.venv"
@@ -50,10 +50,6 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-
-:check_rag_dependencies
-"%RAGPYTHON%" -c "import fastapi, uvicorn, sentence_transformers, faiss, pymysql, dotenv" >nul 2>&1
-if not errorlevel 1 goto start_rag
 
 echo Installing RAG dependencies. The first installation may take several minutes...
 "%RAGPYTHON%" -m pip install -r "%RAGDIR%\requirements.txt"

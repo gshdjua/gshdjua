@@ -2,6 +2,7 @@ package com.example.demo.controller;
 
 import com.example.demo.service.PromptVersionService;
 import com.example.demo.service.PromptOnlineMetricsService;
+import com.example.demo.service.PromptFeedbackService;
 import org.springframework.dao.DataAccessException;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -22,10 +23,13 @@ import java.util.function.Supplier;
 public class PromptVersionController {
     private final PromptVersionService service;
     private final PromptOnlineMetricsService metricsService;
+    private final PromptFeedbackService feedbackService;
 
-    public PromptVersionController(PromptVersionService service, PromptOnlineMetricsService metricsService) {
+    public PromptVersionController(PromptVersionService service, PromptOnlineMetricsService metricsService,
+                                   PromptFeedbackService feedbackService) {
         this.service = service;
         this.metricsService = metricsService;
+        this.feedbackService = feedbackService;
     }
 
     @GetMapping
@@ -62,6 +66,11 @@ public class PromptVersionController {
     @GetMapping("/metrics")
     public Map<String, Object> metrics(@RequestParam(value = "days", defaultValue = "7") int days) {
         return run(() -> metricsService.summary(days));
+    }
+
+    @GetMapping("/feedback-metrics")
+    public Map<String, Object> feedbackMetrics(@RequestParam(value = "days", defaultValue = "7") int days) {
+        return run(() -> feedbackService.summary(days));
     }
 
     @PostMapping

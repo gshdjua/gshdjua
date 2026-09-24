@@ -142,6 +142,8 @@ Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`�
 
 灰度期间的真实聊天会按 Prompt 版本记录匿名运行指标：请求数、模型调用次数、输入/输出 Token、估算费用、平均/P95 延迟和模型错误率。`prompt_online_metric` 不保存用户 ID、会话 ID、问题或回答；本地直答也不会归入 Prompt 版本统计。管理页面可查看最近 24 小时、7 天、30 天或 90 天的数据，并区分基线、候选和历史版本。默认每个版本至少累计 30 条请求才显示“样本充足”，避免根据少量流量仓促发布；达到门槛后可调整灰度比例、停止灰度或将候选全量发布，原基线保留为可回滚的停用版本。接口为 `GET /api/admin/prompts/metrics`、`PUT /api/admin/prompts/rollout` 和 `POST /api/admin/prompts/rollout/promote`。费用价格与样本门槛可通过 `LLM_INPUT_PRICE_PER_MILLION`、`LLM_OUTPUT_PRICE_PER_MILLION` 和 `PROMPT_METRICS_MIN_SAMPLE_SIZE` 调整。
 
+需要模型 Prompt 的正式聊天回答下方提供可选的“有帮助 / 没帮助”轻量反馈；按钮不会弹窗、不会阻止继续聊天，本地直答不显示。用户可修改或撤销评价，“没帮助”可选预设原因。`prompt_answer_feedback` 只保存助手消息 ID、实际 Prompt 版本、评价和预设原因，不复制问题或回答正文，也不额外保存用户 ID；写入前会通过消息所属对话校验当前登录用户。管理页面按版本汇总好评率与差评原因，但自愿反馈仅作为固定题评测、人工审阅、错误率、延迟和成本之外的补充证据，不会自动发布版本。用户接口为 `PUT/DELETE /api/assistant/messages/{messageId}/feedback`，管理接口为 `GET /api/admin/prompts/feedback-metrics`；建议反馈数可通过 `PROMPT_FEEDBACK_MINIMUM_SAMPLE_SIZE` 调整，默认 5 条且不作为强制发布门槛。
+
 ### 9. 检索效果可以量化评估
 
 管理后台可以维护检索测试集，并计算 Hit@K、Recall@K、MRR、Top-1 和拒答准确率，同时展示分类指标和失败案例。LLM 成本评测 V2 支持模拟或真实调用，逐题展示本地/Agent 执行路径、Direct/ReAct 策略、模型/工具/轮次、证据量、Token、延迟、预算状态和费用，并汇总本地绕过率、策略分布、P95 延迟、预算停止数和规则通过率。测试集与导出报告带有 `2.0` 版本：原有 6 题作为生产链路历史基线，新增 5 题“Agent 原生执行”题组，分别检查 `favorite_search`、`recommend_songs`、`vector_search`、`song_detail` 和 ReAct 多工具协作。原生题组直接把原始问题交给 Agent，不预先由 Java 准备证据；模拟模式只预览路由和 Direct 工具计划，真实模式才检查工具是否实际执行并产生 API 费用。原生评测不写入会话状态或长期记忆，审计仍只保存不含问题、回答和工具数据的元数据。

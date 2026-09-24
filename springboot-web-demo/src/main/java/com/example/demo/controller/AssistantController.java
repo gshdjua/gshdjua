@@ -10,6 +10,7 @@ import com.example.demo.mapper.UserMapper;
 import com.example.demo.service.DeepSeekMusicAgent;
 import com.example.demo.service.PromptVersionService;
 import com.example.demo.service.PromptOnlineMetricsService;
+import com.example.demo.service.PromptFeedbackService;
 import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.util.JwtUtil;
@@ -44,6 +45,9 @@ public class AssistantController {
 
     @Autowired
     private PromptOnlineMetricsService promptOnlineMetricsService;
+
+    @Autowired
+    private PromptFeedbackService promptFeedbackService;
 
     @Autowired
     private AgentMemoryClient agentMemoryClient;
@@ -90,6 +94,7 @@ public class AssistantController {
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
+        assistantMessage.setPromptVersion(replyResult.getPromptVersion());
         promptOnlineMetricsService.record(replyResult.getPromptVersion(), replyResult.getModelCalls(),
                 replyResult.isSuccess(), replyResult.getInputTokens(), replyResult.getOutputTokens(),
                 replyResult.getLatencyMs());
@@ -107,6 +112,31 @@ public class AssistantController {
         data.put("recommendations", replyResult.getRecommendations());
         data.put("recommendationMeta", replyResult.getRecommendationMetadata());
         return result(200, "success", data);
+    }
+
+    @PutMapping("/messages/{messageId}/feedback")
+    public Map<String, Object> savePromptFeedback(@PathVariable long messageId,
+                                                   @RequestBody Map<String, Object> payload,
+                                                   HttpServletRequest request) {
+        try {
+            Object data = promptFeedbackService.save(messageId, getUserId(request),
+                    String.valueOf(payload.getOrDefault("rating", "")),
+                    payload.get("reason") == null ? null : String.valueOf(payload.get("reason")));
+            return result(200, "Feedback saved", data);
+        } catch (IllegalArgumentException exception) {
+            return result(400, exception.getMessage(), null);
+        }
+    }
+
+    @DeleteMapping("/messages/{messageId}/feedback")
+    public Map<String, Object> deletePromptFeedback(@PathVariable long messageId,
+                                                     HttpServletRequest request) {
+        try {
+            promptFeedbackService.delete(messageId, getUserId(request));
+            return result(200, "Feedback deleted", null);
+        } catch (IllegalArgumentException exception) {
+            return result(400, exception.getMessage(), null);
+        }
     }
 
     @GetMapping("/conversations")

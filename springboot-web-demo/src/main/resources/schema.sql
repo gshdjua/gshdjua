@@ -107,6 +107,18 @@ CREATE TABLE IF NOT EXISTS prompt_online_metric (
     KEY idx_prompt_metric_time (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS prompt_answer_feedback (
+    assistant_message_id BIGINT PRIMARY KEY,
+    prompt_version VARCHAR(120) NOT NULL,
+    rating VARCHAR(20) NOT NULL,
+    reason VARCHAR(40) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_prompt_feedback_version_time (prompt_version, updated_at),
+    CONSTRAINT fk_prompt_feedback_message FOREIGN KEY (assistant_message_id)
+        REFERENCES assistant_message(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS agent_conversation_state (
     conversation_id BIGINT PRIMARY KEY,
     user_id INT NULL,
