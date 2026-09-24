@@ -6,6 +6,13 @@ setlocal enabledelayedexpansion
 set BATDIR=%~dp0
 set BATDIR=%BATDIR:~0,-1%
 
+if exist "%BATDIR%\.env" (
+    echo Loading local environment from .env...
+    for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%BATDIR%\.env") do (
+        if not "%%A"=="" set "%%A=%%B"
+    )
+)
+
 echo Stopping previous MusicHub services if they are running...
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8082" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>&1
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8081" ^| findstr "LISTENING"') do taskkill /F /PID %%P >nul 2>&1

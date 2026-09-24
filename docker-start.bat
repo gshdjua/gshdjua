@@ -21,7 +21,7 @@ if errorlevel 1 (
 
 if not exist ".env" (
     copy ".env.docker.example" ".env" >nul
-    echo [NOTICE] Created .env. Add OPENAI_API_KEY if DeepSeek answers are required.
+    echo [NOTICE] Created .env. Add the server-side API key for the provider you want to use.
 )
 
 echo Building and starting MusicHub containers...

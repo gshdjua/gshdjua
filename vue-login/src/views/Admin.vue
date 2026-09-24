@@ -30,6 +30,10 @@
           <span class="nav-icon">📝</span>
           <span>Prompt 版本管理</span>
         </div>
+        <div class="nav-item" :class="{active: currentMenu === 'models'}" @click="openModelCatalog">
+          <span class="nav-icon">🧠</span>
+          <span>模型目录</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <button class="back-btn" @click="$router.push('/index')">
@@ -359,7 +363,7 @@
             <p>基于当前执行链检查本地绕过、Direct/ReAct 路由、工具调用、预算、Token、延迟和预估费用。</p>
           </div>
           <div class="evaluation-actions">
-            <label class="llm-cost-mode"><input v-model="llmCostRealCall" type="checkbox" :disabled="llmCostRunning" /> 真实调用 DeepSeek</label>
+            <label class="llm-cost-mode"><input v-model="llmCostRealCall" type="checkbox" :disabled="llmCostRunning" /> 真实调用 {{ llmProviderDisplay }}</label>
             <button class="evaluation-run-btn" :disabled="llmCostRunning || !llmCostSelectedCases.length" @click="runLlmCostEvaluation">
               {{ llmCostRunning ? '评测运行中…' : '▶ 开始成本评测' }}
             </button>
@@ -372,6 +376,11 @@
         </div>
 
         <div class="llm-cost-settings">
+          <label>评测模型
+            <select v-model="llmSelectedModelId" :disabled="llmCostRunning" @change="applySelectedModelPricing">
+              <option v-for="model in llmModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+            </select>
+          </label>
           <label>评测题组
             <select v-model="llmCostScope" :disabled="llmCostRunning" @change="resetLlmCostRun">
               <option value="production">生产链路（{{ llmCostProductionCount }}题）</option>
@@ -379,18 +388,18 @@
               <option value="all">全部题目（{{ llmCostCases.length }}题）</option>
             </select>
           </label>
-          <label>官方价格方案
+          <label>价格方案
             <select v-model="llmCostPricePreset" @change="applyLlmCostPricePreset">
-              <option value="flash-peak">V4 Flash 高峰（保守估算）</option>
-              <option value="flash-offpeak">V4 Flash 闲时</option>
-              <option value="pro-peak">V4 Pro 高峰</option>
-              <option value="pro-offpeak">V4 Pro 闲时</option>
+              <option value="flash-peak">DeepSeek V4 Flash 高峰（保守估算）</option>
+              <option value="flash-offpeak">DeepSeek V4 Flash 闲时</option>
+              <option value="pro-peak">DeepSeek V4 Pro 高峰</option>
+              <option value="pro-offpeak">DeepSeek V4 Pro 闲时</option>
               <option value="custom">自定义</option>
             </select>
           </label>
           <label>输入价格（元/百万 Token）<input v-model.number="llmCostInputPrice" type="number" min="0" step="0.01" @input="llmCostPricePreset='custom'" /></label>
           <label>输出价格（元/百万 Token）<input v-model.number="llmCostOutputPrice" type="number" min="0" step="0.01" @input="llmCostPricePreset='custom'" /></label>
-          <small>预设按缓存未命中价格计算。模拟模式不会调用模型；真实模式会产生实际 API 消耗，价格可能调整，请以 DeepSeek 官方页面为准。</small>
+          <small>当前评测模型：{{ llmProviderDisplay }}。预设仅适用于对应的 DeepSeek 型号；使用其他 Provider 时请选择“自定义”并按其官方价格填写。模拟模式不会调用模型，真实模式会产生实际 API 消耗。</small>
         </div>
 
         <div v-if="llmCostLoading" class="evaluation-state">正在加载成本测试集…</div>
@@ -492,13 +501,13 @@
         <div class="evaluation-panel prompt-metrics-panel">
           <div class="evaluation-panel-head">
             <div><p>ONLINE OBSERVABILITY</p><h3>线上灰度效果</h3></div>
-            <div class="prompt-metrics-filters"><select v-model.number="promptMetricsDays" @change="loadPromptObservability"><option :value="1">最近 24 小时</option><option :value="7">最近 7 天</option><option :value="30">最近 30 天</option><option :value="90">最近 90 天</option></select><button type="button" :disabled="promptMetricsLoading || promptFeedbackLoading" @click="loadPromptObservability">刷新</button></div>
+            <div class="prompt-metrics-filters"><select v-model.number="promptMetricsDays" @change="loadPromptObservability"><option :value="1">最近 24 小时</option><option :value="7">最近 7 天</option><option :value="30">最近 30 天</option><option :value="90">最近 90 天</option></select><button type="button" :disabled="promptMetricsLoading || promptFeedbackLoading" @click="loadPromptObservability">刷新</button><button type="button" class="danger" :disabled="promptMetricsLoading || !promptMetricRows.length" @click="deletePromptMetrics">清除当前范围</button></div>
           </div>
           <p class="prompt-metrics-privacy">{{ promptMetrics.privacy || '只统计版本号、调用状态、Token 与耗时，不保存用户、问题或回答。' }}</p>
           <p v-if="promptMetricsError" class="evaluation-state error">{{ promptMetricsError }}</p>
           <div v-if="promptMetricsLoading" class="evaluation-state">正在加载线上指标…</div>
           <div v-else-if="!promptMetricRows.length" class="evaluation-state">当前时间范围内暂无使用 Prompt 的真实聊天请求。请先产生实际聊天流量。</div>
-          <div v-else class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>版本</th><th>角色</th><th>请求数</th><th>模型调用</th><th>输入 / 输出 Token</th><th>费用</th><th>平均 / P95 延迟</th><th>模型错误率</th><th>决策状态</th></tr></thead><tbody><tr v-for="row in promptMetricRows" :key="row.promptVersion"><td>{{ row.promptVersion }}</td><td>{{ promptMetricRole(row.promptVersion) }}</td><td>{{ row.requestCount }}</td><td>{{ row.modelCalls }}</td><td>{{ row.inputTokens }} / {{ row.outputTokens }}</td><td>{{ formatLlmCost(row.estimatedCost) }}</td><td>{{ formatDecimal(row.averageLatencyMs) }} / {{ row.p95LatencyMs }}ms</td><td>{{ formatPercent(row.errorRate) }}</td><td><span class="prompt-sample-status" :class="{'ready': row.sampleSufficient}">{{ row.sampleSufficient ? '样本充足' : `数据不足（至少 ${promptMetrics.minimumSampleSize || 30} 条）` }}</span></td></tr></tbody></table></div>
+          <div v-else class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>版本</th><th>Provider / 模型</th><th>角色</th><th>请求数</th><th>模型调用</th><th>输入 / 输出 Token</th><th>费用</th><th>平均 / P95 延迟</th><th>模型错误率</th><th>决策状态</th></tr></thead><tbody><tr v-for="row in promptMetricRows" :key="`${row.promptVersion}-${row.provider}-${row.model}`"><td>{{ row.promptVersion }}</td><td>{{ row.provider }} / {{ row.model }}</td><td>{{ promptMetricRole(row.promptVersion) }}</td><td>{{ row.requestCount }}</td><td>{{ row.modelCalls }}</td><td>{{ row.inputTokens }} / {{ row.outputTokens }}</td><td>{{ formatLlmCost(row.estimatedCost) }}</td><td>{{ formatDecimal(row.averageLatencyMs) }} / {{ row.p95LatencyMs }}ms</td><td>{{ formatPercent(row.errorRate) }}</td><td><span class="prompt-sample-status" :class="{'ready': row.sampleSufficient}">{{ row.sampleSufficient ? '样本充足' : `数据不足（至少 ${promptMetrics.minimumSampleSize || 30} 条）` }}</span></td></tr></tbody></table></div>
           <p class="prompt-decision-note">系统只提供客观运行指标，不自动判断回答质量。全量发布前还应结合固定题评测和人工阅读；两个版本都达到最小样本量后才开放发布按钮。</p>
         </div>
         <div class="evaluation-panel prompt-metrics-panel">
@@ -516,7 +525,8 @@
             <p>用相同生产链路题对比结构规则、Token、费用和延迟；规则通过率不等于回答准确率。模拟模式不调用模型，仅估算成本；真实模式才可人工阅读回答。</p>
             <select v-model.number="promptCompareBase" aria-label="基线 Prompt 版本" @change="promptCompareResults=[]"><option :value="null">选择基线版本</option><option v-for="item in promptVersions" :key="item.id" :value="item.version">v{{ item.version }}</option></select>
             <select v-model.number="promptCompareCandidate" aria-label="候选 Prompt 版本" @change="promptCompareResults=[]"><option :value="null">选择候选版本</option><option v-for="item in promptVersions" :key="item.id" :value="item.version">v{{ item.version }}</option></select>
-            <label><input v-model="promptCompareRealCall" type="checkbox" :disabled="promptCompareRunning" /> 真实调用 DeepSeek（产生费用）</label>
+            <select v-model="llmSelectedModelId" aria-label="固定评测模型" @change="promptCompareResults=[]; applySelectedModelPricing()"><option v-for="model in llmModels" :key="model.id" :value="model.id">固定模型：{{ model.displayName }}</option></select>
+            <label><input v-model="promptCompareRealCall" type="checkbox" :disabled="promptCompareRunning" /> 真实调用 {{ llmProviderDisplay }}（产生费用）</label>
             <button type="button" :disabled="promptCompareRunning || !promptCompareBase || !promptCompareCandidate || promptCompareBase === promptCompareCandidate" @click="comparePromptVersions">{{ promptCompareRunning ? '对比中…' : '开始对比' }}</button>
             <span v-if="promptCompareRunning">{{ promptCompareProgress }} / {{ promptComparableCases.length * 2 }}</span>
           </div>
@@ -565,6 +575,42 @@
               </div>
             </div>
           </div>
+        </div>
+      </section>
+
+      <section v-if="currentMenu === 'models'" class="evaluation-dashboard model-catalog-dashboard">
+        <div class="evaluation-hero model-catalog-hero">
+          <div>
+            <p class="evaluation-eyebrow">UNIFIED MODEL CATALOG</p>
+            <h2>统一模型目录</h2>
+            <p>集中维护聊天、Prompt 对比与成本评测可使用的 Provider、模型标识和计费单价。</p>
+          </div>
+          <div class="evaluation-actions">
+            <button type="button" class="evaluation-export-btn" :disabled="llmModelSaving" @click="openModelCatalog">刷新目录</button>
+          </div>
+        </div>
+
+        <p v-if="llmModelError" class="evaluation-state error">{{ llmModelError }}</p>
+        <div class="evaluation-panel llm-model-catalog">
+          <div class="evaluation-panel-head"><div><p>MODEL CATALOG</p><h3>可用模型</h3></div><span>{{ llmAdminModels.length }} 个模型</span></div>
+          <div class="llm-model-form">
+            <label><span>Provider</span><input v-model.trim="llmModelForm.provider" placeholder="例如 deepseek" /></label>
+            <label><span>API 模型名</span><input v-model.trim="llmModelForm.model" placeholder="例如 deepseek-chat" /></label>
+            <label><span>用户看到的名称</span><input v-model.trim="llmModelForm.displayName" placeholder="例如 DeepSeek Chat" /></label>
+            <label><span>输入价格（元/百万 Token）</span><input v-model.number="llmModelForm.inputPricePerMillion" type="number" min="0" step="0.01" placeholder="0" /></label>
+            <label><span>输出价格（元/百万 Token）</span><input v-model.number="llmModelForm.outputPricePerMillion" type="number" min="0" step="0.01" placeholder="0" /></label>
+            <label class="llm-model-toggle">
+              <input v-model="llmModelForm.userSelectable" type="checkbox" />
+              <span><strong>用户可选</strong><small>显示在普通用户聊天页面的模型列表中</small></span>
+            </label>
+            <label class="llm-model-toggle">
+              <input v-model="llmModelForm.default" type="checkbox" />
+              <span><strong>默认模型</strong><small>新建会话自动使用；系统只能有一个默认模型</small></span>
+            </label>
+            <button type="button" class="llm-model-submit" :disabled="llmModelSaving" @click="saveLlmModel">{{ llmModelSaving ? '保存中…' : '添加模型' }}</button>
+          </div>
+          <div class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>显示名称</th><th>Provider</th><th>API 模型</th><th>价格（输入/输出）</th><th>用户可选</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="model in llmAdminModels" :key="model.id"><td>{{ model.displayName }}</td><td>{{ model.provider }}</td><td>{{ model.model }}</td><td>{{ model.inputPricePerMillion }} / {{ model.outputPricePerMillion }}</td><td>{{ model.userSelectable ? '是' : '否' }}</td><td>{{ model.default ? '默认' : model.enabled ? '已启用' : '已停用' }}</td><td><button v-if="model.enabled && !model.default" type="button" class="danger" @click="disableLlmModel(model)">停用</button></td></tr></tbody></table></div>
+          <p class="prompt-decision-note">目录只保存模型标识、开关和价格，不保存 API Key。新增其他 Provider 的模型前，必须先在 Agent Service 注册对应 LlmProvider Adapter。</p>
         </div>
       </section>
 
@@ -945,6 +991,9 @@ export default {
       llmCostCases: [], llmCostResults: [], llmCostSummary: null,
       llmCostProgress: 0, llmCostCurrentCase: null, llmCostRunning: false,
       llmCostLoading: false, llmCostError: '', llmCostRealCall: false,
+      llmProviderName: 'LLM', llmModelName: '', llmModels: [], llmSelectedModelId: '',
+      llmAdminModels: [], llmModelSaving: false, llmModelError: '',
+      llmModelForm: { provider: '', model: '', displayName: '', inputPricePerMillion: 0, outputPricePerMillion: 0, userSelectable: true, default: false },
       llmCostPricePreset: 'flash-peak', llmCostInputPrice: 3, llmCostOutputPrice: 9, showLlmCostDataset: false,
       llmCostScope: 'production',
       showLlmCostCaseDialog: false, editingLlmCostCaseId: null, llmCostCaseSaving: false,
@@ -963,11 +1012,15 @@ export default {
     }
   },
   computed: {
+    llmProviderDisplay() {
+      const selected = this.llmModels.find(item => item.id === this.llmSelectedModelId)
+      return selected ? selected.displayName : (this.llmModelName ? `${this.llmProviderName} / ${this.llmModelName}` : this.llmProviderName)
+    },
     menuTitle() {
-      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理' }[this.currentMenu] || '管理后台'
+      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录' }[this.currentMenu] || '管理后台'
     },
     menuIcon() {
-      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝' }[this.currentMenu] || '🎵'
+      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠' }[this.currentMenu] || '🎵'
     },
     canSaveLyrics() {
       return this.lyricEditorLines.length > 0 && this.lyricEditorLines.every(line => line.time !== null)
@@ -1035,7 +1088,37 @@ export default {
   methods: {
     async openPromptVersions() {
       this.currentMenu = 'prompts'
-      await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadPromptMetrics(), this.loadPromptFeedbackMetrics(), this.loadLlmCostCases()])
+      await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadPromptMetrics(), this.loadPromptFeedbackMetrics(), this.loadLlmCostCases(), this.loadLlmProviderStatus()])
+    },
+    async openModelCatalog() {
+      this.currentMenu = 'models'
+      await Promise.all([this.loadAdminLlmModels(), this.loadLlmProviderStatus()])
+    },
+    async loadLlmProviderStatus() {
+      try {
+        const [status, models] = await Promise.all([request.get('/assistant/status'), request.get('/assistant/models')])
+        if (status.data.code === 200) {
+          this.llmProviderName = status.data.data?.provider || 'LLM'
+          this.llmModelName = status.data.data?.model || ''
+        }
+        this.llmModels = models.data.code === 200 ? (models.data.data || []) : []
+        if (!this.llmModels.some(item => item.id === this.llmSelectedModelId)) {
+          this.llmSelectedModelId = this.llmModels.find(item => item.default)?.id || this.llmModels[0]?.id || ''
+        }
+        this.applySelectedModelPricing()
+      } catch (error) {
+        this.llmProviderName = 'LLM'
+        this.llmModelName = ''
+      }
+    },
+    applySelectedModelPricing() {
+      const model = this.llmModels.find(item => item.id === this.llmSelectedModelId)
+      if (!model) return
+      this.llmProviderName = model.provider
+      this.llmModelName = model.model
+      this.llmCostInputPrice = Number(model.inputPricePerMillion || 0)
+      this.llmCostOutputPrice = Number(model.outputPricePerMillion || 0)
+      this.llmCostPricePreset = model.provider === 'deepseek' ? this.llmCostPricePreset : 'custom'
     },
     async loadPromptRollout() {
       try {
@@ -1053,6 +1136,19 @@ export default {
         this.promptMetrics = res.data.data || { versions: [], minimumSampleSize: 30 }
       } catch (error) { this.promptMetricsError = error.response?.data?.msg || error.message || '加载线上指标失败' }
       finally { this.promptMetricsLoading = false }
+    },
+    async deletePromptMetrics() {
+      if (this.promptMetricsLoading || !confirm(`确定清除最近 ${this.promptMetricsDays} 天的 Prompt 运行统计吗？此操作不会删除聊天记录、反馈、Prompt 版本或模型目录，且无法恢复。`)) return
+      this.promptMetricsLoading = true; this.promptMetricsError = ''; this.promptSuccess = ''
+      try {
+        const res = await request.delete('/admin/prompts/metrics', { params: { days: this.promptMetricsDays } })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '清除线上指标失败')
+        const deletedCount = Number(res.data.data?.deletedCount || 0)
+        this.promptSuccess = `已清除最近 ${this.promptMetricsDays} 天的 ${deletedCount} 条 Prompt 运行统计。`
+        await this.loadPromptObservability()
+      } catch (error) {
+        this.promptMetricsError = error.response?.data?.msg || error.message || '清除线上指标失败'
+      } finally { this.promptMetricsLoading = false }
     },
     async loadPromptFeedbackMetrics() {
       this.promptFeedbackLoading = true; this.promptFeedbackError = ''
@@ -1136,6 +1232,7 @@ export default {
           for (const version of [this.promptCompareBase, this.promptCompareCandidate]) {
             const res = await request.post('/admin/llm-cost-evaluation/evaluate', {
               question: testCase.question, history: testCase.history || [], promptVersion: version,
+              modelId: this.llmSelectedModelId,
               includeAnswerPreview: this.promptCompareRealCall, realCall: this.promptCompareRealCall,
               expectedOutputTokens: testCase.expected_output_tokens || 300,
               inputPricePerMillion: this.llmCostInputPrice, outputPricePerMillion: this.llmCostOutputPrice,
@@ -1311,7 +1408,37 @@ export default {
     },
     async openLlmCostEvaluation() {
       this.currentMenu = 'llmCost'
-      if (!this.llmCostCases.length) await this.loadLlmCostCases()
+      await Promise.all([
+        this.llmCostCases.length ? Promise.resolve() : this.loadLlmCostCases(),
+        this.loadLlmProviderStatus()
+      ])
+    },
+    async loadAdminLlmModels() {
+      this.llmModelError = ''
+      try {
+        const res = await request.get('/admin/llm-models')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '模型目录加载失败')
+        this.llmAdminModels = res.data.data || []
+      } catch (error) { this.llmModelError = error.response?.data?.msg || error.message || '模型目录加载失败' }
+    },
+    async saveLlmModel() {
+      if (!this.llmModelForm.provider || !this.llmModelForm.model) return alert('Provider 和 API 模型名不能为空')
+      this.llmModelSaving = true
+      try {
+        const res = await request.post('/admin/llm-models', this.llmModelForm)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '模型保存失败')
+        this.llmModelForm = { provider: '', model: '', displayName: '', inputPricePerMillion: 0, outputPricePerMillion: 0, userSelectable: true, default: false }
+        await Promise.all([this.loadAdminLlmModels(), this.loadLlmProviderStatus()])
+      } catch (error) { alert(error.response?.data?.msg || error.message || '模型保存失败') }
+      finally { this.llmModelSaving = false }
+    },
+    async disableLlmModel(model) {
+      if (!confirm(`确定停用“${model.displayName}”吗？`)) return
+      try {
+        const res = await request.delete(`/admin/llm-models/${model.id}`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '模型停用失败')
+        await Promise.all([this.loadAdminLlmModels(), this.loadLlmProviderStatus()])
+      } catch (error) { alert(error.response?.data?.msg || error.message || '模型停用失败') }
     },
     async loadLlmCostCases() {
       this.llmCostLoading = true
@@ -1404,7 +1531,7 @@ export default {
     },
     async runLlmCostEvaluation() {
       if (this.llmCostRunning || !this.llmCostSelectedCases.length) return
-      if (this.llmCostRealCall && !confirm('真实调用会逐题请求 DeepSeek 并产生 API 费用，确定继续吗？')) return
+      if (this.llmCostRealCall && !confirm(`真实调用会逐题请求 ${this.llmProviderDisplay} 并产生 API 费用，确定继续吗？`)) return
       this.llmCostRunning = true
       this.llmCostError = ''
       this.llmCostProgress = 0
@@ -1415,6 +1542,7 @@ export default {
           this.llmCostCurrentCase = testCase
           const res = await request.post('/admin/llm-cost-evaluation/evaluate', {
             question: testCase.question, history: testCase.history || [],
+            modelId: this.llmSelectedModelId,
             expectedOutputTokens: testCase.expected_output_tokens || 300,
             realCall: this.llmCostRealCall,
             inputPricePerMillion: this.llmCostInputPrice,
@@ -1479,7 +1607,7 @@ export default {
     },
     downloadLlmCostReport() {
       if (!this.llmCostSummary) return
-      const report = { schemaVersion: '2.0', generatedAt: new Date().toISOString(), mode: this.llmCostRealCall ? 'real' : 'simulation', scope: this.llmCostScope, prices: { input: this.llmCostInputPrice, output: this.llmCostOutputPrice }, summary: this.llmCostSummary, cases: this.llmCostResults }
+      const report = { schemaVersion: '2.0', generatedAt: new Date().toISOString(), mode: this.llmCostRealCall ? 'real' : 'simulation', scope: this.llmCostScope, provider: this.llmProviderName, model: this.llmModelName, prices: { input: this.llmCostInputPrice, output: this.llmCostOutputPrice }, summary: this.llmCostSummary, cases: this.llmCostResults }
       const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -2213,9 +2341,11 @@ export default {
 .evaluation-empty { display: grid; min-height: 180px; place-items: center; color: #9e97aa; font-size: 13px; }.evaluation-failures { overflow-y: auto; max-height: 430px; padding: 12px; }.evaluation-failures article { margin-bottom: 10px; padding: 12px; border: 1px solid #f0dbe0; border-radius: 11px; background: #fff9fa; }.evaluation-failures article:last-child { margin-bottom: 0; }.evaluation-failures article div { display: flex; align-items: center; gap: 8px; }.evaluation-failures article strong { color: #c04b61; font-size: 12px; }.evaluation-failures article span { padding: 2px 6px; border-radius: 99px; color: #98717a; background: #f8e8eb; font-size: 9px; }.evaluation-failures p { margin: 7px 0; color: #544b5e; font-size: 12px; line-height: 1.45; }.evaluation-failures small { color: #9b8690; font-size: 10px; }
 .llm-cost-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.llm-cost-mode { display: inline-flex !important; align-items: center; gap: 7px; padding: 8px 11px; border: 1px solid rgba(255,255,255,.32); border-radius: 9px; color: #fff !important; background: rgba(255,255,255,.1); white-space: nowrap; }.llm-cost-mode input { accent-color: #a889ee; }.llm-cost-settings { display: flex; align-items: flex-end; gap: 14px; margin-bottom: 16px; padding: 14px 18px; border: 1px solid #e6e0f3; border-radius: 14px; background: #fff; }.llm-cost-settings label { display: grid; gap: 6px; color: #625978; font-size: 11px; }.llm-cost-settings input { width: 150px; padding: 8px 10px; border: 1px solid #ded7ec; border-radius: 8px; }.llm-cost-settings small { flex: 1; color: #928aa1; line-height: 1.5; }.llm-cost-result-table { max-height: 520px; }.llm-cost-result-table table { min-width: 1050px; }.llm-cost-mismatch { background: #fff8f9; }.llm-cost-mismatch td:first-child strong { color: #ca5365; }.llm-cost-metrics .evaluation-metric strong { font-size: 24px; }
 .prompt-hero { background: linear-gradient(120deg, #242054, #5940a0 58%, #8752d4); }.prompt-notice, .prompt-success { margin: 0 0 18px; padding: 13px 16px; border: 1px solid #e2d9f3; border-radius: 12px; color: #64587b; background: #fff; font-size: 13px; line-height: 1.6; }.prompt-success { border-color: #bde5d5; color: #277255; background: #f0fbf6; }.prompt-dashboard .evaluation-state { margin-bottom: 18px; }.prompt-layout { display: grid; grid-template-columns: minmax(0,1.1fr) minmax(320px,.9fr); gap: 18px; align-items: start; }.prompt-version-list { overflow-y: auto; max-height: 680px; padding: 15px; }.prompt-version-item { margin-bottom: 12px; padding: 16px; border: 1px solid #e7e1f3; border-radius: 12px; background: #fff; }.prompt-version-item:last-child { margin-bottom: 0; }.prompt-version-current { border-color: #9270d0; background: #faf7ff; }.prompt-version-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }.prompt-version-heading > div { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }.prompt-version-heading strong { color: #3c3159; font-size: 14px; }.prompt-version-heading small { color: #8f869e; font-size: 11px; white-space: nowrap; }.prompt-status { padding: 3px 8px; border-radius: 99px; background: #f0ecf7; color: #736784; font-size: 10px; }.prompt-status-published { color: #1e7956; background: #def5e9; }.prompt-status-draft { color: #7854b5; background: #eee7ff; }.prompt-version-preview { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; margin: 12px 0; color: #6f667e; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }.prompt-version-actions { display: flex; gap: 8px; flex-wrap: wrap; }.prompt-version-actions button { padding: 7px 11px; border: 1px solid #c9b8e9; border-radius: 8px; color: #6545a7; background: #fff; font: inherit; font-size: 11px; cursor: pointer; }.prompt-version-actions button.danger { border-color: #efbec6; color: #bd4f64; }.prompt-version-actions button:disabled { cursor: not-allowed; opacity: .5; }.prompt-editor-body { padding: 18px; }.prompt-editor-body label { display: block; margin-bottom: 9px; color: #4b3f65; font-size: 13px; font-weight: 700; }.prompt-editor-body textarea { box-sizing: border-box; width: 100%; min-height: 360px; padding: 13px; resize: vertical; border: 1px solid #d9d0e9; border-radius: 10px; color: #3d3550; background: #fcfbff; font: inherit; font-size: 12px; line-height: 1.7; }.prompt-editor-body small { display: block; margin-top: 7px; color: #91869e; font-size: 11px; }.prompt-editor-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }.prompt-editor-actions button { padding: 9px 15px; border-radius: 9px; font: inherit; font-size: 12px; cursor: pointer; }.prompt-editor-actions button:disabled { cursor: not-allowed; opacity: .5; }
-.prompt-rollout-panel, .prompt-compare-panel, .prompt-metrics-panel { margin-bottom: 18px; }.prompt-rollout-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px; color: #5b5271; font-size: 13px; }.prompt-rollout-body p { flex-basis: 100%; margin: 0; line-height: 1.6; }.prompt-rollout-body select, .prompt-rollout-body input[type=number] { padding: 7px; border: 1px solid #d9d0e9; border-radius: 8px; background: #fff; }.prompt-rollout-body input[type=number] { width: 58px; }.prompt-rollout-body button { padding: 8px 12px; border: 1px solid #8666c3; border-radius: 8px; color: #fff; background: #7454b4; cursor: pointer; }.prompt-rollout-body button:disabled { opacity: .5; cursor: not-allowed; }.prompt-rollout-body .prompt-promote-btn { border-color: #2d9168; background: #2d9168; }.prompt-answer-review { padding: 0 16px 16px; }.prompt-answer-review details { margin-top: 8px; padding: 9px; border: 1px solid #e7e1f3; border-radius: 8px; }.prompt-answer-review summary { cursor: pointer; }.prompt-answer-review p { white-space: pre-wrap; }.prompt-status-gray { color: #915d1e; background: #fff0d1; }.prompt-metrics-filters { display: flex; gap: 8px; }.prompt-metrics-filters select, .prompt-metrics-filters button { padding: 7px 10px; border: 1px solid #d4c7ea; border-radius: 8px; color: #5f4695; background: #fff; }.prompt-metrics-privacy, .prompt-decision-note { margin: 0; padding: 13px 16px; color: #6d6380; background: #faf8ff; font-size: 12px; line-height: 1.6; }.prompt-decision-note { border-top: 1px solid #eee8f7; }.prompt-sample-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #9b651d; background: #fff1d7; font-size: 11px; }.prompt-sample-status.ready { color: #247454; background: #def5e9; }
+.model-catalog-hero { background: linear-gradient(120deg, #242054, #4f3c96 58%, #6f56c9); }.model-catalog-dashboard .evaluation-state { margin-bottom: 18px; }
+.prompt-rollout-panel, .prompt-compare-panel, .prompt-metrics-panel { margin-bottom: 18px; }.prompt-rollout-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px; color: #5b5271; font-size: 13px; }.prompt-rollout-body p { flex-basis: 100%; margin: 0; line-height: 1.6; }.prompt-rollout-body select, .prompt-rollout-body input[type=number] { padding: 7px; border: 1px solid #d9d0e9; border-radius: 8px; background: #fff; }.prompt-rollout-body input[type=number] { width: 58px; }.prompt-rollout-body button { padding: 8px 12px; border: 1px solid #8666c3; border-radius: 8px; color: #fff; background: #7454b4; cursor: pointer; }.prompt-rollout-body button:disabled { opacity: .5; cursor: not-allowed; }.prompt-rollout-body .prompt-promote-btn { border-color: #2d9168; background: #2d9168; }.prompt-answer-review { padding: 0 16px 16px; }.prompt-answer-review details { margin-top: 8px; padding: 9px; border: 1px solid #e7e1f3; border-radius: 8px; }.prompt-answer-review summary { cursor: pointer; }.prompt-answer-review p { white-space: pre-wrap; }.prompt-status-gray { color: #915d1e; background: #fff0d1; }.prompt-metrics-filters { display: flex; gap: 8px; flex-wrap: wrap; }.prompt-metrics-filters select, .prompt-metrics-filters button { padding: 7px 10px; border: 1px solid #d4c7ea; border-radius: 8px; color: #5f4695; background: #fff; }.prompt-metrics-filters button.danger { border-color: #efbec6; color: #bd4f64; }.prompt-metrics-filters button:disabled { cursor: not-allowed; opacity: .5; }.prompt-metrics-privacy, .prompt-decision-note { margin: 0; padding: 13px 16px; color: #6d6380; background: #faf8ff; font-size: 12px; line-height: 1.6; }.prompt-decision-note { border-top: 1px solid #eee8f7; }.prompt-sample-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #9b651d; background: #fff1d7; font-size: 11px; }.prompt-sample-status.ready { color: #247454; background: #def5e9; }
+.llm-model-catalog { margin-top: 18px; }.llm-model-form { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 14px; padding: 20px; border-bottom: 1px solid #efecf6; }.llm-model-form label { display: grid; gap: 7px; min-width: 0; color: #625978; font-size: 11px; font-weight: 600; }.llm-model-form label > input:not([type=checkbox]) { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #ded7ec; border-radius: 9px; color: #3d3550; background: #fff; font: inherit; font-weight: 400; }.llm-model-form label > input:not([type=checkbox]):focus { border-color: #8b6bca; outline: 0; box-shadow: 0 0 0 3px rgba(117,80,194,.1); }.llm-model-form .llm-model-toggle { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 10px 13px; border: 1px solid #e1d9f0; border-radius: 10px; background: #faf8ff; cursor: pointer; }.llm-model-form .llm-model-toggle input { flex: 0 0 auto; width: 18px; height: 18px; margin: 0; accent-color: #7550c2; }.llm-model-toggle span, .llm-model-toggle strong, .llm-model-toggle small { display: block; }.llm-model-toggle strong { color: #45365f; font-size: 12px; }.llm-model-toggle small { margin-top: 3px; color: #8d849d; font-size: 10px; font-weight: 400; line-height: 1.4; }.llm-model-form button { align-self: stretch; min-height: 58px; border: 0; border-radius: 10px; color: #fff; background: #7454b4; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.llm-model-form button:disabled { cursor: not-allowed; opacity: .5; }.llm-model-catalog .evaluation-table button.danger { padding: 5px 10px; border: 1px solid #efbec6; border-radius: 7px; color: #bd4f64; background: #fff; cursor: pointer; }
 @media (max-width: 800px) { .statistics-dashboard { padding: 18px; }.stats-toolbar { align-items: flex-start; flex-direction: column; }.stats-kpis { grid-template-columns: 1fr; }.song-bar-chart { overflow-x: auto; }.song-bar-chart .bar-column { min-width: 84px; }.daily-chart-wrap { overflow-x: auto; }.daily-bar-chart { min-width: 600px; } }
 @media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 1100px) { .prompt-layout { grid-template-columns: 1fr; } }
-@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions { justify-content: flex-start; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; }.prompt-version-heading { flex-direction: column; }.prompt-editor-body textarea { min-height: 280px; } }
+@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions { justify-content: flex-start; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; }.prompt-version-heading { flex-direction: column; }.prompt-editor-body textarea { min-height: 280px; }.llm-model-form { grid-template-columns: 1fr; } }
 </style>

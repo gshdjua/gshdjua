@@ -130,6 +130,12 @@ Agent Service 已实现 `StrategyRouter`、`DirectStrategy` 和 `ReActStrategy`�
 
 每次 Agent 执行会按 `traceId` 将策略、原因码、预算档位、模型/工具调用量、Token、延迟、停止原因和工具执行摘要保存到 MySQL。工具摘要只包含工具名、成功状态、尝试次数、耗时和错误码；审计表不保存用户问题、模型回答、工具参数、工具返回数据或隐藏思维链。审计记录默认保留 30 天，可通过 `AGENT_AUDIT_RETENTION_DAYS` 调整。`GET /v1/audit/traces/{traceId}` 可查询单次执行摘要，Spring Boot 管理接口使用 `GET /api/admin/llm-cost-evaluation/traces/{traceId}` 转发查询。审计存储故障只影响记录，不阻断正常回答。
 
+Agent 模型层通过 `LlmProvider` 统一抽象模型配置检查、默认模型选择和聊天客户端创建。`LlmProviderRegistry` 根据请求中的 provider 名称选择适配器，LangGraph 不再直接依赖某个厂商 SDK；当前注册 `DeepSeekProvider` 与 `QwenProvider`，分别复用 DeepSeek 和千问的 OpenAI 兼容接口，并统一关闭 SDK 隐式重试。`LLM_PROVIDER` 用于选择当前 Provider（默认 `deepseek`），Java 请求、健康检查、聊天状态和成本评测页面会同步显示该 Provider 与模型。健康检查还返回不含密钥的 `providers` 状态列表，为后续添加 OpenAI 或 Claude Adapter 保留稳定扩展点。千问使用 `QWEN_API_KEY`（也兼容 `DASHSCOPE_API_KEY`）、`QWEN_BASE_URL` 和 `QWEN_MODEL`；密钥只保存在服务端环境变量中，不写入数据库或返回浏览器。
+
+Spring Boot 通过 `llm_model_config` 维护可用模型目录，包括 Provider、API 模型名、用户显示名、是否可选、默认状态和每百万 Token 输入/输出价格。普通用户可在聊天页为当前会话选择模型；选择结果保存到 `assistant_conversation.selected_model_id`，后续消息稳定沿用该模型，新会话使用目录中的默认模型。若旧会话绑定的模型已停用，下一次请求会自动回退到当前默认模型。`GET /api/assistant/models` 只返回已启用且允许用户选择的模型，`PUT /api/assistant/conversations/{id}/model` 可切换当前会话模型。
+
+管理后台侧边栏在「Prompt 版本管理」下方提供独立的「模型目录」页面，并允许成本评测和 Prompt 同题对比固定使用同一模型。真实聊天指标按 `Prompt 版本 + Provider + 模型` 分组，费用使用请求发生时保存的模型单价快照计算，因此后来修改目录价格不会改写历史费用。聊天响应同时返回 `selectedModelId`、`actualProvider`、`actualModel` 和 `executionPath`；本地规则直接回答时不会伪造模型调用或 Token 消耗。模型目录只保存配置元数据，不保存 API Key。新增其他厂商时，应先实现并注册对应 `LlmProvider` Adapter、配置服务端密钥，再在模型目录中启用其模型；仅新增目录记录不会让未注册的 Provider 自动获得调用能力。
+
 ### 正式回答 Prompt 版本管理
 
 正式用户聊天中需要模型生成的回答使用 MySQL 中已发布的 `music_answer` Prompt。首次启动自动建立 v1；每次请求读取当前已发布版本，因此发布、停用或回滚后，新请求无需重启即可生效。数据库不可用或没有已发布版本时使用内置兜底规则；Java 还会固定附加不可编辑的隐私与证据安全规则。本地直答不消耗该 Prompt，版本记为 `none`。聊天响应与 `assistant_prompt_usage` 保存版本号，Agent 执行审计也只保存版本号，不保存 Prompt 正文。
@@ -216,6 +222,18 @@ OPENAI_MODEL=deepseek-v4-flash
 
 `OPENAI_API_KEY` 可以暂时留空，此时系统仍能使用本地查询和部分规则回答。不要把真实 `.env` 上传到 GitHub。
 
+如果使用千问兼容 API，可改为或追加：
+
+```dotenv
+LLM_PROVIDER=qwen
+LLM_MODEL=qwen-plus
+QWEN_API_KEY=填写自己的千问APIKey
+QWEN_BASE_URL=https://maas.qianwenaiapi.com/compatible-mode/v1
+QWEN_MODEL=qwen-plus
+```
+
+也可以使用变量名 `DASHSCOPE_API_KEY` 代替 `QWEN_API_KEY`。API Key 必须与其签发平台和 Base URL 配套，不要把真实密钥提交到 Git。
+
 Docker 会将根目录的 `evaluation/` 挂载到后端容器，因此检索测试集和 LLM 成本测试集都可以在管理后台新增、修改和删除，并在容器重启后保留。
 
 #### 3. 启动系统
@@ -269,15 +287,27 @@ MUSICHUB_DB_USERNAME=root
 MUSICHUB_DB_PASSWORD=数据库密码
 ```
 
-#### 3. 配置 DeepSeek
+#### 3. 配置模型 Provider
 
-将 `springboot-web-demo/.env.example` 复制为 `springboot-web-demo/.env`，然后填写：
+在项目根目录创建 `.env`。DeepSeek 配置示例：
 
 ```dotenv
 OPENAI_API_KEY=填写自己的DeepSeek_API_Key
 OPENAI_BASE_URL=https://api.deepseek.com/v1
 OPENAI_MODEL=deepseek-v4-flash
 ```
+
+千问配置示例：
+
+```dotenv
+LLM_PROVIDER=qwen
+LLM_MODEL=qwen-plus
+QWEN_API_KEY=填写自己的千问APIKey
+QWEN_BASE_URL=https://maas.qianwenaiapi.com/compatible-mode/v1
+QWEN_MODEL=qwen-plus
+```
+
+`start.bat` 会在启动各服务前加载根目录 `.env`，真实密钥不要提交到 Git。
 
 #### 4. 启动全部服务
 

@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from .providers import create_deepseek_model
+from .providers import LlmModelRequest, llm_provider_registry
 from .strategies import strategy_router
 from .tools import ToolContext, tool_registry
 from .tools.models import ToolError, ToolExecutionResult
@@ -131,8 +131,6 @@ def route_after_prepare(state: AgentState) -> str:
 
 
 def call_model(state: AgentState) -> Dict[str, Any]:
-    if state["provider"] != "deepseek":
-        raise ValueError("Unsupported provider: " + state["provider"])
     if state.get("model_calls", 0) >= state.get("max_model_calls", 1):
         response = AIMessage(content="本次请求已达到模型调用预算，请缩小问题范围后重试。")
         return {
@@ -150,10 +148,13 @@ def call_model(state: AgentState) -> Dict[str, Any]:
             "budget_exhausted": True,
             "budget_stop_reason": "time_limit",
         }
-    model = create_deepseek_model(
-        state.get("model"),
-        state["temperature"],
-        timeout_seconds=max(0.25, remaining_ms / 1000.0),
+    model = llm_provider_registry.create_chat_model(
+        state["provider"],
+        LlmModelRequest(
+            model=state.get("model"),
+            temperature=state["temperature"],
+            timeout_seconds=max(0.25, remaining_ms / 1000.0),
+        ),
     )
     tools_bound = False
     if (

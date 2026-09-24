@@ -53,6 +53,8 @@ public class DeepSeekMusicAgent {
     private final ThreadLocal<String> lastPromptVersion = new ThreadLocal<>();
     private final ThreadLocal<Integer> evaluationPromptVersion = new ThreadLocal<>();
     private final ThreadLocal<ModelInvocationMetrics> currentModelMetrics = new ThreadLocal<>();
+    private final ThreadLocal<String> currentProvider = new ThreadLocal<>();
+    private final ThreadLocal<String> currentModel = new ThreadLocal<>();
 
     @Autowired
     private AudioMapper audioMapper;
@@ -134,20 +136,20 @@ public class DeepSeekMusicAgent {
         }
         if (intent == AssistantIntent.ASSISTANT_INFO) {
             String modelName = getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat");
-            return getApiKey().isEmpty()
+            return !isSelectedModelConfigured()
                     ? "我是 MusicHub 歌库智能助手，目前使用本地歌库数据回答问题，尚未配置外部模型。"
                     : "我是 MusicHub 歌库智能助手。本地查询由歌库数据库完成，歌曲背景类问题由 " + modelName + " 辅助回答。";
         }
         message = normalizedMessage;
         if (asksAboutAssistant(message)) {
             String modelName = getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat");
-            if (getApiKey().isEmpty()) return "我是 MusicHub 歌库智能助手。目前使用本地歌库数据回答问题，尚未配置外部模型。";
+            if (!isSelectedModelConfigured()) return "我是 MusicHub 歌库智能助手。目前使用本地歌库数据回答问题，尚未配置外部模型。";
             return "我是 MusicHub 歌库智能助手。歌库查询使用本地数据库；歌曲背景、发行信息和出处等问题由 " + modelName + " 提供辅助回答。";
         }
         if (intent != AssistantIntent.SONG_METADATA && !shouldUseRemoteModel(message, history)) {
             return musicLibraryAgent.reply(message, userId);
         }
-        if (getApiKey().isEmpty()) return "DeepSeek 尚未配置：后端没有读取到 OPENAI_API_KEY 或 DEEPSEEK_API_KEY。请在 springboot-web-demo/.env 中填写 Key 后重启服务。";
+        if (!isSelectedModelConfigured()) return "所选模型尚未配置，请联系管理员检查 Provider 凭据。";
 
         EvidenceContext evidenceContext = songContext(message, history, intent);
         try {
@@ -169,10 +171,18 @@ public class DeepSeekMusicAgent {
 
     public ReplyResult replyWithResult(String message, Integer userId, List<Map<String, String>> history,
                                        Long conversationId, String requestId) {
+        return replyWithResult(message, userId, history, conversationId, requestId,
+                getConfiguredProviderName(), getConfiguredModelName());
+    }
+
+    public ReplyResult replyWithResult(String message, Integer userId, List<Map<String, String>> history,
+                                       Long conversationId, String requestId, String provider, String model) {
         long startedAt = System.currentTimeMillis();
         currentConversationId.set(conversationId);
         currentUserId.set(userId);
         currentRequestId.set(requestId);
+        currentProvider.set(provider);
+        currentModel.set(model);
         currentRecommendationOutcome.remove();
         lastPromptVersion.remove();
         currentModelMetrics.set(new ModelInvocationMetrics());
@@ -180,13 +190,20 @@ public class DeepSeekMusicAgent {
             String reply = reply(message, userId, history);
             ModelInvocationMetrics metrics = currentModelMetrics.get();
             ApiUsage usage = lastApiUsage.get();
+            AgentServiceClient.AgentResult execution = lastAgentResult.get();
+            String actualProvider = execution != null && !execution.getProvider().isEmpty()
+                    ? execution.getProvider() : provider;
+            String actualModel = execution != null && !execution.getModel().isEmpty()
+                    ? execution.getModel() : model;
             return new ReplyResult(reply, currentRecommendationOutcome.get(),
                     lastPromptVersion.get() == null ? "none" : lastPromptVersion.get(),
                     metrics == null ? 0 : metrics.modelCalls,
                     metrics == null || metrics.modelCalls == 0 || metrics.success,
                     usage == null ? 0 : usage.promptTokens,
                     usage == null ? 0 : usage.completionTokens,
-                    System.currentTimeMillis() - startedAt);
+                    System.currentTimeMillis() - startedAt,
+                    metrics != null && metrics.modelCalls > 0 ? actualProvider : "none",
+                    metrics != null && metrics.modelCalls > 0 ? actualModel : "none");
         } finally {
             currentConversationId.remove();
             currentUserId.remove();
@@ -196,6 +213,8 @@ public class DeepSeekMusicAgent {
             lastAgentResult.remove();
             lastPromptVersion.remove();
             currentModelMetrics.remove();
+            currentProvider.remove();
+            currentModel.remove();
         }
     }
 
@@ -206,7 +225,7 @@ public class DeepSeekMusicAgent {
         boolean modelJudgesMood = isAnimeMoodQuestion(message);
         String localAnswer = modelJudgesMood
                 ? unverifiedMoodCandidateReply(outcome) : musicLibraryAgent.formatRecommendationReply(message, outcome);
-        if (songs.isEmpty() || getApiKey().isEmpty() || (outcome.hasShortfall() && !modelJudgesMood)) {
+        if (songs.isEmpty() || !isSelectedModelConfigured() || (outcome.hasShortfall() && !modelJudgesMood)) {
             if (modelJudgesMood) currentRecommendationOutcome.remove();
             return localAnswer;
         }
@@ -274,7 +293,7 @@ public class DeepSeekMusicAgent {
     private String replyWithStrictEntityEvidence(String message, List<Map<String, String>> history,
                                                  StructuredEntityQuery entityQuery, List<Audio> songs) {
         String localAnswer = strictEntityLocalAnswer(entityQuery, songs);
-        if (songs.isEmpty() || getApiKey().isEmpty()) return localAnswer;
+        if (songs.isEmpty() || !isSelectedModelConfigured()) return localAnswer;
         EvidenceContext evidenceContext = buildSongEvidenceContext(
                 "严格实体 SQL（" + entityQuery.getEntityType().name() + "）", songs,
                 strictEntityEvidenceLimit(entityQuery.getEntityType()));
@@ -300,7 +319,7 @@ public class DeepSeekMusicAgent {
     private String replyWithLocalEvidence(String message, Integer userId, List<Map<String, String>> history,
                                           List<Audio> songs, String retrievalMethod, AssistantIntent fallbackIntent) {
         if (songs == null || songs.isEmpty()) return musicLibraryAgent.reply(message, userId, fallbackIntent);
-        if (getApiKey().isEmpty()) return musicLibraryAgent.reply(message, userId, fallbackIntent);
+        if (!isSelectedModelConfigured()) return musicLibraryAgent.reply(message, userId, fallbackIntent);
         EvidenceContext evidenceContext = buildSongEvidenceContext(
                 retrievalMethod, songs, evidenceLimitForIntent(fallbackIntent, message));
         try {
@@ -417,8 +436,18 @@ public class DeepSeekMusicAgent {
         return !getApiKey().isEmpty();
     }
 
+    private boolean isSelectedModelConfigured() {
+        String provider = currentProvider.get() == null ? getConfiguredProviderName() : currentProvider.get();
+        return !"deepseek".equalsIgnoreCase(provider) || !getApiKey().isEmpty();
+    }
+
     public String getConfiguredModelName() {
-        return getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat");
+        String configured = getConfig("LLM_MODEL");
+        return configured.isEmpty() ? getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat") : configured;
+    }
+
+    public String getConfiguredProviderName() {
+        return agentServiceClient == null ? "deepseek" : agentServiceClient.getConfiguredProvider();
     }
 
     private boolean isFollowUpQuestion(String message) {
@@ -500,10 +529,11 @@ public class DeepSeekMusicAgent {
         if (baseUrl.isEmpty()) baseUrl = "https://api.deepseek.com";
         String endpoint = baseUrl.replaceAll("/+$", "") + "/chat/completions";
 
-        String modelName = getFirstConfigOrDefault("DEEPSEEK_MODEL", "OPENAI_MODEL", "deepseek-chat");
+        String modelName = currentModel.get() == null ? getConfiguredModelName() : currentModel.get();
+        String providerName = currentProvider.get() == null ? getConfiguredProviderName() : currentProvider.get();
         JSONArray messages = buildRequestMessages(message, evidenceContext, history);
         AgentServiceClient.AgentResult agentResult = agentServiceClient.chat(
-                messages, modelName, 0.4, message, currentConversationId.get(), currentUserId.get(),
+                messages, providerName, modelName, 0.4, message, currentConversationId.get(), currentUserId.get(),
                 currentRequestId.get(), lastPromptVersion.get());
         if (agentResult != null) {
             if (metrics != null) metrics.modelCalls = Math.max(1, agentResult.getModelCalls());
@@ -512,6 +542,10 @@ public class DeepSeekMusicAgent {
             String answer = ensureEvidenceReferences(agentResult.getAnswer(), evidenceContext);
             if (metrics != null) metrics.success = answer != null && !answer.trim().isEmpty();
             return answer;
+        }
+
+        if (!"deepseek".equalsIgnoreCase(providerName)) {
+            throw new IllegalStateException("所选 Provider 的 Agent 服务当前不可用");
         }
 
         JSONObject requestBody = new JSONObject();
@@ -583,6 +617,24 @@ public class DeepSeekMusicAgent {
                 inputPricePerMillion, outputPricePerMillion, "production", "auto", "standard");
     }
 
+    public Map<String, Object> evaluateLlmCostForModel(String message, Integer userId, List<Map<String, String>> history,
+                                                        boolean realCall, int expectedOutputTokens,
+                                                        double inputPricePerMillion, double outputPricePerMillion,
+                                                        String executionTarget, String requestedStrategy, String costBudget,
+                                                        Integer promptVersion, boolean includeAnswerPreview,
+                                                        String provider, String model) {
+        currentProvider.set(provider);
+        currentModel.set(model);
+        try {
+            return evaluateLlmCost(message, userId, history, realCall, expectedOutputTokens,
+                    inputPricePerMillion, outputPricePerMillion, executionTarget, requestedStrategy, costBudget,
+                    promptVersion, includeAnswerPreview);
+        } finally {
+            currentProvider.remove();
+            currentModel.remove();
+        }
+    }
+
     public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
                                                 boolean realCall, int expectedOutputTokens,
                                                 double inputPricePerMillion, double outputPricePerMillion,
@@ -635,7 +687,7 @@ public class DeepSeekMusicAgent {
         boolean actualUsage = false;
         AgentServiceClient.AgentResult agentExecution = null;
         String answerPreview = "";
-        if (realCall && preview.modelRequired && isExternalModelConfigured()) {
+        if (realCall && preview.modelRequired && isSelectedModelConfigured()) {
             lastApiUsage.remove();
             lastAgentResult.remove();
             String answer = reply(message, userId, history);
@@ -655,10 +707,14 @@ public class DeepSeekMusicAgent {
                 + outputTokens / 1_000_000d * Math.max(0d, outputPricePerMillion);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("evaluationVersion", "2.0");
+        result.put("provider", agentExecution != null && !agentExecution.getProvider().isEmpty()
+                ? agentExecution.getProvider() : currentProvider.get() == null ? getConfiguredProviderName() : currentProvider.get());
+        result.put("model", agentExecution != null && !agentExecution.getModel().isEmpty()
+                ? agentExecution.getModel() : currentModel.get() == null ? getConfiguredModelName() : currentModel.get());
         result.put("executionTarget", "production");
         result.put("intent", preview.intent.name());
         result.put("modelRequired", preview.modelRequired);
-        result.put("modelConfigured", isExternalModelConfigured());
+        result.put("modelConfigured", isSelectedModelConfigured());
         result.put("realCallRequested", realCall);
         result.put("actualUsage", actualUsage);
         boolean modelExecutedOrEstimated = preview.modelRequired && (!realCall || actualUsage);
@@ -705,7 +761,9 @@ public class DeepSeekMusicAgent {
                 normalizeEvaluationBudget(costBudget));
         String plannedTool = textValue(preview == null ? null : preview.get("plannedTool"), "");
         AgentServiceClient.AgentResult execution = realCall
-                ? agentServiceClient.chatNativeEvaluation(message, userId, requestedStrategy, costBudget)
+                ? agentServiceClient.chatNativeEvaluation(message, userId, requestedStrategy, costBudget,
+                currentProvider.get() == null ? getConfiguredProviderName() : currentProvider.get(),
+                currentModel.get() == null ? getConfiguredModelName() : currentModel.get())
                 : null;
 
         boolean executed = execution != null;
@@ -721,11 +779,15 @@ public class DeepSeekMusicAgent {
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("evaluationVersion", "2.0");
+        result.put("provider", executed && !execution.getProvider().isEmpty()
+                ? execution.getProvider() : currentProvider.get() == null ? getConfiguredProviderName() : currentProvider.get());
+        result.put("model", executed && !execution.getModel().isEmpty()
+                ? execution.getModel() : currentModel.get() == null ? getConfiguredModelName() : currentModel.get());
         result.put("executionTarget", "agent_native");
         result.put("promptVersion", "none");
         result.put("intent", "AGENT_NATIVE");
         result.put("modelRequired", true);
-        result.put("modelConfigured", isExternalModelConfigured());
+        result.put("modelConfigured", isSelectedModelConfigured());
         result.put("realCallRequested", realCall);
         result.put("actualUsage", executed);
         result.put("executionPath", !realCall ? "estimated_agent_native"
@@ -950,6 +1012,8 @@ public class DeepSeekMusicAgent {
         private final int inputTokens;
         private final int outputTokens;
         private final long latencyMs;
+        private final String provider;
+        private final String model;
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
             this(reply, recommendationOutcome, "none");
@@ -962,6 +1026,13 @@ public class DeepSeekMusicAgent {
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
                            String promptVersion, int modelCalls, boolean success,
                            int inputTokens, int outputTokens, long latencyMs) {
+            this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
+                    latencyMs, "none", "none");
+        }
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
+                           String promptVersion, int modelCalls, boolean success,
+                           int inputTokens, int outputTokens, long latencyMs, String provider, String model) {
             this.reply = reply;
             this.recommendationOutcome = recommendationOutcome;
             this.promptVersion = promptVersion;
@@ -970,6 +1041,8 @@ public class DeepSeekMusicAgent {
             this.inputTokens = inputTokens;
             this.outputTokens = outputTokens;
             this.latencyMs = latencyMs;
+            this.provider = provider;
+            this.model = model;
         }
 
         public String getReply() { return reply; }
@@ -980,6 +1053,8 @@ public class DeepSeekMusicAgent {
         public int getInputTokens() { return inputTokens; }
         public int getOutputTokens() { return outputTokens; }
         public long getLatencyMs() { return latencyMs; }
+        public String getProvider() { return provider; }
+        public String getModel() { return model; }
 
         public List<Audio> getRecommendations() {
             return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();

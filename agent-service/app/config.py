@@ -32,7 +32,26 @@ def base_url() -> str:
 
 
 def default_model() -> str:
-    return first_config("DEEPSEEK_MODEL", "OPENAI_MODEL", default="deepseek-chat")
+    return first_config("LLM_MODEL", "DEEPSEEK_MODEL", "OPENAI_MODEL", default="deepseek-chat")
+
+
+def default_provider() -> str:
+    return first_config("LLM_PROVIDER", default="deepseek").lower()
+
+
+def qwen_api_key() -> str:
+    return first_config("QWEN_API_KEY", "DASHSCOPE_API_KEY")
+
+
+def qwen_base_url() -> str:
+    return first_config(
+        "QWEN_BASE_URL",
+        default="https://maas.qianwenaiapi.com/compatible-mode/v1",
+    ).rstrip("/")
+
+
+def qwen_default_model() -> str:
+    return first_config("QWEN_MODEL", default="qwen-plus")
 
 
 def mysql_config() -> dict:

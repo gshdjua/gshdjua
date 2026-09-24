@@ -143,9 +143,9 @@ class StrategyGraphTest(unittest.TestCase):
         direct_model = FakeModel()
         react_model = FakeModel()
 
-        with patch("app.graph.create_deepseek_model", return_value=direct_model):
+        with patch("app.graph.llm_provider_registry.create_chat_model", return_value=direct_model):
             call_model({**base_state, "selected_strategy": "direct"})
-        with patch("app.graph.create_deepseek_model", return_value=react_model):
+        with patch("app.graph.llm_provider_registry.create_chat_model", return_value=react_model):
             call_model({**base_state, "selected_strategy": "react"})
 
         self.assertFalse(direct_model.bound)
@@ -181,7 +181,7 @@ class StrategyGraphTest(unittest.TestCase):
             "user_message": "我收藏了什么？",
         }
 
-        with patch("app.graph.create_deepseek_model", return_value=FinalModel()):
+        with patch("app.graph.llm_provider_registry.create_chat_model", return_value=FinalModel()):
             with patch("app.graph.tool_registry.invoke", return_value=tool_result) as invoke:
                 result = agent_graph.invoke(state)
 
@@ -234,7 +234,7 @@ class StrategyGraphTest(unittest.TestCase):
             "user_message": "比较动漫歌曲并分析它们的类型",
         }
 
-        with patch("app.graph.create_deepseek_model", return_value=model):
+        with patch("app.graph.llm_provider_registry.create_chat_model", return_value=model):
             with patch("app.graph.tool_registry.invoke", return_value=tool_result):
                 result = agent_graph.invoke(state)
 
@@ -299,7 +299,7 @@ class StrategyGraphTest(unittest.TestCase):
             "user_message": "比较并分析动漫歌曲",
         }
 
-        with patch("app.graph.create_deepseek_model", return_value=model):
+        with patch("app.graph.llm_provider_registry.create_chat_model", return_value=model):
             with patch("app.graph.tool_registry.invoke", return_value=tool_result):
                 result = agent_graph.invoke(state)
 
@@ -356,7 +356,7 @@ class StrategyGraphTest(unittest.TestCase):
         }
 
         with patch("app.graph.elapsed_ms", return_value=100):
-            with patch("app.graph.create_deepseek_model") as create_model:
+            with patch("app.graph.llm_provider_registry.create_chat_model") as create_model:
                 update = call_model(state)
 
         self.assertTrue(update["budget_exhausted"])
@@ -402,7 +402,7 @@ class StrategyGraphTest(unittest.TestCase):
         }
 
         with patch("app.graph.elapsed_ms", return_value=0):
-            with patch("app.graph.create_deepseek_model", return_value=TokenHeavyModel()):
+            with patch("app.graph.llm_provider_registry.create_chat_model", return_value=TokenHeavyModel()):
                 update = call_model(state)
 
         self.assertTrue(update["budget_exhausted"])

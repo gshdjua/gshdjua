@@ -6,8 +6,8 @@ from typing import List
 from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from .config import api_key, base_url, default_model
 from .audit import audit_repository
+from .config import default_provider
 from .contracts import (
     AgentChatRequest,
     AgentChatResponse,
@@ -25,6 +25,7 @@ from .contracts import (
 )
 from .graph import agent_graph
 from .memory import memory_repository
+from .providers import llm_provider_registry
 from .strategies import strategy_router
 from .tools import tool_registry
 from .tools.models import ToolCatalogResponse
@@ -76,12 +77,15 @@ def save_failed_audit(payload: AgentChatRequest, model_name: str, trace_id: str,
 
 @app.get("/health")
 def health() -> dict:
+    active_provider = llm_provider_registry.get(default_provider())
+    provider_status = active_provider.public_status()
     return {
         "status": "ready",
-        "configured": bool(api_key()),
-        "provider": "deepseek",
-        "model": default_model(),
-        "baseUrl": base_url(),
+        "configured": active_provider.is_configured(),
+        "provider": active_provider.name,
+        "model": active_provider.default_model(),
+        "baseUrl": provider_status.get("baseUrl", ""),
+        "providers": llm_provider_registry.statuses(),
         "protocolVersion": "1.0",
         "memoryStore": "mysql",
         "memoryAvailable": memory_repository.available(),
@@ -125,10 +129,12 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
     if payload.protocolVersion != "1.0":
         raise HTTPException(status_code=400, detail="Unsupported protocol version")
     started = time.perf_counter()
-    model_name = payload.options.model or default_model()
+    model_name = payload.options.model or ""
     trace_id = payload.metadata.get("traceId", payload.requestId)
     state = {}
     try:
+        provider = llm_provider_registry.get(payload.options.provider)
+        model_name = payload.options.model or provider.default_model()
         system_messages = [item for item in payload.messages if item.role == "system"]
         conversation_messages = [item for item in payload.messages if item.role != "system"]
         current_message = conversation_messages[-1]
@@ -277,9 +283,22 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
         })
         return result
     except ValueError as error:
+        LOGGER.warning(
+            "Agent request rejected: provider=%s model=%s traceId=%s error=%s",
+            payload.options.provider,
+            model_name,
+            trace_id,
+            error,
+        )
         save_failed_audit(payload, model_name, trace_id, started, state, "INVALID_REQUEST")
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
+        LOGGER.exception(
+            "Agent model invocation failed: provider=%s model=%s traceId=%s",
+            payload.options.provider,
+            model_name,
+            trace_id,
+        )
         save_failed_audit(payload, model_name, trace_id, started, state, "MODEL_INVOCATION_FAILED")
         raise HTTPException(status_code=502, detail="Model invocation failed: " + str(error)) from error
 

@@ -14,12 +14,27 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class PromptOnlineMetricsServiceTest {
+
+    @Test
+    void deletesOnlyMetricsInsideSelectedWindow() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        PromptOnlineMetricsService service = new PromptOnlineMetricsService(jdbc);
+        when(jdbc.update(anyString(), isA(java.sql.Timestamp.class))).thenReturn(4);
+
+        Map<String, Object> result = service.deleteRecent(7);
+
+        assertEquals(7, result.get("days"));
+        assertEquals(4, result.get("deletedCount"));
+        verify(jdbc).update(org.mockito.ArgumentMatchers.eq(
+                "DELETE FROM prompt_online_metric WHERE created_at>=?"), isA(java.sql.Timestamp.class));
+    }
 
     @Test
     void recordsOnlyVersionedProductionPromptWithoutContent() {
@@ -30,9 +45,11 @@ class PromptOnlineMetricsServiceTest {
 
         service.record("music_answer:v3", 1, true, 120, 40, 800);
         verify(jdbc).update(anyString(), org.mockito.ArgumentMatchers.eq("music_answer:v3"),
+                org.mockito.ArgumentMatchers.eq("none"), org.mockito.ArgumentMatchers.eq("none"),
                 org.mockito.ArgumentMatchers.eq(1), org.mockito.ArgumentMatchers.eq(true),
                 org.mockito.ArgumentMatchers.eq(120), org.mockito.ArgumentMatchers.eq(40),
-                org.mockito.ArgumentMatchers.eq(800L));
+                org.mockito.ArgumentMatchers.eq(800L), org.mockito.ArgumentMatchers.eq(0d),
+                org.mockito.ArgumentMatchers.eq(0d));
     }
 
     @Test
@@ -66,11 +83,15 @@ class PromptOnlineMetricsServiceTest {
                           int input, int output, int latency) throws Exception {
         ResultSet row = mock(ResultSet.class);
         when(row.getString("prompt_version")).thenReturn(version);
+        when(row.getString("provider")).thenReturn("deepseek");
+        when(row.getString("model")).thenReturn("deepseek-chat");
         when(row.getInt("model_calls")).thenReturn(calls);
         when(row.getBoolean("success")).thenReturn(success);
         when(row.getInt("input_tokens")).thenReturn(input);
         when(row.getInt("output_tokens")).thenReturn(output);
         when(row.getInt("latency_ms")).thenReturn(latency);
+        when(row.getDouble("input_unit_price")).thenReturn(3d);
+        when(row.getDouble("output_unit_price")).thenReturn(9d);
         return row;
     }
 }

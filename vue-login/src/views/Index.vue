@@ -245,7 +245,14 @@
         <div class="assistant-intro">
           <div class="assistant-orb">✦</div>
           <div><p>MusicHub Agent</p><h2>歌库智能助手</h2><span>基于你的歌曲和收藏数据回答问题</span></div>
-          <span class="assistant-status" :class="{ ready: assistantModelReady, offline: assistantModelReady === false }">{{ assistantModelReady ? assistantModelName + ' 已连接' : assistantModelReady === false ? 'DeepSeek 未配置' : '正在检查模型状态' }}</span>
+          <div class="assistant-model-control">
+            <label>当前会话模型
+              <select v-model="selectedModelId" :disabled="assistantLoading || !activeConversationId" @change="updateConversationModel">
+                <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+              </select>
+            </label>
+            <span class="assistant-status" :class="{ ready: assistantModelReady, offline: assistantModelReady === false }">{{ assistantModelReady ? assistantModelDisplay + ' 已连接' : assistantModelReady === false ? assistantProviderName + ' 未配置' : '正在检查模型状态' }}</span>
+          </div>
         </div>
         <div class="chat-panel" @click="showAssistantSettingsMenu = false">
           <div class="chat-history-toolbar">
@@ -389,7 +396,10 @@ export default {
       assistantInput: '',
       assistantLoading: false,
       assistantModelReady: null,
-      assistantModelName: 'DeepSeek',
+      assistantProviderName: 'LLM',
+      assistantModelName: '',
+      availableModels: [],
+      selectedModelId: '',
       feedbackReasons: [
         { value: 'inaccurate', label: '内容不准确' },
         { value: 'misunderstood', label: '没有理解问题' },
@@ -414,6 +424,11 @@ export default {
     }
   },
   computed: {
+    assistantModelDisplay() {
+      const selected = this.availableModels.find(item => item.id === this.selectedModelId)
+      return selected ? selected.displayName : (this.assistantModelName
+        ? `${this.assistantProviderName} / ${this.assistantModelName}` : this.assistantProviderName)
+    },
     displayName() {
       return this.nickname || this.username || '用户'
     },
@@ -838,6 +853,7 @@ export default {
     async openAssistant(audioId) {
       this.currentTab = 'assistant'
       this.loadAssistantStatus()
+      await this.loadAssistantModels()
       await this.restoreAssistantMessages()
       if (audioId && this.activeConversationId) {
         try {
@@ -879,6 +895,7 @@ export default {
         const res = await request.get('/assistant/conversations/' + conversationId)
         if (res.data.code !== 200) return alert(res.data.msg || '加载对话失败')
         this.activeConversationId = res.data.data.id
+        this.selectedModelId = res.data.data.selectedModelId || this.availableModels.find(item => item.default)?.id || ''
         this.assistantMessages = res.data.data.messages || []
         const target = this.conversations.find(item => item.id === res.data.data.id)
         if (target) Object.assign(target, res.data.data)
@@ -905,10 +922,33 @@ export default {
         const res = await request.get('/assistant/status')
         if (res.data.code === 200) {
           this.assistantModelReady = res.data.data.configured
-          this.assistantModelName = res.data.data.model || 'DeepSeek'
+          this.assistantProviderName = res.data.data.provider || 'LLM'
+          this.assistantModelName = res.data.data.model || ''
         }
       } catch (err) {
         this.assistantModelReady = false
+      }
+    },
+    async loadAssistantModels() {
+      try {
+        const res = await request.get('/assistant/models')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '模型列表加载失败')
+        this.availableModels = res.data.data || []
+        if (!this.selectedModelId) this.selectedModelId = this.availableModels.find(item => item.default)?.id || this.availableModels[0]?.id || ''
+      } catch (err) {
+        this.availableModels = []
+      }
+    },
+    async updateConversationModel() {
+      if (!this.activeConversationId || !this.selectedModelId) return
+      try {
+        const res = await request.put(`/assistant/conversations/${this.activeConversationId}/model`, { modelId: this.selectedModelId })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '模型切换失败')
+        const conversation = this.conversations.find(item => item.id === this.activeConversationId)
+        if (conversation) conversation.selectedModelId = this.selectedModelId
+      } catch (err) {
+        alert(err.response?.data?.msg || err.message || '模型切换失败')
+        await this.selectConversation(this.activeConversationId, true)
       }
     },
     async openMemoryManager() {
@@ -1026,7 +1066,7 @@ export default {
       this.assistantInput = ''
       this.assistantLoading = true
       try {
-        const res = await request.post('/assistant/chat', { message, conversationId: this.activeConversationId })
+        const res = await request.post('/assistant/chat', { message, conversationId: this.activeConversationId, modelId: this.selectedModelId })
         if (res.data.code !== 200) throw new Error(res.data.msg || '暂时无法回答')
         const assistantMessage = res.data.data.assistantMessage
         assistantMessage.recommendations = res.data.data.recommendations || []
@@ -1202,6 +1242,7 @@ export default {
 .assistant-intro { display: flex; align-items: center; gap: 20px; padding: 34px 42px; margin-bottom: 24px; color: #fff; border-radius: 24px; background: radial-gradient(circle at 85% 30%, rgba(147, 110, 255, .52), transparent 24%), linear-gradient(135deg, #1a2054, #66379a); box-shadow: 0 18px 42px rgba(83, 56, 151, .25); }
 .assistant-orb { display: grid; place-items: center; flex: 0 0 66px; height: 66px; border-radius: 21px; font-size: 30px; background: rgba(255,255,255,.16); box-shadow: 0 0 30px rgba(157,229,255,.72); }
 .assistant-intro p { margin: 0 0 5px; color: #bce8ff; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; }.assistant-intro h2 { margin: 0; font-size: 31px; }.assistant-intro span { display: block; margin-top: 7px; color: rgba(255,255,255,.76); font-size: 16px; }.assistant-status { margin-left: auto; padding: 8px 12px; border: 1px solid rgba(255,255,255,.25); border-radius: 20px; background: rgba(255,255,255,.12); color: #d7eaff; font-size: 12px; white-space: nowrap; }.assistant-status.ready { color: #adffdb; }.assistant-status.offline { color: #ffd3d8; }
+.assistant-model-control { display: flex; align-items: flex-end; gap: 12px; margin-left: auto; }.assistant-model-control label { color: rgba(255,255,255,.72); font-size: 11px; }.assistant-model-control select { display: block; min-width: 210px; margin-top: 6px; padding: 9px 32px 9px 12px; border: 1px solid rgba(255,255,255,.28); border-radius: 12px; color: #fff; background: rgba(255,255,255,.13); font: inherit; cursor: pointer; }.assistant-model-control option { color: #272044; background: #fff; }.assistant-model-control .assistant-status { margin-left: 0; }
 .chat-panel { min-height: 620px; display: flex; flex-direction: column; overflow: hidden; padding: 28px 32px; border: 1px solid rgba(111,95,199,.13); border-radius: 24px; background: #fff; box-shadow: 0 14px 36px rgba(44, 37, 90, .09); }.chat-messages { flex: 1; min-height: 470px; max-height: 58vh; overflow-y: auto; padding: 8px 8px 22px; display: flex; flex-direction: column; gap: 19px; }.chat-row { display: flex; align-items: flex-start; gap: 12px; max-width: 76%; }.chat-row.user { align-self: flex-end; flex-direction: row-reverse; }.message-avatar { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; overflow: hidden; border-radius: 14px; background: #eeeafd; color: #7651c7; font-size: 16px; font-weight: 700; }.message-avatar img { width: 100%; height: 100%; object-fit: cover; }.chat-row.user .message-avatar { background: #7651c7; color: #fff; }.chat-bubble { padding: 14px 17px; border-radius: 6px 18px 18px 18px; background: #f3f4fa; color: #2a2940; font-size: 15px; line-height: 1.7; white-space: pre-wrap; }.chat-row.user .chat-bubble { border-radius: 18px 6px 18px 18px; background: linear-gradient(135deg, #6d73e8, #8051ba); color: #fff; }.typing span { display: inline-block; width: 4px; height: 4px; margin-left: 3px; border-radius: 50%; background: #7860c3; animation: typing 1s infinite ease-in-out; }.typing span:nth-child(2) { animation-delay: .15s; }.typing span:nth-child(3) { animation-delay: .3s; }@keyframes typing { 50% { transform: translateY(-3px); opacity: .4; } }
 .chat-history-toolbar { display: flex; align-items: center; gap: 12px; margin: -4px 0 18px; padding-bottom: 15px; border-bottom: 1px solid #efedf8; }.new-conversation-btn { flex: 0 0 auto; padding: 9px 13px; border: 0; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #6d73e8, #8051ba); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }.conversation-list { display: flex; flex: 1; gap: 8px; overflow-x: auto; padding: 2px; }.conversation-item { position: relative; display: flex; align-items: center; gap: 7px; min-width: 150px; max-width: 220px; padding: 8px 28px 8px 11px; border: 1px solid #e5e1f7; border-radius: 10px; color: #736c8d; background: #faf9ff; cursor: pointer; transition: .2s ease; }.conversation-item:hover { border-color: #b4a6e9; }.conversation-item.active { border-color: #765ad0; color: #49357d; background: #f0edff; box-shadow: 0 4px 12px rgba(106,82,186,.12); }.conversation-title { overflow: hidden; flex: 1; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.conversation-count { flex: 0 0 auto; color: #a49cb7; font-size: 11px; }.conversation-delete { position: absolute; right: 7px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; color: #948aa9; background: transparent; font-size: 17px; cursor: pointer; }.conversation-delete:hover { color: #fff; background: #e26b82; }
 .assistant-settings-wrap { position: relative; flex: 0 0 auto; }.assistant-settings-btn { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid #e1ddef; border-radius: 10px; color: #756b8c; background: #faf9fd; font-size: 17px; cursor: pointer; transition: .2s ease; }.assistant-settings-btn:hover { border-color: #9d8bd7; color: #664caf; background: #f2effd; }.assistant-settings-menu { position: absolute; top: 45px; right: 0; z-index: 12; width: 225px; padding: 7px; border: 1px solid #e7e2f3; border-radius: 13px; background: #fff; box-shadow: 0 14px 35px rgba(44,35,82,.18); }.assistant-settings-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-radius: 9px; color: #4c4264; background: transparent; font: inherit; text-align: left; cursor: pointer; }.assistant-settings-menu > button:hover { background: #f4f1fd; }.assistant-settings-menu > button > span { display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border-radius: 9px; color: #7256be; background: #ece7fb; font-size: 16px; }.assistant-settings-menu strong, .assistant-settings-menu small { display: block; }.assistant-settings-menu strong { font-size: 13px; }.assistant-settings-menu small { margin-top: 3px; color: #91899f; font-size: 11px; }

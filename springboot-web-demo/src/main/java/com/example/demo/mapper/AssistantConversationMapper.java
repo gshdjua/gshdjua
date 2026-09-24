@@ -14,17 +14,17 @@ import java.util.List;
 public interface AssistantConversationMapper {
 
     @Select("SELECT c.id, c.user_id AS userId, c.title, c.current_audio_id AS currentAudioId, " +
-            "c.create_time AS createTime, c.update_time AS updateTime, COUNT(m.id) AS messageCount " +
+            "c.selected_model_id AS selectedModelId, c.create_time AS createTime, c.update_time AS updateTime, COUNT(m.id) AS messageCount " +
             "FROM assistant_conversation c LEFT JOIN assistant_message m ON m.conversation_id = c.id " +
-            "WHERE c.user_id = #{userId} GROUP BY c.id, c.user_id, c.title, c.current_audio_id, c.create_time, c.update_time " +
+            "WHERE c.user_id = #{userId} GROUP BY c.id, c.user_id, c.title, c.current_audio_id, c.selected_model_id, c.create_time, c.update_time " +
             "ORDER BY c.update_time DESC, c.id DESC")
     List<AssistantConversation> selectByUserId(Integer userId);
 
-    @Select("SELECT id, user_id AS userId, title, current_audio_id AS currentAudioId, create_time AS createTime, update_time AS updateTime " +
+    @Select("SELECT id, user_id AS userId, title, current_audio_id AS currentAudioId, selected_model_id AS selectedModelId, create_time AS createTime, update_time AS updateTime " +
             "FROM assistant_conversation WHERE id = #{conversationId} AND user_id = #{userId}")
     AssistantConversation selectByIdAndUserId(@Param("conversationId") Long conversationId, @Param("userId") Integer userId);
 
-    @Insert("INSERT INTO assistant_conversation(user_id, title) VALUES(#{userId}, #{title})")
+    @Insert("INSERT INTO assistant_conversation(user_id, title, selected_model_id) VALUES(#{userId}, #{title}, #{selectedModelId})")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insertConversation(AssistantConversation conversation);
 
@@ -36,6 +36,9 @@ public interface AssistantConversationMapper {
 
     @Update("UPDATE assistant_conversation SET current_audio_id = #{audioId}, update_time = CURRENT_TIMESTAMP WHERE id = #{conversationId} AND user_id = #{userId}")
     void updateCurrentAudio(@Param("conversationId") Long conversationId, @Param("userId") Integer userId, @Param("audioId") Integer audioId);
+
+    @Update("UPDATE assistant_conversation SET selected_model_id = #{modelId}, update_time = CURRENT_TIMESTAMP WHERE id = #{conversationId} AND user_id = #{userId}")
+    int updateSelectedModel(@Param("conversationId") Long conversationId, @Param("userId") Integer userId, @Param("modelId") String modelId);
 
     @Update("UPDATE assistant_conversation SET update_time = CURRENT_TIMESTAMP WHERE id = #{conversationId}")
     void touchConversation(Long conversationId);

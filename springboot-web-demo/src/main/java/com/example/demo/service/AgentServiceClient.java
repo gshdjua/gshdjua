@@ -27,6 +27,9 @@ public class AgentServiceClient {
     @Value("${agent-service.base-url:http://127.0.0.1:8100}")
     private String baseUrl;
 
+    @Value("${agent-service.provider:deepseek}")
+    private String provider;
+
     public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId) {
         return chat(messages, model, temperature, userMessage, conversationId, userId, null, null);
@@ -39,10 +42,16 @@ public class AgentServiceClient {
 
     public AgentResult chat(JSONArray messages, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId, String requestId, String promptVersion) {
+        return chat(messages, getConfiguredProvider(), model, temperature, userMessage, conversationId, userId,
+                requestId, promptVersion);
+    }
+
+    public AgentResult chat(JSONArray messages, String provider, String model, double temperature, String userMessage,
+                            Long conversationId, Integer userId, String requestId, String promptVersion) {
         if (baseUrl == null || baseUrl.trim().isEmpty()) return null;
         try {
             JSONObject options = new JSONObject();
-            options.put("provider", "deepseek");
+            options.put("provider", normalizeProvider(provider));
             options.put("model", model);
             options.put("temperature", temperature);
             options.put("strategy", "auto");
@@ -66,9 +75,15 @@ public class AgentServiceClient {
     }
 
     public AgentResult chatNativeEvaluation(String question, Integer userId, String strategy, String costBudget) {
+        return chatNativeEvaluation(question, userId, strategy, costBudget, getConfiguredProvider(), null);
+    }
+
+    public AgentResult chatNativeEvaluation(String question, Integer userId, String strategy, String costBudget,
+                                            String provider, String model) {
         if (baseUrl == null || baseUrl.trim().isEmpty() || question == null || question.trim().isEmpty()) return null;
         try {
-            return sendChatRequest(buildNativeEvaluationRequest(question, userId, strategy, costBudget));
+            return sendChatRequest(buildNativeEvaluationRequest(
+                    question, userId, strategy, costBudget, provider, model));
         } catch (Exception ignored) {
             return null;
         }
@@ -76,6 +91,16 @@ public class AgentServiceClient {
 
     static JSONObject buildNativeEvaluationRequest(String question, Integer userId,
                                                      String strategy, String costBudget) {
+        return buildNativeEvaluationRequest(question, userId, strategy, costBudget, "deepseek");
+    }
+
+    static JSONObject buildNativeEvaluationRequest(String question, Integer userId,
+                                                     String strategy, String costBudget, String provider) {
+        return buildNativeEvaluationRequest(question, userId, strategy, costBudget, provider, null);
+    }
+
+    static JSONObject buildNativeEvaluationRequest(String question, Integer userId,
+                                                     String strategy, String costBudget, String provider, String model) {
         JSONArray messages = new JSONArray();
         JSONObject system = new JSONObject();
         system.put("role", "system");
@@ -87,7 +112,8 @@ public class AgentServiceClient {
         messages.add(user);
 
         JSONObject options = new JSONObject();
-        options.put("provider", "deepseek");
+        options.put("provider", normalizeProvider(provider));
+        if (model != null && !model.trim().isEmpty()) options.put("model", model.trim());
         options.put("temperature", 0.2d);
         options.put("strategy", normalizeStrategy(strategy));
         options.put("costBudget", normalizeBudget(costBudget));
@@ -105,6 +131,10 @@ public class AgentServiceClient {
         metadata.put("evaluationMode", "agent_native");
         request.put("metadata", metadata);
         return request;
+    }
+
+    public String getConfiguredProvider() {
+        return normalizeProvider(provider);
     }
 
     public Map<String, Object> previewStrategy(String question, String strategy, String costBudget) {
@@ -165,6 +195,11 @@ public class AgentServiceClient {
         return "low".equals(normalized) || "high".equals(normalized) ? normalized : "standard";
     }
 
+    private static String normalizeProvider(String value) {
+        String normalized = value == null ? "" : value.trim().toLowerCase();
+        return normalized.isEmpty() ? "deepseek" : normalized;
+    }
+
     public Map<String, Object> getExecutionAudit(String traceId) {
         if (baseUrl == null || baseUrl.trim().isEmpty() || traceId == null || traceId.trim().isEmpty()) return null;
         HttpURLConnection connection = null;
@@ -221,7 +256,8 @@ public class AgentServiceClient {
                 budget == null ? 0 : budget.getIntValue("toolRounds"),
                 budget != null && budget.getBooleanValue("exceeded"),
                 budget == null ? "" : budget.getString("stopReason"),
-                toolExecutions);
+                toolExecutions,
+                response.getString("provider"), response.getString("model"));
     }
 
     private String readAll(InputStream inputStream) throws Exception {
@@ -251,6 +287,8 @@ public class AgentServiceClient {
         private final boolean budgetExceeded;
         private final String stopReason;
         private final List<Map<String, Object>> toolExecutions;
+        private final String provider;
+        private final String model;
 
         public AgentResult(String answer, int inputTokens, int outputTokens, int totalTokens) {
             this(answer, inputTokens, outputTokens, totalTokens, "", "", "", "", 0,
@@ -261,6 +299,16 @@ public class AgentServiceClient {
                            String traceId, String strategy, String strategyReason, String finishReason,
                            int latencyMs, String costBudget, int modelCalls, int toolCalls, int toolRounds,
                            boolean budgetExceeded, String stopReason, List<Map<String, Object>> toolExecutions) {
+            this(answer, inputTokens, outputTokens, totalTokens, traceId, strategy, strategyReason, finishReason,
+                    latencyMs, costBudget, modelCalls, toolCalls, toolRounds, budgetExceeded, stopReason,
+                    toolExecutions, "", "");
+        }
+
+        public AgentResult(String answer, int inputTokens, int outputTokens, int totalTokens,
+                           String traceId, String strategy, String strategyReason, String finishReason,
+                           int latencyMs, String costBudget, int modelCalls, int toolCalls, int toolRounds,
+                           boolean budgetExceeded, String stopReason, List<Map<String, Object>> toolExecutions,
+                           String provider, String model) {
             this.answer = answer;
             this.inputTokens = inputTokens;
             this.outputTokens = outputTokens;
@@ -277,6 +325,8 @@ public class AgentServiceClient {
             this.budgetExceeded = budgetExceeded;
             this.stopReason = text(stopReason);
             this.toolExecutions = Collections.unmodifiableList(new ArrayList<>(toolExecutions));
+            this.provider = text(provider);
+            this.model = text(model);
         }
 
         private static String text(String value) { return value == null ? "" : value; }
@@ -297,5 +347,7 @@ public class AgentServiceClient {
         public boolean isBudgetExceeded() { return budgetExceeded; }
         public String getStopReason() { return stopReason; }
         public List<Map<String, Object>> getToolExecutions() { return toolExecutions; }
+        public String getProvider() { return provider; }
+        public String getModel() { return model; }
     }
 }

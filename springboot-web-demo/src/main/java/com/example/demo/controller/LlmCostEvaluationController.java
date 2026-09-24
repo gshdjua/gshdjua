@@ -3,6 +3,7 @@ package com.example.demo.controller;
 import com.example.demo.service.DeepSeekMusicAgent;
 import com.example.demo.service.AgentServiceClient;
 import com.example.demo.service.LlmCostEvaluationDatasetService;
+import com.example.demo.service.LlmModelCatalogService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +31,9 @@ public class LlmCostEvaluationController {
 
     @Autowired
     private AgentServiceClient agentServiceClient;
+
+    @Autowired
+    private LlmModelCatalogService llmModelCatalogService;
 
     @GetMapping("/cases")
     public Map<String, Object> cases() {
@@ -66,8 +70,11 @@ public class LlmCostEvaluationController {
         if (question.isEmpty()) return response(400, "问题不能为空", null);
         boolean realCall = booleanValue(payload.get("realCall"));
         int expectedOutputTokens = integer(payload.get("expectedOutputTokens"), 300);
-        double inputPrice = decimal(payload.get("inputPricePerMillion"), 0d);
-        double outputPrice = decimal(payload.get("outputPricePerMillion"), 0d);
+        LlmModelCatalogService.ModelConfig selectedModel;
+        try { selectedModel = llmModelCatalogService.resolve(text(payload.get("modelId"))); }
+        catch (IllegalArgumentException exception) { return response(400, exception.getMessage(), null); }
+        double inputPrice = decimal(payload.get("inputPricePerMillion"), selectedModel.getInputPrice());
+        double outputPrice = decimal(payload.get("outputPricePerMillion"), selectedModel.getOutputPrice());
         Integer userId = nullableInteger(payload.get("userId"));
         String executionTarget = text(payload.get("executionTarget"));
         String requestedStrategy = text(payload.get("requestedStrategy"));
@@ -78,9 +85,10 @@ public class LlmCostEvaluationController {
         }
         boolean includeAnswerPreview = booleanValue(payload.get("includeAnswerPreview"));
         try {
-            return response(200, "success", musicAgent.evaluateLlmCost(question, userId,
+            return response(200, "success", musicAgent.evaluateLlmCostForModel(question, userId,
                     history(payload.get("history")), realCall, expectedOutputTokens, inputPrice, outputPrice,
-                    executionTarget, requestedStrategy, costBudget, promptVersion, includeAnswerPreview));
+                    executionTarget, requestedStrategy, costBudget, promptVersion, includeAnswerPreview,
+                    selectedModel.getProvider(), selectedModel.getModel()));
         } catch (IllegalArgumentException exception) {
             return response(400, exception.getMessage(), null);
         } catch (Exception exception) {

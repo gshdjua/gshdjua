@@ -68,6 +68,11 @@ public class PromptVersionController {
         return run(() -> metricsService.summary(days));
     }
 
+    @DeleteMapping("/metrics")
+    public Map<String, Object> deleteMetrics(@RequestParam(value = "days", defaultValue = "7") int days) {
+        return run(() -> metricsService.deleteRecent(days));
+    }
+
     @GetMapping("/feedback-metrics")
     public Map<String, Object> feedbackMetrics(@RequestParam(value = "days", defaultValue = "7") int days) {
         return run(() -> feedbackService.summary(days));

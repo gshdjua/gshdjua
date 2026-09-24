@@ -55,9 +55,15 @@ services:
     container_name: musichub-agent
     restart: unless-stopped
     environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-deepseek}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
       OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-v4-flash}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      QWEN_BASE_URL: ${QWEN_BASE_URL:-https://maas.qianwenaiapi.com/compatible-mode/v1}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen-plus}
       AGENT_MYSQL_HOST: mysql
       AGENT_MYSQL_PORT: 3306
       AGENT_MYSQL_USERNAME: root
@@ -97,6 +103,8 @@ services:
       MUSICHUB_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-musichub123}
       VECTOR_RAG_BASE_URL: http://rag-service:8090
       AGENT_SERVICE_BASE_URL: http://agent-service:8100
+      LLM_PROVIDER: ${LLM_PROVIDER:-deepseek}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
       AGENT_TOOL_KEY: ${AGENT_TOOL_KEY:-}
       EVALUATION_DATASET_PATH: /app/evaluation/rag-eval-50.jsonl
       LLM_COST_EVALUATION_DATASET_PATH: /app/evaluation/llm-cost-eval.jsonl

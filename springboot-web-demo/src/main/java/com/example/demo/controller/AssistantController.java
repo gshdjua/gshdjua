@@ -13,6 +13,7 @@ import com.example.demo.service.PromptOnlineMetricsService;
 import com.example.demo.service.PromptFeedbackService;
 import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.MusicLibraryAgent;
+import com.example.demo.service.LlmModelCatalogService;
 import com.example.demo.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -64,6 +65,9 @@ public class AssistantController {
     @Autowired
     private AudioMapper audioMapper;
 
+    @Autowired
+    private LlmModelCatalogService llmModelCatalogService;
+
     @PostMapping("/chat")
     @Transactional
     public Map<String, Object> chat(@RequestBody Map<String, Object> payload, HttpServletRequest request) {
@@ -72,6 +76,21 @@ public class AssistantController {
         AssistantConversation conversation = conversationId == null ? null
                 : assistantConversationMapper.selectByIdAndUserId(conversationId, userId);
         if (conversation == null) return result(500, "Conversation not found", null);
+
+        boolean explicitlyRequestedModel = payload.get("modelId") != null;
+        String requestedModelId = explicitlyRequestedModel ? String.valueOf(payload.get("modelId")).trim()
+                : conversation.getSelectedModelId();
+        LlmModelCatalogService.ModelConfig selectedModel;
+        try {
+            selectedModel = llmModelCatalogService.resolve(requestedModelId);
+        } catch (IllegalArgumentException exception) {
+            if (explicitlyRequestedModel) return result(400, exception.getMessage(), null);
+            selectedModel = llmModelCatalogService.resolve(null);
+        }
+        if (!selectedModel.getId().equals(conversation.getSelectedModelId())) {
+            assistantConversationMapper.updateSelectedModel(conversationId, userId, selectedModel.getId());
+            conversation.setSelectedModelId(selectedModel.getId());
+        }
 
         String message = String.valueOf(payload.getOrDefault("message", "")).trim();
         if (message.isEmpty()) return result(500, "Message cannot be empty", null);
@@ -85,7 +104,8 @@ public class AssistantController {
                 ? "assistant-message-" + UUID.randomUUID()
                 : "assistant-message-" + userMessage.getId();
         DeepSeekMusicAgent.ReplyResult replyResult = deepSeekMusicAgent.replyWithResult(
-                messageForAgent, userId, history, conversationId, memoryRequestId);
+                messageForAgent, userId, history, conversationId, memoryRequestId,
+                selectedModel.getProvider(), selectedModel.getModel());
         String reply = replyResult.getReply();
         Object memoryCapture = agentMemoryClient.capture(userId, conversationId, memoryRequestId, message);
         if (memoryCapture == null && !reply.contains("Agent Service 当前不可用")) {
@@ -95,7 +115,8 @@ public class AssistantController {
         assistantConversationMapper.insertMessage(assistantMessage);
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
         assistantMessage.setPromptVersion(replyResult.getPromptVersion());
-        promptOnlineMetricsService.record(replyResult.getPromptVersion(), replyResult.getModelCalls(),
+        promptOnlineMetricsService.record(replyResult.getPromptVersion(), replyResult.getProvider(), replyResult.getModel(),
+                selectedModel.getInputPrice(), selectedModel.getOutputPrice(), replyResult.getModelCalls(),
                 replyResult.isSuccess(), replyResult.getInputTokens(), replyResult.getOutputTokens(),
                 replyResult.getLatencyMs());
 
@@ -111,6 +132,10 @@ public class AssistantController {
         data.put("assistantMessage", assistantMessage);
         data.put("recommendations", replyResult.getRecommendations());
         data.put("recommendationMeta", replyResult.getRecommendationMetadata());
+        data.put("selectedModelId", selectedModel.getId());
+        data.put("actualProvider", replyResult.getProvider());
+        data.put("actualModel", replyResult.getModel());
+        data.put("executionPath", replyResult.getModelCalls() > 0 ? "model" : "local");
         return result(200, "success", data);
     }
 
@@ -149,11 +174,30 @@ public class AssistantController {
         AssistantConversation conversation = new AssistantConversation();
         conversation.setUserId(getUserId(request));
         conversation.setTitle("新对话");
+        conversation.setSelectedModelId(llmModelCatalogService.resolve(null).getId());
         assistantConversationMapper.insertConversation(conversation);
         AssistantMessage welcomeMessage = message(conversation.getId(), "assistant",
                 "你好！我是你的歌库智能助手。我可以查询歌库歌曲、音乐类型、推荐内容和你的收藏。");
         assistantConversationMapper.insertMessage(welcomeMessage);
         return result(200, "Conversation created", conversation);
+    }
+
+    @GetMapping("/models")
+    public Map<String, Object> models() {
+        return result(200, "success", llmModelCatalogService.listSelectable());
+    }
+
+    @PutMapping("/conversations/{conversationId}/model")
+    public Map<String, Object> updateConversationModel(@PathVariable Long conversationId,
+                                                        @RequestBody Map<String, Object> payload,
+                                                        HttpServletRequest request) {
+        try {
+            LlmModelCatalogService.ModelConfig model = llmModelCatalogService.resolve(
+                    payload.get("modelId") == null ? null : String.valueOf(payload.get("modelId")));
+            int updated = assistantConversationMapper.updateSelectedModel(conversationId, getUserId(request), model.getId());
+            return updated > 0 ? result(200, "Conversation model updated", model.getId())
+                    : result(404, "Conversation not found", null);
+        } catch (IllegalArgumentException exception) { return result(400, exception.getMessage(), null); }
     }
 
     @GetMapping("/conversations/{conversationId}")
@@ -238,6 +282,7 @@ public class AssistantController {
         Map<String, Object> result = new HashMap<>();
         Map<String, Object> data = new HashMap<>();
         data.put("configured", deepSeekMusicAgent.isExternalModelConfigured());
+        data.put("provider", deepSeekMusicAgent.getConfiguredProviderName());
         data.put("model", deepSeekMusicAgent.getConfiguredModelName());
         result.put("code", 200);
         result.put("msg", "success");

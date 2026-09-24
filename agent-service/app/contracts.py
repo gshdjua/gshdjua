@@ -3,6 +3,8 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from .config import default_provider
+
 
 class AgentMessage(BaseModel):
     role: Literal["system", "user", "assistant"]
@@ -10,7 +12,7 @@ class AgentMessage(BaseModel):
 
 
 class AgentOptions(BaseModel):
-    provider: str = "deepseek"
+    provider: str = Field(default_factory=default_provider)
     model: Optional[str] = None
     temperature: float = Field(default=0.4, ge=0.0, le=2.0)
     strategy: Literal["auto", "direct", "react"] = "auto"

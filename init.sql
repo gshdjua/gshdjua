@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS assistant_conversation (
     user_id INT NOT NULL,
     title VARCHAR(100) NOT NULL DEFAULT '新对话',
     current_audio_id INT NULL,
+    selected_model_id VARCHAR(80) NULL,
     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_assistant_conversation_user_update (user_id, update_time),
@@ -166,14 +167,34 @@ CREATE TABLE IF NOT EXISTS assistant_prompt_usage (
 CREATE TABLE IF NOT EXISTS prompt_online_metric (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     prompt_version VARCHAR(120) NOT NULL,
+    provider VARCHAR(40) NOT NULL DEFAULT 'none',
+    model VARCHAR(120) NOT NULL DEFAULT 'none',
     model_calls INT NOT NULL DEFAULT 0,
     success TINYINT(1) NOT NULL DEFAULT 1,
     input_tokens INT NOT NULL DEFAULT 0,
     output_tokens INT NOT NULL DEFAULT 0,
     latency_ms INT NOT NULL DEFAULT 0,
+    input_unit_price DECIMAL(14,6) NOT NULL DEFAULT 0,
+    output_unit_price DECIMAL(14,6) NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_prompt_metric_version_time (prompt_version, created_at),
     KEY idx_prompt_metric_time (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS llm_model_config (
+    id VARCHAR(80) PRIMARY KEY,
+    provider VARCHAR(40) NOT NULL,
+    model_name VARCHAR(120) NOT NULL,
+    display_name VARCHAR(120) NOT NULL,
+    enabled TINYINT(1) NOT NULL DEFAULT 1,
+    user_selectable TINYINT(1) NOT NULL DEFAULT 1,
+    is_default TINYINT(1) NOT NULL DEFAULT 0,
+    input_price_per_million DECIMAL(14,6) NOT NULL DEFAULT 0,
+    output_price_per_million DECIMAL(14,6) NOT NULL DEFAULT 0,
+    sort_order INT NOT NULL DEFAULT 100,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_llm_provider_model (provider, model_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS prompt_answer_feedback (

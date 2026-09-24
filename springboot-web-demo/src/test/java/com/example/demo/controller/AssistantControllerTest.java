@@ -11,6 +11,7 @@ import com.example.demo.service.DeepSeekMusicAgent;
 import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.service.PromptVersionService;
 import com.example.demo.service.PromptOnlineMetricsService;
+import com.example.demo.service.LlmModelCatalogService;
 import com.example.demo.util.JwtUtil;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -57,6 +58,7 @@ class AssistantControllerTest {
         AgentMemoryClient memoryClient = mock(AgentMemoryClient.class);
         PromptVersionService promptVersionService = mock(PromptVersionService.class);
         PromptOnlineMetricsService metricsService = mock(PromptOnlineMetricsService.class);
+        LlmModelCatalogService catalogService = mock(LlmModelCatalogService.class);
         AssistantConversationMapper conversationMapper = mock(AssistantConversationMapper.class);
         UserMapper userMapper = mock(UserMapper.class);
         HttpServletRequest request = mock(HttpServletRequest.class);
@@ -69,12 +71,17 @@ class AssistantControllerTest {
         ReflectionTestUtils.setField(controller, "userMapper", userMapper);
         ReflectionTestUtils.setField(controller, "assistantConversationMapper", conversationMapper);
         ReflectionTestUtils.setField(controller, "audioMapper", mock(AudioMapper.class));
+        ReflectionTestUtils.setField(controller, "llmModelCatalogService", catalogService);
 
         User user = new User();
         user.setId(7);
         AssistantConversation conversation = new AssistantConversation();
         conversation.setId(11L);
         conversation.setTitle("新对话");
+        conversation.setSelectedModelId("deepseek-chat");
+        LlmModelCatalogService.ModelConfig model = new LlmModelCatalogService.ModelConfig(
+                "deepseek-chat", "deepseek", "deepseek-chat", "DeepSeek Chat", true, 3, 9);
+        when(catalogService.resolve("deepseek-chat")).thenReturn(model);
         when(request.getHeader("Authorization")).thenReturn(JwtUtil.generateToken("tester"));
         when(userMapper.selectByUsername("tester")).thenReturn(user);
         when(conversationMapper.selectByIdAndUserId(11L, 7)).thenReturn(conversation);
@@ -85,7 +92,8 @@ class AssistantControllerTest {
             item.setId(messageIds.incrementAndGet());
             return null;
         }).when(conversationMapper).insertMessage(any(AssistantMessage.class));
-        when(agent.replyWithResult("我喜欢动漫歌曲", 7, Collections.emptyList(), 11L, "assistant-message-41"))
+        when(agent.replyWithResult("我喜欢动漫歌曲", 7, Collections.emptyList(), 11L, "assistant-message-41",
+                "deepseek", "deepseek-chat"))
                 .thenReturn(new DeepSeekMusicAgent.ReplyResult("本地回答", null));
         when(memoryClient.capture(7, 11L, "assistant-message-41", "我喜欢动漫歌曲"))
                 .thenReturn(Collections.singletonMap("capturedCount", 1));
@@ -98,7 +106,7 @@ class AssistantControllerTest {
         assertEquals(200, response.get("code"));
         verify(memoryClient).capture(7, 11L, "assistant-message-41", "我喜欢动漫歌曲");
         verify(promptVersionService).recordUsage(42L, "none");
-        verify(metricsService).record("none", 0, true, 0, 0, 0L);
+        verify(metricsService).record("none", "none", "none", 3d, 9d, 0, true, 0, 0, 0L);
         assertEquals("none", ((Map<?, ?>) response.get("data")).get("promptVersion"));
     }
 }
