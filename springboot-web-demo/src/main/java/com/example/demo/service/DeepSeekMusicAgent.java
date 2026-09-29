@@ -195,15 +195,19 @@ public class DeepSeekMusicAgent {
                     ? execution.getProvider() : provider;
             String actualModel = execution != null && !execution.getModel().isEmpty()
                     ? execution.getModel() : model;
+            int modelCalls = metrics == null ? 0 : metrics.modelCalls;
+            boolean modelSuccess = metrics == null || modelCalls == 0 || metrics.success;
+            String executionPath = modelCalls == 0 ? "local" : modelSuccess ? "model" : "local_fallback";
+            String fallbackReason = modelCalls > 0 && !modelSuccess ? "MODEL_INVOCATION_FAILED" : "";
             return new ReplyResult(reply, currentRecommendationOutcome.get(),
                     lastPromptVersion.get() == null ? "none" : lastPromptVersion.get(),
-                    metrics == null ? 0 : metrics.modelCalls,
-                    metrics == null || metrics.modelCalls == 0 || metrics.success,
+                    modelCalls, modelSuccess,
                     usage == null ? 0 : usage.promptTokens,
                     usage == null ? 0 : usage.completionTokens,
                     System.currentTimeMillis() - startedAt,
-                    metrics != null && metrics.modelCalls > 0 ? actualProvider : "none",
-                    metrics != null && metrics.modelCalls > 0 ? actualModel : "none");
+                    modelCalls > 0 && modelSuccess ? actualProvider : modelCalls > 0 ? "local" : "none",
+                    modelCalls > 0 && modelSuccess ? actualModel : modelCalls > 0 ? "local" : "none",
+                    provider, model, executionPath, fallbackReason);
         } finally {
             currentConversationId.remove();
             currentUserId.remove();
@@ -1014,6 +1018,10 @@ public class DeepSeekMusicAgent {
         private final long latencyMs;
         private final String provider;
         private final String model;
+        private final String requestedProvider;
+        private final String requestedModel;
+        private final String executionPath;
+        private final String fallbackReason;
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
             this(reply, recommendationOutcome, "none");
@@ -1027,12 +1035,20 @@ public class DeepSeekMusicAgent {
                            String promptVersion, int modelCalls, boolean success,
                            int inputTokens, int outputTokens, long latencyMs) {
             this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
-                    latencyMs, "none", "none");
+                    latencyMs, "none", "none", "none", "none", modelCalls > 0 ? "model" : "local", "");
         }
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
                            String promptVersion, int modelCalls, boolean success,
                            int inputTokens, int outputTokens, long latencyMs, String provider, String model) {
+            this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
+                    latencyMs, provider, model, provider, model, modelCalls > 0 ? "model" : "local", "");
+        }
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
+                           String promptVersion, int modelCalls, boolean success,
+                           int inputTokens, int outputTokens, long latencyMs, String provider, String model,
+                           String requestedProvider, String requestedModel, String executionPath, String fallbackReason) {
             this.reply = reply;
             this.recommendationOutcome = recommendationOutcome;
             this.promptVersion = promptVersion;
@@ -1043,6 +1059,10 @@ public class DeepSeekMusicAgent {
             this.latencyMs = latencyMs;
             this.provider = provider;
             this.model = model;
+            this.requestedProvider = requestedProvider;
+            this.requestedModel = requestedModel;
+            this.executionPath = executionPath;
+            this.fallbackReason = fallbackReason;
         }
 
         public String getReply() { return reply; }
@@ -1055,6 +1075,10 @@ public class DeepSeekMusicAgent {
         public long getLatencyMs() { return latencyMs; }
         public String getProvider() { return provider; }
         public String getModel() { return model; }
+        public String getRequestedProvider() { return requestedProvider; }
+        public String getRequestedModel() { return requestedModel; }
+        public String getExecutionPath() { return executionPath; }
+        public String getFallbackReason() { return fallbackReason; }
 
         public List<Audio> getRecommendations() {
             return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();

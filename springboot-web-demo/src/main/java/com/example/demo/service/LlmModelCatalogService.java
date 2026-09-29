@@ -30,6 +30,8 @@ public class LlmModelCatalogService {
                 + "user_selectable TINYINT(1) NOT NULL DEFAULT 1,is_default TINYINT(1) NOT NULL DEFAULT 0,"
                 + "input_price_per_million DECIMAL(14,6) NOT NULL DEFAULT 0,"
                 + "output_price_per_million DECIMAL(14,6) NOT NULL DEFAULT 0,sort_order INT NOT NULL DEFAULT 100,"
+                + "health_status VARCHAR(20) NOT NULL DEFAULT 'untested',health_error_code VARCHAR(64) NOT NULL DEFAULT '',"
+                + "health_error_message VARCHAR(255) NOT NULL DEFAULT '',health_latency_ms INT NOT NULL DEFAULT 0,health_checked_at TIMESTAMP NULL,"
                 + "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,"
                 + "UNIQUE KEY uk_llm_provider_model(provider,model_name)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         addColumnIfMissing("assistant_conversation", "selected_model_id", "VARCHAR(80) NULL");
@@ -37,6 +39,11 @@ public class LlmModelCatalogService {
         addColumnIfMissing("prompt_online_metric", "model", "VARCHAR(120) NOT NULL DEFAULT 'none'");
         addColumnIfMissing("prompt_online_metric", "input_unit_price", "DECIMAL(14,6) NOT NULL DEFAULT 0");
         addColumnIfMissing("prompt_online_metric", "output_unit_price", "DECIMAL(14,6) NOT NULL DEFAULT 0");
+        addColumnIfMissing("llm_model_config", "health_status", "VARCHAR(20) NOT NULL DEFAULT 'untested'");
+        addColumnIfMissing("llm_model_config", "health_error_code", "VARCHAR(64) NOT NULL DEFAULT ''");
+        addColumnIfMissing("llm_model_config", "health_error_message", "VARCHAR(255) NOT NULL DEFAULT ''");
+        addColumnIfMissing("llm_model_config", "health_latency_ms", "INT NOT NULL DEFAULT 0");
+        addColumnIfMissing("llm_model_config", "health_checked_at", "TIMESTAMP NULL");
         String provider = normalize(defaultProvider, "deepseek").toLowerCase();
         String model = normalize(defaultModel, "deepseek-chat");
         Integer modelCount = jdbc.queryForObject("SELECT COUNT(*) FROM llm_model_config", Integer.class);
@@ -49,15 +56,17 @@ public class LlmModelCatalogService {
     }
 
     public List<Map<String, Object>> listSelectable() {
-        return jdbc.query("SELECT id,provider,model_name,display_name,is_default,input_price_per_million,output_price_per_million "
+        return jdbc.query("SELECT id,provider,model_name,display_name,is_default,input_price_per_million,output_price_per_million,"
+                        + "health_status,health_error_code,health_error_message,health_latency_ms,health_checked_at "
                         + "FROM llm_model_config WHERE enabled=1 AND user_selectable=1 ORDER BY is_default DESC,sort_order,id",
-                (rs, row) -> toMap(new ModelConfig(rs.getString("id"), rs.getString("provider"),
+                (rs, row) -> withHealth(toMap(new ModelConfig(rs.getString("id"), rs.getString("provider"),
                         rs.getString("model_name"), rs.getString("display_name"), rs.getBoolean("is_default"),
-                        rs.getDouble("input_price_per_million"), rs.getDouble("output_price_per_million"))));
+                        rs.getDouble("input_price_per_million"), rs.getDouble("output_price_per_million"))), rs));
     }
 
     public List<Map<String, Object>> listAll() {
-        return jdbc.query("SELECT id,provider,model_name,display_name,enabled,user_selectable,is_default,input_price_per_million,output_price_per_million,sort_order "
+        return jdbc.query("SELECT id,provider,model_name,display_name,enabled,user_selectable,is_default,input_price_per_million,output_price_per_million,sort_order,"
+                        + "health_status,health_error_code,health_error_message,health_latency_ms,health_checked_at "
                         + "FROM llm_model_config ORDER BY is_default DESC,sort_order,id", (rs, row) -> {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("id", rs.getString("id")); result.put("provider", rs.getString("provider"));
@@ -65,8 +74,23 @@ public class LlmModelCatalogService {
             result.put("enabled", rs.getBoolean("enabled")); result.put("userSelectable", rs.getBoolean("user_selectable"));
             result.put("default", rs.getBoolean("is_default")); result.put("inputPricePerMillion", rs.getDouble("input_price_per_million"));
             result.put("outputPricePerMillion", rs.getDouble("output_price_per_million")); result.put("sortOrder", rs.getInt("sort_order"));
-            return result;
+            return withHealth(result, rs);
         });
+    }
+
+    public Map<String, Object> recordHealth(String id, Map<String, Object> health) {
+        String status = text(health.get("status"));
+        if (!"available".equals(status) && !"unavailable".equals(status) && !"unconfigured".equals(status)) status = "unavailable";
+        jdbc.update("UPDATE llm_model_config SET health_status=?,health_error_code=?,health_error_message=?,health_latency_ms=?,health_checked_at=CURRENT_TIMESTAMP WHERE id=?",
+                status, text(health.get("errorCode")), text(health.get("errorMessage")), integer(health.get("latencyMs"), 0), id);
+        return listAll().stream().filter(item -> id.equals(item.get("id"))).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("模型不存在"));
+    }
+
+    public void recordInvocationHealth(String id, boolean success, long latencyMs) {
+        jdbc.update("UPDATE llm_model_config SET health_status=?,health_error_code=?,health_error_message=?,health_latency_ms=?,health_checked_at=CURRENT_TIMESTAMP WHERE id=?",
+                success ? "available" : "unavailable", success ? "" : "MODEL_INVOCATION_FAILED",
+                success ? "" : "最近一次模型调用失败，回答已使用本地兜底", Math.max(0, Math.min(Integer.MAX_VALUE, latencyMs)), id);
     }
 
     @Transactional
@@ -117,6 +141,16 @@ public class LlmModelCatalogService {
         result.put("id", model.id); result.put("provider", model.provider); result.put("model", model.model);
         result.put("displayName", model.displayName); result.put("default", model.isDefault);
         result.put("inputPricePerMillion", model.inputPrice); result.put("outputPricePerMillion", model.outputPrice);
+        return result;
+    }
+
+    private Map<String, Object> withHealth(Map<String, Object> result, java.sql.ResultSet rs) throws java.sql.SQLException {
+        result.put("healthStatus", rs.getString("health_status"));
+        result.put("healthErrorCode", rs.getString("health_error_code"));
+        result.put("healthErrorMessage", rs.getString("health_error_message"));
+        result.put("healthLatencyMs", rs.getInt("health_latency_ms"));
+        java.sql.Timestamp checkedAt = rs.getTimestamp("health_checked_at");
+        result.put("healthCheckedAt", checkedAt == null ? null : checkedAt.toLocalDateTime().toString());
         return result;
     }
 

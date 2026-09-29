@@ -251,7 +251,7 @@
                 <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
               </select>
             </label>
-            <span class="assistant-status" :class="{ ready: assistantModelReady, offline: assistantModelReady === false }">{{ assistantModelReady ? assistantModelDisplay + ' 已连接' : assistantModelReady === false ? assistantProviderName + ' 未配置' : '正在检查模型状态' }}</span>
+            <span class="assistant-status" :class="assistantModelStatusClass" :title="selectedAssistantModel ? (selectedAssistantModel.healthErrorMessage || '') : ''">{{ assistantModelStatusText }}</span>
           </div>
         </div>
         <div class="chat-panel" @click="showAssistantSettingsMenu = false">
@@ -425,9 +425,24 @@ export default {
   },
   computed: {
     assistantModelDisplay() {
-      const selected = this.availableModels.find(item => item.id === this.selectedModelId)
+      const selected = this.selectedAssistantModel
       return selected ? selected.displayName : (this.assistantModelName
         ? `${this.assistantProviderName} / ${this.assistantModelName}` : this.assistantProviderName)
+    },
+    selectedAssistantModel() {
+      return this.availableModels.find(item => item.id === this.selectedModelId) || null
+    },
+    assistantModelStatusText() {
+      const model = this.selectedAssistantModel
+      if (!model) return '正在检查模型状态'
+      if (model.healthStatus === 'available') return `${model.displayName} 可用`
+      if (model.healthStatus === 'unavailable') return `${model.displayName} 调用失败`
+      if (model.healthStatus === 'unconfigured') return `${model.displayName} 未配置`
+      return `${model.displayName} 已配置（未检测）`
+    },
+    assistantModelStatusClass() {
+      const status = this.selectedAssistantModel?.healthStatus
+      return { ready: status === 'available', offline: ['unavailable', 'unconfigured'].includes(status) }
     },
     displayName() {
       return this.nickname || this.username || '用户'
@@ -1072,6 +1087,14 @@ export default {
         assistantMessage.recommendations = res.data.data.recommendations || []
         assistantMessage.recommendationMeta = res.data.data.recommendationMeta || {}
         this.assistantMessages.push(res.data.data.userMessage, assistantMessage)
+        const selected = this.availableModels.find(item => item.id === this.selectedModelId)
+        if (selected && res.data.data.executionPath === 'model') {
+          this.$set(selected, 'healthStatus', 'available')
+          this.$set(selected, 'healthErrorMessage', '')
+        } else if (selected && res.data.data.executionPath === 'local_fallback') {
+          this.$set(selected, 'healthStatus', 'unavailable')
+          this.$set(selected, 'healthErrorMessage', '最近一次模型调用失败，回答已使用本地兜底')
+        }
         await this.refreshConversationSummary()
       } catch (err) {
         alert(err.message || '连接歌库失败，请确认后端服务已经启动。')

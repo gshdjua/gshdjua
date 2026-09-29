@@ -192,6 +192,11 @@ CREATE TABLE IF NOT EXISTS llm_model_config (
     input_price_per_million DECIMAL(14,6) NOT NULL DEFAULT 0,
     output_price_per_million DECIMAL(14,6) NOT NULL DEFAULT 0,
     sort_order INT NOT NULL DEFAULT 100,
+    health_status VARCHAR(20) NOT NULL DEFAULT 'untested',
+    health_error_code VARCHAR(64) NOT NULL DEFAULT '',
+    health_error_message VARCHAR(255) NOT NULL DEFAULT '',
+    health_latency_ms INT NOT NULL DEFAULT 0,
+    health_checked_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_llm_provider_model (provider, model_name)

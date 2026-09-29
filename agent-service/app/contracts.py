@@ -47,6 +47,24 @@ class StrategyPreviewResponse(BaseModel):
     maxExecutionMs: int
 
 
+class ProviderHealthRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=40)
+    model: str = Field(min_length=1, max_length=120)
+    timeoutSeconds: float = Field(default=8.0, ge=1.0, le=15.0)
+
+
+class ProviderHealthResponse(BaseModel):
+    provider: str
+    model: str
+    configured: bool
+    available: bool
+    status: str
+    latencyMs: int = 0
+    errorCode: str = ""
+    errorMessage: str = ""
+    checkedAt: datetime
+
+
 class TokenUsage(BaseModel):
     inputTokens: int = 0
     outputTokens: int = 0

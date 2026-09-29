@@ -165,6 +165,43 @@ public class AgentServiceClient {
         }
     }
 
+    public Map<String, Object> testModel(String provider, String model) {
+        Map<String, Object> unavailable = new LinkedHashMap<>();
+        unavailable.put("provider", normalizeProvider(provider));
+        unavailable.put("model", model == null ? "" : model.trim());
+        unavailable.put("configured", false);
+        unavailable.put("available", false);
+        unavailable.put("status", "unavailable");
+        unavailable.put("latencyMs", 0);
+        unavailable.put("errorCode", "AGENT_SERVICE_UNAVAILABLE");
+        unavailable.put("errorMessage", "Agent Service 暂时不可用");
+        if (baseUrl == null || baseUrl.trim().isEmpty()) return unavailable;
+        HttpURLConnection connection = null;
+        try {
+            JSONObject request = new JSONObject();
+            request.put("provider", normalizeProvider(provider));
+            request.put("model", model == null ? "" : model.trim());
+            request.put("timeoutSeconds", 8);
+            URL endpoint = new URL(baseUrl.replaceAll("/+$", "") + "/v1/providers/health");
+            connection = (HttpURLConnection) endpoint.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(1500);
+            connection.setReadTimeout(12000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(JSON.toJSONString(request).getBytes(StandardCharsets.UTF_8));
+            }
+            if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) return unavailable;
+            JSONObject response = JSON.parseObject(readAll(connection.getInputStream()));
+            return response == null ? unavailable : new LinkedHashMap<>(response);
+        } catch (Exception ignored) {
+            return unavailable;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
     private AgentResult sendChatRequest(JSONObject request) throws Exception {
         HttpURLConnection connection = null;
         try {

@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import time
 from typing import Dict, List
 
+from langchain_core.messages import HumanMessage
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
@@ -140,6 +143,68 @@ class LlmProviderRegistry:
 
     def statuses(self) -> List[Dict[str, object]]:
         return [self._providers[name].public_status() for name in sorted(self._providers)]
+
+    def check_health(self, provider_name: str, model_name: str, timeout_seconds: float = 8.0) -> Dict[str, object]:
+        provider = self.get(provider_name)
+        checked_at = datetime.now(timezone.utc)
+        if not provider.is_configured():
+            return {
+                "provider": provider.name,
+                "model": model_name,
+                "configured": False,
+                "available": False,
+                "status": "unconfigured",
+                "latencyMs": 0,
+                "errorCode": "NOT_CONFIGURED",
+                "errorMessage": "Provider API Key 未配置",
+                "checkedAt": checked_at,
+            }
+        started = time.monotonic()
+        try:
+            client = provider.create_chat_model(LlmModelRequest(
+                model=model_name,
+                temperature=0.0,
+                timeout_seconds=timeout_seconds,
+            ))
+            client.invoke([HumanMessage(content="Reply with OK only.")])
+            return {
+                "provider": provider.name,
+                "model": model_name,
+                "configured": True,
+                "available": True,
+                "status": "available",
+                "latencyMs": max(0, round((time.monotonic() - started) * 1000)),
+                "errorCode": "",
+                "errorMessage": "",
+                "checkedAt": checked_at,
+            }
+        except Exception as error:
+            code, message = self._safe_health_error(error)
+            return {
+                "provider": provider.name,
+                "model": model_name,
+                "configured": True,
+                "available": False,
+                "status": "unavailable",
+                "latencyMs": max(0, round((time.monotonic() - started) * 1000)),
+                "errorCode": code,
+                "errorMessage": message,
+                "checkedAt": checked_at,
+            }
+
+    @staticmethod
+    def _safe_health_error(error: Exception) -> tuple[str, str]:
+        name = error.__class__.__name__.lower()
+        status_code = getattr(error, "status_code", None)
+        if status_code == 401 or "authentication" in name:
+            return "AUTHENTICATION_FAILED", "API Key 无效或无权访问该模型"
+        if status_code == 404 or "notfound" in name:
+            return "MODEL_NOT_FOUND", "模型名称或接口地址不存在"
+        if status_code == 429 or "ratelimit" in name:
+            return "RATE_LIMITED", "请求受限，请检查额度或稍后重试"
+        if "timeout" in name:
+            return "TIMEOUT", "模型连接超时"
+        return "PROVIDER_UNAVAILABLE", "模型服务暂时不可用，请检查 Base URL、模型名称和服务状态"
 
 
 llm_provider_registry = LlmProviderRegistry([DeepSeekProvider(), QwenProvider()])

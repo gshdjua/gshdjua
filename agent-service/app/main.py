@@ -18,6 +18,8 @@ from .contracts import (
     MemoryRecord,
     MemorySettingsUpdate,
     MemoryUpdate,
+    ProviderHealthRequest,
+    ProviderHealthResponse,
     StrategyPreviewRequest,
     StrategyPreviewResponse,
     TokenUsage,
@@ -101,6 +103,16 @@ def health() -> dict:
 @app.get("/v1/tools", response_model=ToolCatalogResponse)
 def tools() -> ToolCatalogResponse:
     return ToolCatalogResponse(tools=tool_registry.descriptors())
+
+
+@app.post("/v1/providers/health", response_model=ProviderHealthResponse)
+def provider_health(payload: ProviderHealthRequest) -> ProviderHealthResponse:
+    try:
+        return ProviderHealthResponse(**llm_provider_registry.check_health(
+            payload.provider, payload.model, payload.timeoutSeconds
+        ))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @app.post("/v1/strategy/preview", response_model=StrategyPreviewResponse)

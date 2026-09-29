@@ -115,10 +115,13 @@ public class AssistantController {
         assistantConversationMapper.insertMessage(assistantMessage);
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
         assistantMessage.setPromptVersion(replyResult.getPromptVersion());
-        promptOnlineMetricsService.record(replyResult.getPromptVersion(), replyResult.getProvider(), replyResult.getModel(),
+        promptOnlineMetricsService.record(replyResult.getPromptVersion(), replyResult.getRequestedProvider(), replyResult.getRequestedModel(),
                 selectedModel.getInputPrice(), selectedModel.getOutputPrice(), replyResult.getModelCalls(),
                 replyResult.isSuccess(), replyResult.getInputTokens(), replyResult.getOutputTokens(),
                 replyResult.getLatencyMs());
+        if (replyResult.getModelCalls() > 0) {
+            llmModelCatalogService.recordInvocationHealth(selectedModel.getId(), replyResult.isSuccess(), replyResult.getLatencyMs());
+        }
 
         if ("新对话".equals(conversation.getTitle())) {
             assistantConversationMapper.updateTitle(conversationId, userId, message.substring(0, Math.min(message.length(), 18)));
@@ -133,9 +136,12 @@ public class AssistantController {
         data.put("recommendations", replyResult.getRecommendations());
         data.put("recommendationMeta", replyResult.getRecommendationMetadata());
         data.put("selectedModelId", selectedModel.getId());
+        data.put("requestedProvider", replyResult.getRequestedProvider());
+        data.put("requestedModel", replyResult.getRequestedModel());
         data.put("actualProvider", replyResult.getProvider());
         data.put("actualModel", replyResult.getModel());
-        data.put("executionPath", replyResult.getModelCalls() > 0 ? "model" : "local");
+        data.put("executionPath", replyResult.getExecutionPath());
+        data.put("fallbackReason", replyResult.getFallbackReason());
         return result(200, "success", data);
     }
 

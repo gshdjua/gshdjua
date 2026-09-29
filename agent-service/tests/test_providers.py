@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from app.providers import (
     DeepSeekProvider,
@@ -43,6 +43,32 @@ class LlmProviderRegistryTest(unittest.TestCase):
             registry.register(FakeProvider())
         with self.assertRaisesRegex(ValueError, "Unsupported provider"):
             registry.get("unknown")
+
+    def test_health_check_reports_available_model_without_exposing_credentials(self):
+        provider = FakeProvider()
+        model = Mock()
+        model.invoke.return_value = Mock(content="OK")
+        provider.create_chat_model = Mock(return_value=model)
+        registry = LlmProviderRegistry([provider])
+
+        result = registry.check_health("fake", "fake-model", 3.0)
+
+        self.assertTrue(result["configured"])
+        self.assertTrue(result["available"])
+        self.assertEqual("available", result["status"])
+        self.assertNotIn("apiKey", result)
+
+    def test_health_check_classifies_authentication_failure(self):
+        provider = FakeProvider()
+        error = type("AuthenticationError", (Exception,), {"status_code": 401})("secret-value")
+        provider.create_chat_model = Mock(side_effect=error)
+        registry = LlmProviderRegistry([provider])
+
+        result = registry.check_health("fake", "fake-model")
+
+        self.assertFalse(result["available"])
+        self.assertEqual("AUTHENTICATION_FAILED", result["errorCode"])
+        self.assertNotIn("secret-value", result["errorMessage"])
 
 
 class DeepSeekProviderTest(unittest.TestCase):
