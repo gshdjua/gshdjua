@@ -12,6 +12,7 @@ import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.service.PromptVersionService;
 import com.example.demo.service.PromptOnlineMetricsService;
 import com.example.demo.service.LlmModelCatalogService;
+import com.example.demo.service.ModelInvocationLogService;
 import com.example.demo.util.JwtUtil;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -29,6 +30,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.eq;
 
 class AssistantControllerTest {
 
@@ -39,6 +41,7 @@ class AssistantControllerTest {
         PromptVersionService promptVersionService = mock(PromptVersionService.class);
         PromptOnlineMetricsService metricsService = mock(PromptOnlineMetricsService.class);
         LlmModelCatalogService catalogService = mock(LlmModelCatalogService.class);
+        ModelInvocationLogService invocationLogService = mock(ModelInvocationLogService.class);
         AssistantConversationMapper conversationMapper = mock(AssistantConversationMapper.class);
         UserMapper userMapper = mock(UserMapper.class);
         HttpServletRequest request = mock(HttpServletRequest.class);
@@ -52,6 +55,7 @@ class AssistantControllerTest {
         ReflectionTestUtils.setField(controller, "assistantConversationMapper", conversationMapper);
         ReflectionTestUtils.setField(controller, "audioMapper", mock(AudioMapper.class));
         ReflectionTestUtils.setField(controller, "llmModelCatalogService", catalogService);
+        ReflectionTestUtils.setField(controller, "modelInvocationLogService", invocationLogService);
 
         User user = new User(); user.setId(7);
         AssistantConversation conversation = new AssistantConversation();
@@ -98,6 +102,8 @@ class AssistantControllerTest {
         verify(catalogService).recordInvocationHealth("qwen-plus", false, 120L, "RATE_LIMITED");
         verify(catalogService).recordInvocationHealth("deepseek-chat", true, 80L, "");
         verify(memoryClient).capture(7, 11L, "assistant-message-41-fallback", "测试降级");
+        verify(invocationLogService).record(eq("assistant-message-41"), eq("assistant-message-41-fallback"),
+                eq(requested), eq(failed), eq(fallback), eq(succeeded), any(DeepSeekMusicAgent.ReplyResult.class));
     }
 
     @Test
@@ -128,6 +134,7 @@ class AssistantControllerTest {
         PromptVersionService promptVersionService = mock(PromptVersionService.class);
         PromptOnlineMetricsService metricsService = mock(PromptOnlineMetricsService.class);
         LlmModelCatalogService catalogService = mock(LlmModelCatalogService.class);
+        ModelInvocationLogService invocationLogService = mock(ModelInvocationLogService.class);
         AssistantConversationMapper conversationMapper = mock(AssistantConversationMapper.class);
         UserMapper userMapper = mock(UserMapper.class);
         HttpServletRequest request = mock(HttpServletRequest.class);
@@ -141,6 +148,7 @@ class AssistantControllerTest {
         ReflectionTestUtils.setField(controller, "assistantConversationMapper", conversationMapper);
         ReflectionTestUtils.setField(controller, "audioMapper", mock(AudioMapper.class));
         ReflectionTestUtils.setField(controller, "llmModelCatalogService", catalogService);
+        ReflectionTestUtils.setField(controller, "modelInvocationLogService", invocationLogService);
 
         User user = new User();
         user.setId(7);

@@ -202,6 +202,31 @@ CREATE TABLE IF NOT EXISTS llm_model_config (
     UNIQUE KEY uk_llm_provider_model (provider, model_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS llm_invocation_log (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    requested_trace_id VARCHAR(100) NOT NULL,
+    fallback_trace_id VARCHAR(120) NOT NULL DEFAULT '',
+    prompt_version VARCHAR(120) NOT NULL DEFAULT 'none',
+    requested_provider VARCHAR(40) NOT NULL,
+    requested_model VARCHAR(120) NOT NULL,
+    actual_provider VARCHAR(40) NOT NULL,
+    actual_model VARCHAR(120) NOT NULL,
+    execution_path VARCHAR(30) NOT NULL,
+    fallback_reason VARCHAR(64) NOT NULL DEFAULT '',
+    model_calls INT NOT NULL DEFAULT 0,
+    retry_count INT NOT NULL DEFAULT 0,
+    fallback_count INT NOT NULL DEFAULT 0,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
+    latency_ms INT NOT NULL DEFAULT 0,
+    estimated_cost DECIMAL(16,8) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_llm_invocation_created (created_at),
+    KEY idx_llm_invocation_requested (requested_provider, requested_model, created_at),
+    KEY idx_llm_invocation_path (execution_path, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
 CREATE TABLE IF NOT EXISTS prompt_answer_feedback (
     assistant_message_id BIGINT PRIMARY KEY,
     prompt_version VARCHAR(120) NOT NULL,

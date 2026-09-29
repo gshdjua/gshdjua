@@ -14,6 +14,7 @@ import com.example.demo.service.PromptFeedbackService;
 import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.service.LlmModelCatalogService;
+import com.example.demo.service.ModelInvocationLogService;
 import com.example.demo.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,10 +34,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 @RestController
 @RequestMapping("/api/assistant")
 public class AssistantController {
+    private static final Logger LOGGER = Logger.getLogger(AssistantController.class.getName());
 
     @Autowired
     private DeepSeekMusicAgent deepSeekMusicAgent;
@@ -67,6 +71,9 @@ public class AssistantController {
 
     @Autowired
     private LlmModelCatalogService llmModelCatalogService;
+
+    @Autowired
+    private ModelInvocationLogService modelInvocationLogService;
 
     @PostMapping("/chat")
     @Transactional
@@ -109,18 +116,26 @@ public class AssistantController {
         recordModelAttempt(selectedModel, replyResult);
 
         LlmModelCatalogService.ModelConfig fallbackModel = null;
+        DeepSeekMusicAgent.ReplyResult fallbackAttempt = null;
         DeepSeekMusicAgent.ReplyResult requestedAttempt = replyResult;
         String effectiveMemoryRequestId = memoryRequestId;
         if ("local_fallback".equals(replyResult.getExecutionPath())) {
             fallbackModel = llmModelCatalogService.resolveHealthyFallback(selectedModel.getId()).orElse(null);
             if (fallbackModel != null) {
                 effectiveMemoryRequestId = memoryRequestId + "-fallback";
-                DeepSeekMusicAgent.ReplyResult fallbackAttempt = deepSeekMusicAgent.replyWithResult(
+                fallbackAttempt = deepSeekMusicAgent.replyWithResult(
                         messageForAgent, userId, history, conversationId, effectiveMemoryRequestId,
                         fallbackModel.getProvider(), fallbackModel.getModel());
                 recordModelAttempt(fallbackModel, fallbackAttempt);
                 replyResult = DeepSeekMusicAgent.ReplyResult.afterFailover(requestedAttempt, fallbackAttempt);
             }
+        }
+        try {
+            modelInvocationLogService.record(memoryRequestId,
+                    fallbackModel == null ? "" : effectiveMemoryRequestId,
+                    selectedModel, requestedAttempt, fallbackModel, fallbackAttempt, replyResult);
+        } catch (RuntimeException exception) {
+            LOGGER.log(Level.WARNING, "Could not persist privacy-safe LLM invocation log", exception);
         }
 
         String reply = replyResult.getReply();

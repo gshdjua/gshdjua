@@ -612,6 +612,28 @@
           <div class="evaluation-table-wrap"><table class="evaluation-table"><thead><tr><th>显示名称</th><th>Provider</th><th>API 模型</th><th>价格（输入/输出）</th><th>用户可选</th><th>目录状态</th><th>调用状态</th><th>操作</th></tr></thead><tbody><tr v-for="model in llmAdminModels" :key="model.id"><td>{{ model.displayName }}</td><td>{{ model.provider }}</td><td>{{ model.model }}</td><td>{{ model.inputPricePerMillion }} / {{ model.outputPricePerMillion }}</td><td>{{ model.userSelectable ? '是' : '否' }}</td><td>{{ model.default ? '默认' : model.enabled ? '已启用' : '已停用' }}</td><td><span class="llm-health-status" :class="model.healthStatus" :title="model.healthErrorMessage || ''">{{ llmHealthLabel(model) }}</span><small v-if="model.healthCheckedAt" class="llm-health-time">{{ model.healthLatencyMs }}ms · {{ formatLlmHealthTime(model.healthCheckedAt) }}</small></td><td><div class="evaluation-row-actions"><button v-if="model.enabled" type="button" :disabled="llmModelTestingId === model.id" @click="testLlmModel(model)">{{ llmModelTestingId === model.id ? '检测中…' : '测试连接' }}</button><button v-if="model.enabled && !model.default" type="button" class="danger" @click="disableLlmModel(model)">停用</button></div></td></tr></tbody></table></div>
           <p class="prompt-decision-note">“已配置”只表示目录和服务端凭据存在；点击“测试连接”会发送一次极小模型请求并可能产生少量费用。检测结果不保存 API Key。</p>
         </div>
+
+        <div class="evaluation-panel llm-invocation-panel">
+          <div class="evaluation-panel-head"><div><p>MODEL INVOCATION TRACE</p><h3>最近模型调用</h3></div><span>{{ Number(llmInvocationSummary.totalCount || 0) }} 条</span></div>
+          <div class="llm-invocation-filters">
+            <select v-model.number="llmInvocationFilters.days"><option :value="1">最近 24 小时</option><option :value="7">最近 7 天</option><option :value="30">最近 30 天</option><option :value="90">最近 90 天</option></select>
+            <select v-model="llmInvocationFilters.provider"><option value="">全部 Provider</option><option v-for="provider in llmInvocationProviders" :key="provider" :value="provider">{{ provider }}</option></select>
+            <select v-model="llmInvocationFilters.model"><option value="">全部模型</option><option v-for="model in llmInvocationModels" :key="model" :value="model">{{ model }}</option></select>
+            <select v-model="llmInvocationFilters.status"><option value="all">全部状态</option><option value="success">正常调用</option><option value="fallback">模型降级</option><option value="failed">本地兜底</option></select>
+            <button type="button" :disabled="llmInvocationLoading" @click="loadLlmInvocations">{{ llmInvocationLoading ? '加载中…' : '查询' }}</button>
+            <button type="button" class="danger" :disabled="llmInvocationLoading || !llmInvocationRows.length" @click="deleteLlmInvocations">清除当前范围</button>
+          </div>
+          <p v-if="llmInvocationError" class="evaluation-state error">{{ llmInvocationError }}</p>
+          <div v-else class="evaluation-metrics llm-invocation-summary">
+            <div class="evaluation-metric"><span>调用链</span><strong>{{ Number(llmInvocationSummary.totalCount || 0) }}</strong><small>当前筛选范围</small></div>
+            <div class="evaluation-metric"><span>模型降级</span><strong>{{ Number(llmInvocationSummary.fallbackCount || 0) }}</strong><small>备用模型成功</small></div>
+            <div class="evaluation-metric"><span>本地兜底</span><strong>{{ Number(llmInvocationSummary.localFallbackCount || 0) }}</strong><small>模型均未成功</small></div>
+            <div class="evaluation-metric primary"><span>累计费用</span><strong>{{ formatLlmCost(llmInvocationSummary.totalCost) }}</strong><small>按各模型单价分别计算</small></div>
+          </div>
+          <div v-if="!llmInvocationLoading && !llmInvocationRows.length" class="evaluation-empty">当前范围暂无模型调用记录</div>
+          <div v-else class="evaluation-table-wrap llm-invocation-table"><table class="evaluation-table"><thead><tr><th>时间</th><th>请求模型</th><th>实际模型</th><th>执行路径</th><th>降级原因</th><th>调用 / Token</th><th>费用 / 延迟</th><th>Trace</th></tr></thead><tbody><tr v-for="item in llmInvocationRows" :key="item.id"><td>{{ formatLlmInvocationTime(item.createdAt) }}</td><td>{{ item.requestedProvider }} / {{ item.requestedModel }}</td><td>{{ item.actualProvider }} / {{ item.actualModel }}</td><td><span class="llm-invocation-status" :class="item.executionPath">{{ llmInvocationPathLabel(item.executionPath) }}</span></td><td>{{ llmFallbackReasonLabel(item.fallbackReason) }}</td><td>{{ item.modelCalls }} 次<br><small>{{ item.inputTokens }} / {{ item.outputTokens }}</small></td><td>{{ formatLlmCost(item.estimatedCost) }}<br><small>{{ item.latencyMs }}ms</small></td><td class="llm-trace-cell"><code :title="item.requestedTraceId">{{ item.requestedTraceId }}</code><code v-if="item.fallbackTraceId" :title="item.fallbackTraceId">↳ {{ item.fallbackTraceId }}</code></td></tr></tbody></table></div>
+          <p class="prompt-decision-note">仅保存模型、调用状态、Token、费用、延迟和 traceId；不保存用户、问题、回答或模型隐藏思维链。</p>
+        </div>
       </section>
 
       <div class="dialog-overlay" v-if="showLlmCostCaseDialog" @click.self="closeLlmCostCaseDialog">
@@ -993,6 +1015,8 @@ export default {
       llmCostLoading: false, llmCostError: '', llmCostRealCall: false,
       llmProviderName: 'LLM', llmModelName: '', llmModels: [], llmSelectedModelId: '',
       llmAdminModels: [], llmModelSaving: false, llmModelError: '', llmModelTestingId: '',
+      llmInvocationRows: [], llmInvocationSummary: {}, llmInvocationLoading: false, llmInvocationError: '',
+      llmInvocationFilters: { days: 7, provider: '', model: '', status: 'all' },
       llmModelForm: { provider: '', model: '', displayName: '', inputPricePerMillion: 0, outputPricePerMillion: 0, userSelectable: true, default: false },
       llmCostPricePreset: 'flash-peak', llmCostInputPrice: 3, llmCostOutputPrice: 9, showLlmCostDataset: false,
       llmCostScope: 'production',
@@ -1021,6 +1045,12 @@ export default {
     },
     menuIcon() {
       return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠' }[this.currentMenu] || '🎵'
+    },
+    llmInvocationProviders() {
+      return [...new Set(this.llmAdminModels.map(item => item.provider).filter(Boolean))]
+    },
+    llmInvocationModels() {
+      return [...new Set(this.llmAdminModels.map(item => item.model).filter(Boolean))]
     },
     canSaveLyrics() {
       return this.lyricEditorLines.length > 0 && this.lyricEditorLines.every(line => line.time !== null)
@@ -1092,7 +1122,42 @@ export default {
     },
     async openModelCatalog() {
       this.currentMenu = 'models'
-      await Promise.all([this.loadAdminLlmModels(), this.loadLlmProviderStatus()])
+      await Promise.all([this.loadAdminLlmModels(), this.loadLlmProviderStatus(), this.loadLlmInvocations()])
+    },
+    async loadLlmInvocations() {
+      this.llmInvocationLoading = true
+      this.llmInvocationError = ''
+      try {
+        const res = await request.get('/admin/llm-invocations', { params: { ...this.llmInvocationFilters, limit: 100 } })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '模型调用记录加载失败')
+        this.llmInvocationRows = res.data.data?.items || []
+        this.llmInvocationSummary = res.data.data?.summary || {}
+      } catch (error) {
+        this.llmInvocationError = error.response?.data?.msg || error.message || '模型调用记录加载失败'
+      } finally { this.llmInvocationLoading = false }
+    },
+    async deleteLlmInvocations() {
+      if (this.llmInvocationLoading || !confirm('确定清除当前筛选范围内的模型调用记录吗？此操作不影响聊天记录、模型目录或 Prompt 统计，且无法恢复。')) return
+      this.llmInvocationLoading = true
+      try {
+        const res = await request.delete('/admin/llm-invocations', { params: this.llmInvocationFilters })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '调用记录清除失败')
+        alert(`已清除 ${Number(res.data.data?.deletedCount || 0)} 条模型调用记录。`)
+        await this.loadLlmInvocations()
+      } catch (error) {
+        this.llmInvocationError = error.response?.data?.msg || error.message || '调用记录清除失败'
+      } finally { this.llmInvocationLoading = false }
+    },
+    llmInvocationPathLabel(path) {
+      return { model: '正常调用', model_fallback: '模型降级', local_fallback: '本地兜底' }[path] || path || '未知'
+    },
+    llmFallbackReasonLabel(reason) {
+      return { AUTHENTICATION_FAILED: '认证失败', MODEL_NOT_FOUND: '模型不存在', RATE_LIMITED: '请求限流', TIMEOUT: '调用超时', EMPTY_RESPONSE: '返回空内容', PROVIDER_UNAVAILABLE: '服务不可用', AGENT_SERVICE_UNAVAILABLE: 'Agent 服务不可用', MODEL_INVOCATION_FAILED: '模型调用失败' }[reason] || reason || '—'
+    },
+    formatLlmInvocationTime(value) {
+      if (!value) return '—'
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
     },
     async loadLlmProviderStatus() {
       try {
@@ -2365,8 +2430,9 @@ export default {
 .model-catalog-hero { background: linear-gradient(120deg, #242054, #4f3c96 58%, #6f56c9); }.model-catalog-dashboard .evaluation-state { margin-bottom: 18px; }
 .prompt-rollout-panel, .prompt-compare-panel, .prompt-metrics-panel { margin-bottom: 18px; }.prompt-rollout-body { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px; color: #5b5271; font-size: 13px; }.prompt-rollout-body p { flex-basis: 100%; margin: 0; line-height: 1.6; }.prompt-rollout-body select, .prompt-rollout-body input[type=number] { padding: 7px; border: 1px solid #d9d0e9; border-radius: 8px; background: #fff; }.prompt-rollout-body input[type=number] { width: 58px; }.prompt-rollout-body button { padding: 8px 12px; border: 1px solid #8666c3; border-radius: 8px; color: #fff; background: #7454b4; cursor: pointer; }.prompt-rollout-body button:disabled { opacity: .5; cursor: not-allowed; }.prompt-rollout-body .prompt-promote-btn { border-color: #2d9168; background: #2d9168; }.prompt-answer-review { padding: 0 16px 16px; }.prompt-answer-review details { margin-top: 8px; padding: 9px; border: 1px solid #e7e1f3; border-radius: 8px; }.prompt-answer-review summary { cursor: pointer; }.prompt-answer-review p { white-space: pre-wrap; }.prompt-status-gray { color: #915d1e; background: #fff0d1; }.prompt-metrics-filters { display: flex; gap: 8px; flex-wrap: wrap; }.prompt-metrics-filters select, .prompt-metrics-filters button { padding: 7px 10px; border: 1px solid #d4c7ea; border-radius: 8px; color: #5f4695; background: #fff; }.prompt-metrics-filters button.danger { border-color: #efbec6; color: #bd4f64; }.prompt-metrics-filters button:disabled { cursor: not-allowed; opacity: .5; }.prompt-metrics-privacy, .prompt-decision-note { margin: 0; padding: 13px 16px; color: #6d6380; background: #faf8ff; font-size: 12px; line-height: 1.6; }.prompt-decision-note { border-top: 1px solid #eee8f7; }.prompt-sample-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #9b651d; background: #fff1d7; font-size: 11px; }.prompt-sample-status.ready { color: #247454; background: #def5e9; }
 .llm-model-catalog { margin-top: 18px; }.llm-model-form { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 14px; padding: 20px; border-bottom: 1px solid #efecf6; }.llm-model-form label { display: grid; gap: 7px; min-width: 0; color: #625978; font-size: 11px; font-weight: 600; }.llm-model-form label > input:not([type=checkbox]) { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #ded7ec; border-radius: 9px; color: #3d3550; background: #fff; font: inherit; font-weight: 400; }.llm-model-form label > input:not([type=checkbox]):focus { border-color: #8b6bca; outline: 0; box-shadow: 0 0 0 3px rgba(117,80,194,.1); }.llm-model-form .llm-model-toggle { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 10px 13px; border: 1px solid #e1d9f0; border-radius: 10px; background: #faf8ff; cursor: pointer; }.llm-model-form .llm-model-toggle input { flex: 0 0 auto; width: 18px; height: 18px; margin: 0; accent-color: #7550c2; }.llm-model-toggle span, .llm-model-toggle strong, .llm-model-toggle small { display: block; }.llm-model-toggle strong { color: #45365f; font-size: 12px; }.llm-model-toggle small { margin-top: 3px; color: #8d849d; font-size: 10px; font-weight: 400; line-height: 1.4; }.llm-model-form button { align-self: stretch; min-height: 58px; border: 0; border-radius: 10px; color: #fff; background: #7454b4; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.llm-model-form button:disabled { cursor: not-allowed; opacity: .5; }.llm-model-catalog .evaluation-table button.danger { color: #bd4f64; border-color: #efbec6; }.llm-health-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #765f8e; background: #f0ecf7; font-size: 10px; white-space: nowrap; }.llm-health-status.available { color: #1e7956; background: #def5e9; }.llm-health-status.unavailable, .llm-health-status.unconfigured { color: #bd4f64; background: #fde8ec; }.llm-health-time { display: block; margin-top: 4px; color: #978ca8; font-size: 9px; white-space: nowrap; }
+.llm-invocation-panel { margin-top: 18px; }.llm-invocation-filters { display: flex; gap: 9px; flex-wrap: wrap; padding: 15px 18px; border-bottom: 1px solid #efecf6; }.llm-invocation-filters select, .llm-invocation-filters button { padding: 8px 10px; border: 1px solid #d4c7ea; border-radius: 8px; color: #5f4695; background: #fff; font: inherit; font-size: 11px; }.llm-invocation-filters button { cursor: pointer; }.llm-invocation-filters button.danger { margin-left: auto; color: #bd4f64; border-color: #efbec6; }.llm-invocation-filters button:disabled { cursor: not-allowed; opacity: .5; }.llm-invocation-summary { grid-template-columns: repeat(4,minmax(0,1fr)); margin: 0; padding: 15px 18px; border-bottom: 1px solid #efecf6; }.llm-invocation-summary .evaluation-metric { padding: 13px; }.llm-invocation-summary .evaluation-metric strong { font-size: 20px; }.llm-invocation-table { max-height: 520px; }.llm-invocation-table table { min-width: 1180px; }.llm-invocation-table small { color: #8f869e; }.llm-invocation-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #1e7956; background: #def5e9; font-size: 10px; white-space: nowrap; }.llm-invocation-status.model_fallback { color: #8b5d19; background: #fff0d1; }.llm-invocation-status.local_fallback { color: #bd4f64; background: #fde8ec; }.llm-trace-cell code { display: block; overflow: hidden; max-width: 210px; color: #756a86; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 800px) { .statistics-dashboard { padding: 18px; }.stats-toolbar { align-items: flex-start; flex-direction: column; }.stats-kpis { grid-template-columns: 1fr; }.song-bar-chart { overflow-x: auto; }.song-bar-chart .bar-column { min-width: 84px; }.daily-chart-wrap { overflow-x: auto; }.daily-bar-chart { min-width: 600px; } }
-@media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }.llm-invocation-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 1100px) { .prompt-layout { grid-template-columns: 1fr; } }
 @media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions { justify-content: flex-start; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; }.prompt-version-heading { flex-direction: column; }.prompt-editor-body textarea { min-height: 280px; }.llm-model-form { grid-template-columns: 1fr; } }
 </style>
