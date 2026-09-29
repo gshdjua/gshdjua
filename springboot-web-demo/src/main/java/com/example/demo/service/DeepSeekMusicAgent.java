@@ -231,7 +231,7 @@ public class DeepSeekMusicAgent {
             String executionPath = modelCalls == 0 ? "local" : modelSuccess ? "model" : "local_fallback";
             String fallbackReason = modelCalls > 0 && !modelSuccess
                     ? nonEmpty(metrics == null ? "" : metrics.failureReason, "MODEL_INVOCATION_FAILED") : "";
-            return new ReplyResult(reply, currentRecommendationOutcome.get(),
+            ReplyResult result = new ReplyResult(reply, currentRecommendationOutcome.get(),
                     lastPromptVersion.get() == null ? "none" : lastPromptVersion.get(),
                     modelCalls, modelSuccess,
                     usage == null ? 0 : usage.promptTokens,
@@ -244,6 +244,8 @@ public class DeepSeekMusicAgent {
                     execution == null ? (modelCalls > 0 ? "direct" : "local") : execution.getStrategy(),
                     execution == null ? (modelCalls > 0 ? "agent_unavailable" : "local_rule")
                             : execution.getStrategyReason());
+            if (execution != null) result.agentSteps = execution.getAgentSteps();
+            return result;
         } finally {
             currentConversationId.remove();
             currentUserId.remove();
@@ -1106,6 +1108,7 @@ public class DeepSeekMusicAgent {
         private final String requestedStrategy;
         private final String selectedStrategy;
         private final String strategyReason;
+        private List<Map<String, Object>> agentSteps = Collections.emptyList();
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
             this(reply, recommendationOutcome, "none");
@@ -1187,7 +1190,7 @@ public class DeepSeekMusicAgent {
 
         public static ReplyResult afterFailover(ReplyResult requested, ReplyResult fallback) {
             boolean fallbackSucceeded = fallback.modelCalls > 0 && fallback.success;
-            return new ReplyResult(
+            ReplyResult result = new ReplyResult(
                     fallback.reply,
                     fallback.recommendationOutcome,
                     fallback.promptVersion,
@@ -1207,6 +1210,10 @@ public class DeepSeekMusicAgent {
                     fallback.strategyReason,
                     0,
                     1);
+            List<Map<String, Object>> steps = new ArrayList<>(requested.agentSteps);
+            steps.addAll(fallback.agentSteps);
+            result.agentSteps = Collections.unmodifiableList(steps);
+            return result;
         }
 
         public String getReply() { return reply; }
@@ -1228,6 +1235,7 @@ public class DeepSeekMusicAgent {
         public String getRequestedStrategy() { return requestedStrategy; }
         public String getSelectedStrategy() { return selectedStrategy; }
         public String getStrategyReason() { return strategyReason; }
+        public List<Map<String, Object>> getAgentSteps() { return agentSteps; }
 
         public List<Audio> getRecommendations() {
             return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();

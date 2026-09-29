@@ -34,18 +34,19 @@ class ExecutionAuditRepository:
         try:
             self._ensure_schema()
             tool_executions = record.get("toolExecutions") or []
+            agent_steps = record.get("agentSteps") or []
             with self._connect() as connection, connection.cursor() as cursor:
                 cursor.execute(
                     "INSERT INTO agent_execution_audit("
                     "trace_id,request_id,provider,model,prompt_version,requested_strategy,selected_strategy,strategy_reason,"
-                    "cost_budget,model_calls,tool_calls,tool_rounds,tool_executions,input_tokens,output_tokens,"
+                    "cost_budget,model_calls,tool_calls,tool_rounds,tool_executions,agent_steps,input_tokens,output_tokens,"
                     "total_tokens,latency_ms,budget_exceeded,stop_reason,finish_reason,status,error_code) "
-                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                     "ON DUPLICATE KEY UPDATE request_id=VALUES(request_id),provider=VALUES(provider),"
                     "model=VALUES(model),prompt_version=VALUES(prompt_version),requested_strategy=VALUES(requested_strategy),"
                     "selected_strategy=VALUES(selected_strategy),strategy_reason=VALUES(strategy_reason),"
                     "cost_budget=VALUES(cost_budget),model_calls=VALUES(model_calls),tool_calls=VALUES(tool_calls),"
-                    "tool_rounds=VALUES(tool_rounds),tool_executions=VALUES(tool_executions),"
+                    "tool_rounds=VALUES(tool_rounds),tool_executions=VALUES(tool_executions),agent_steps=VALUES(agent_steps),"
                     "input_tokens=VALUES(input_tokens),output_tokens=VALUES(output_tokens),"
                     "total_tokens=VALUES(total_tokens),latency_ms=VALUES(latency_ms),"
                     "budget_exceeded=VALUES(budget_exceeded),stop_reason=VALUES(stop_reason),"
@@ -65,6 +66,7 @@ class ExecutionAuditRepository:
                         int(record.get("toolCalls", 0) or 0),
                         int(record.get("toolRounds", 0) or 0),
                         json.dumps(tool_executions, ensure_ascii=False, separators=(",", ":")),
+                        json.dumps(agent_steps, ensure_ascii=False, separators=(",", ":")),
                         int(record.get("inputTokens", 0) or 0),
                         int(record.get("outputTokens", 0) or 0),
                         int(record.get("totalTokens", 0) or 0),
@@ -87,7 +89,7 @@ class ExecutionAuditRepository:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "SELECT trace_id,request_id,provider,model,prompt_version,requested_strategy,selected_strategy,strategy_reason,"
-                "cost_budget,model_calls,tool_calls,tool_rounds,tool_executions,input_tokens,output_tokens,"
+                "cost_budget,model_calls,tool_calls,tool_rounds,tool_executions,agent_steps,input_tokens,output_tokens,"
                 "total_tokens,latency_ms,budget_exceeded,stop_reason,finish_reason,status,error_code,created_at "
                 "FROM agent_execution_audit WHERE trace_id=%s",
                 (trace_id,),
@@ -100,11 +102,11 @@ class ExecutionAuditRepository:
             "promptVersion": row[4], "requestedStrategy": row[5], "selectedStrategy": row[6],
             "strategyReason": row[7], "costBudget": row[8], "modelCalls": int(row[9]),
             "toolCalls": int(row[10]), "toolRounds": int(row[11]),
-            "toolExecutions": self._decode_tools(row[12]), "inputTokens": int(row[13]),
-            "outputTokens": int(row[14]), "totalTokens": int(row[15]),
-            "latencyMs": int(row[16]), "budgetExceeded": bool(row[17]), "stopReason": row[18] or "",
-            "finishReason": row[19] or "", "status": row[20], "errorCode": row[21] or "",
-            "createdAt": row[22],
+            "toolExecutions": self._decode_tools(row[12]), "agentSteps": self._decode_tools(row[13]),
+            "inputTokens": int(row[14]), "outputTokens": int(row[15]), "totalTokens": int(row[16]),
+            "latencyMs": int(row[17]), "budgetExceeded": bool(row[18]), "stopReason": row[19] or "",
+            "finishReason": row[20] or "", "status": row[21], "errorCode": row[22] or "",
+            "createdAt": row[23],
         }
 
     @staticmethod
@@ -137,7 +139,7 @@ class ExecutionAuditRepository:
                     "requested_strategy VARCHAR(20) NOT NULL,selected_strategy VARCHAR(20) NOT NULL,"
                     "strategy_reason VARCHAR(50) NOT NULL,cost_budget VARCHAR(20) NOT NULL,"
                     "model_calls INT NOT NULL DEFAULT 0,tool_calls INT NOT NULL DEFAULT 0,"
-                    "tool_rounds INT NOT NULL DEFAULT 0,tool_executions JSON NOT NULL,"
+                    "tool_rounds INT NOT NULL DEFAULT 0,tool_executions JSON NOT NULL,agent_steps JSON NOT NULL,"
                     "input_tokens INT NOT NULL DEFAULT 0,output_tokens INT NOT NULL DEFAULT 0,"
                     "total_tokens INT NOT NULL DEFAULT 0,latency_ms INT NOT NULL DEFAULT 0,"
                     "budget_exceeded TINYINT(1) NOT NULL DEFAULT 0,stop_reason VARCHAR(50) NOT NULL DEFAULT '',"
@@ -151,6 +153,10 @@ class ExecutionAuditRepository:
                 if cursor.fetchone() is None:
                     cursor.execute("ALTER TABLE agent_execution_audit ADD COLUMN "
                                    "prompt_version VARCHAR(120) NOT NULL DEFAULT 'none' AFTER model")
+                cursor.execute("SHOW COLUMNS FROM agent_execution_audit LIKE 'agent_steps'")
+                if cursor.fetchone() is None:
+                    cursor.execute("ALTER TABLE agent_execution_audit ADD COLUMN "
+                                   "agent_steps JSON NULL AFTER tool_executions")
                 self._cleanup_expired(cursor, force=True)
             self._schema_ready = True
 

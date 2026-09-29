@@ -17,6 +17,7 @@ class AgentOptions(BaseModel):
     temperature: float = Field(default=0.4, ge=0.0, le=2.0)
     strategy: Literal["auto", "direct", "react"] = "auto"
     costBudget: Literal["low", "standard", "high"] = "standard"
+    orchestration: Literal["single", "multi"] = "multi"
 
 
 class AgentChatRequest(BaseModel):
@@ -94,6 +95,16 @@ class ToolExecutionAudit(BaseModel):
     errorCode: str = ""
 
 
+class AgentStep(BaseModel):
+    agent: str
+    status: Literal["completed", "failed", "skipped"]
+    durationMs: int = 0
+    inputTokens: int = 0
+    outputTokens: int = 0
+    summary: str = ""
+    errorCode: str = ""
+
+
 class AgentChatResponse(BaseModel):
     protocolVersion: str = "1.0"
     requestId: str
@@ -106,6 +117,7 @@ class AgentChatResponse(BaseModel):
     usage: TokenUsage
     budget: ExecutionBudgetReport
     toolExecutions: List[ToolExecutionAudit] = Field(default_factory=list)
+    agentSteps: List[AgentStep] = Field(default_factory=list)
     finishReason: str = "stop"
     latencyMs: int
 
@@ -123,6 +135,7 @@ class ExecutionAuditRecord(BaseModel):
     toolCalls: int = 0
     toolRounds: int = 0
     toolExecutions: List[ToolExecutionAudit] = Field(default_factory=list)
+    agentSteps: List[AgentStep] = Field(default_factory=list)
     inputTokens: int = 0
     outputTokens: int = 0
     totalTokens: int = 0

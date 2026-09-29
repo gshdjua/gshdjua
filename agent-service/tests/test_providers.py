@@ -92,6 +92,7 @@ class DeepSeekProviderTest(unittest.TestCase):
             temperature=0.3,
             timeout=8.0,
             max_retries=0,
+            stream_usage=True,
         )
 
     def test_deepseek_adapter_requires_api_key(self):
@@ -121,6 +122,7 @@ class QwenProviderTest(unittest.TestCase):
             temperature=0.2,
             timeout=9.0,
             max_retries=0,
+            stream_usage=True,
         )
 
     def test_qwen_adapter_accepts_configured_default_model_and_requires_key(self):

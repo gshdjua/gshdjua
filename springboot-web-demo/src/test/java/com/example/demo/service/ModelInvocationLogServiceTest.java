@@ -40,15 +40,17 @@ class ModelInvocationLogServiceTest {
                 values.capture(), values.capture(), values.capture(), values.capture(),
                 values.capture(), values.capture(), values.capture(), values.capture(),
                 values.capture(), values.capture(), values.capture(), values.capture(),
-                values.capture(), values.capture(), values.capture(), values.capture());
+                values.capture(), values.capture(), values.capture(), values.capture(),
+                values.capture());
         List<Object> args = values.getAllValues();
-        assertEquals(16, args.size());
+        assertEquals(17, args.size());
         assertEquals("trace-1", args.get(0));
         assertEquals("qwen", args.get(3));
         assertEquals("deepseek", args.get(5));
         assertEquals("model_fallback", args.get(7));
         assertEquals("RATE_LIMITED", args.get(8));
         assertEquals(0.0063d, (Double) args.get(15), 0.0000001d);
+        assertEquals("[]", args.get(16));
     }
 
     @Test

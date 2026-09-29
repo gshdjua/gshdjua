@@ -75,6 +75,7 @@ public class AgentServiceClient {
             options.put("temperature", temperature);
             options.put("strategy", normalizeStrategy(strategy));
             options.put("costBudget", "standard");
+            options.put("orchestration", "multi");
 
             JSONObject request = new JSONObject();
             request.put("protocolVersion", "1.0");
@@ -174,6 +175,7 @@ public class AgentServiceClient {
         options.put("temperature", 0.2d);
         options.put("strategy", normalizeStrategy(strategy));
         options.put("costBudget", normalizeBudget(costBudget));
+        options.put("orchestration", "multi");
 
         String requestId = "eval-native-" + UUID.randomUUID();
         JSONObject request = new JSONObject();
@@ -425,6 +427,23 @@ public class AgentServiceClient {
                 toolExecutions.add(safe);
             }
         }
+        List<Map<String, Object>> agentSteps = new ArrayList<>();
+        JSONArray steps = response.getJSONArray("agentSteps");
+        if (steps != null) {
+            for (Object item : steps) {
+                if (!(item instanceof JSONObject)) continue;
+                JSONObject step = (JSONObject) item;
+                Map<String, Object> safe = new LinkedHashMap<>();
+                safe.put("agent", step.getString("agent"));
+                safe.put("status", step.getString("status"));
+                safe.put("durationMs", step.getIntValue("durationMs"));
+                safe.put("inputTokens", step.getIntValue("inputTokens"));
+                safe.put("outputTokens", step.getIntValue("outputTokens"));
+                safe.put("summary", step.getString("summary"));
+                safe.put("errorCode", step.getString("errorCode"));
+                agentSteps.add(safe);
+            }
+        }
         return new AgentResult(
                 answer,
                 usage == null ? 0 : usage.getIntValue("inputTokens"),
@@ -439,7 +458,7 @@ public class AgentServiceClient {
                 budget == null ? 0 : budget.getIntValue("toolRounds"),
                 budget != null && budget.getBooleanValue("exceeded"),
                 budget == null ? "" : budget.getString("stopReason"),
-                toolExecutions,
+                toolExecutions, agentSteps,
                 response.getString("provider"), response.getString("model"));
     }
 
@@ -470,6 +489,7 @@ public class AgentServiceClient {
         private final boolean budgetExceeded;
         private final String stopReason;
         private final List<Map<String, Object>> toolExecutions;
+        private final List<Map<String, Object>> agentSteps;
         private final String provider;
         private final String model;
 
@@ -484,7 +504,7 @@ public class AgentServiceClient {
                            boolean budgetExceeded, String stopReason, List<Map<String, Object>> toolExecutions) {
             this(answer, inputTokens, outputTokens, totalTokens, traceId, strategy, strategyReason, finishReason,
                     latencyMs, costBudget, modelCalls, toolCalls, toolRounds, budgetExceeded, stopReason,
-                    toolExecutions, "", "");
+                    toolExecutions, Collections.emptyList(), "", "");
         }
 
         public AgentResult(String answer, int inputTokens, int outputTokens, int totalTokens,
@@ -492,6 +512,16 @@ public class AgentServiceClient {
                            int latencyMs, String costBudget, int modelCalls, int toolCalls, int toolRounds,
                            boolean budgetExceeded, String stopReason, List<Map<String, Object>> toolExecutions,
                            String provider, String model) {
+            this(answer, inputTokens, outputTokens, totalTokens, traceId, strategy, strategyReason, finishReason,
+                    latencyMs, costBudget, modelCalls, toolCalls, toolRounds, budgetExceeded, stopReason,
+                    toolExecutions, Collections.emptyList(), provider, model);
+        }
+
+        public AgentResult(String answer, int inputTokens, int outputTokens, int totalTokens,
+                           String traceId, String strategy, String strategyReason, String finishReason,
+                           int latencyMs, String costBudget, int modelCalls, int toolCalls, int toolRounds,
+                           boolean budgetExceeded, String stopReason, List<Map<String, Object>> toolExecutions,
+                           List<Map<String, Object>> agentSteps, String provider, String model) {
             this.answer = answer;
             this.inputTokens = inputTokens;
             this.outputTokens = outputTokens;
@@ -508,6 +538,7 @@ public class AgentServiceClient {
             this.budgetExceeded = budgetExceeded;
             this.stopReason = text(stopReason);
             this.toolExecutions = Collections.unmodifiableList(new ArrayList<>(toolExecutions));
+            this.agentSteps = Collections.unmodifiableList(new ArrayList<>(agentSteps));
             this.provider = text(provider);
             this.model = text(model);
         }
@@ -530,6 +561,7 @@ public class AgentServiceClient {
         public boolean isBudgetExceeded() { return budgetExceeded; }
         public String getStopReason() { return stopReason; }
         public List<Map<String, Object>> getToolExecutions() { return toolExecutions; }
+        public List<Map<String, Object>> getAgentSteps() { return agentSteps; }
         public String getProvider() { return provider; }
         public String getModel() { return model; }
     }

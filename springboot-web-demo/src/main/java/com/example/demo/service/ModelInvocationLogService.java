@@ -1,5 +1,6 @@
 package com.example.demo.service;
 
+import com.alibaba.fastjson.JSON;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -31,6 +32,7 @@ public class ModelInvocationLogService {
                 + "first_token_ms INT NOT NULL DEFAULT 0,stream_event_count INT NOT NULL DEFAULT 0,"
                 + "stream_char_count INT NOT NULL DEFAULT 0,stream_status VARCHAR(24) NOT NULL DEFAULT 'not_streamed',"
                 + "interrupted_at_chars INT NOT NULL DEFAULT 0,usage_source VARCHAR(20) NOT NULL DEFAULT 'provider',"
+                + "agent_steps LONGTEXT NULL,"
                 + "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,KEY idx_llm_invocation_created(created_at),"
                 + "KEY idx_llm_invocation_user_created(user_id,created_at),"
                 + "KEY idx_llm_invocation_requested(requested_provider,requested_model,created_at),"
@@ -41,6 +43,7 @@ public class ModelInvocationLogService {
         addColumnIfMissing("stream_status", "VARCHAR(24) NOT NULL DEFAULT 'not_streamed'");
         addColumnIfMissing("interrupted_at_chars", "INT NOT NULL DEFAULT 0");
         addColumnIfMissing("usage_source", "VARCHAR(20) NOT NULL DEFAULT 'provider'");
+        addColumnIfMissing("agent_steps", "LONGTEXT NULL");
         addColumnIfMissing("user_id", "INT NULL AFTER id");
         addIndexIfMissing("idx_llm_invocation_user_created", "user_id,created_at");
         jdbc.update("UPDATE llm_invocation_log SET usage_source='unavailable' "
@@ -109,14 +112,14 @@ public class ModelInvocationLogService {
         if (fallbackModel != null && fallbackAttempt != null) cost += cost(fallbackModel, fallbackAttempt);
         jdbc.update("INSERT INTO llm_invocation_log(requested_trace_id,fallback_trace_id,prompt_version,"
                         + "requested_provider,requested_model,actual_provider,actual_model,execution_path,fallback_reason,"
-                        + "model_calls,retry_count,fallback_count,input_tokens,output_tokens,latency_ms,estimated_cost) "
-                        + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        + "model_calls,retry_count,fallback_count,input_tokens,output_tokens,latency_ms,estimated_cost,agent_steps) "
+                        + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 safe(requestedTraceId), safe(fallbackTraceId), safe(finalResult.getPromptVersion()),
                 safe(requestedModel.getProvider()), safe(requestedModel.getModel()),
                 safe(finalResult.getProvider()), safe(finalResult.getModel()), safe(finalResult.getExecutionPath()),
                 safe(finalResult.getFallbackReason()), finalResult.getModelCalls(), finalResult.getRetryCount(),
                 finalResult.getFallbackCount(), finalResult.getInputTokens(), finalResult.getOutputTokens(),
-                finalResult.getLatencyMs(), cost);
+                finalResult.getLatencyMs(), cost, JSON.toJSONString(finalResult.getAgentSteps()));
     }
 
     public void associateUser(String traceId, Integer userId) {
@@ -133,7 +136,7 @@ public class ModelInvocationLogService {
                 "SELECT id,user_id,requested_trace_id,fallback_trace_id,prompt_version,requested_provider,requested_model,"
                         + "actual_provider,actual_model,execution_path,fallback_reason,model_calls,retry_count,fallback_count,"
                         + "input_tokens,output_tokens,latency_ms,estimated_cost,first_token_ms,stream_event_count,"
-                        + "stream_char_count,stream_status,interrupted_at_chars,usage_source,created_at FROM llm_invocation_log"
+                        + "stream_char_count,stream_status,interrupted_at_chars,usage_source,agent_steps,created_at FROM llm_invocation_log"
                         + filter.where + " ORDER BY created_at DESC,id DESC LIMIT ?",
                 (rs, row) -> {
                     Map<String, Object> item = new LinkedHashMap<>();
@@ -161,6 +164,9 @@ public class ModelInvocationLogService {
                     item.put("streamStatus", rs.getString("stream_status"));
                     item.put("interruptedAtChars", rs.getInt("interrupted_at_chars"));
                     item.put("usageSource", rs.getString("usage_source"));
+                    String agentSteps = rs.getString("agent_steps");
+                    item.put("agentSteps", agentSteps == null || agentSteps.trim().isEmpty()
+                            ? new ArrayList<>() : JSON.parseArray(agentSteps));
                     item.put("createdAt", rs.getTimestamp("created_at").toLocalDateTime().toString());
                     return item;
                 }, listArgs.toArray());

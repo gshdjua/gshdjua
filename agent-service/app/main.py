@@ -15,6 +15,7 @@ from .config import default_provider
 from .contracts import (
     AgentChatRequest,
     AgentChatResponse,
+    AgentStep,
     AgentMessage,
     ExecutionBudgetReport,
     ExecutionAuditRecord,
@@ -86,6 +87,7 @@ def save_failed_audit(payload: AgentChatRequest, model_name: str, trace_id: str,
         "toolCalls": state.get("tool_calls", 0),
         "toolRounds": state.get("tool_rounds", 0),
         "toolExecutions": state.get("tool_executions", []),
+        "agentSteps": state.get("agent_steps", []),
         "inputTokens": state.get("input_tokens", 0),
         "outputTokens": state.get("output_tokens", 0),
         "totalTokens": state.get("total_tokens", 0),
@@ -118,6 +120,9 @@ def health() -> dict:
         "defaultStrategy": "auto",
         "costBudgets": ["low", "standard", "high"],
         "defaultCostBudget": "standard",
+        "orchestrationModes": ["single", "multi"],
+        "defaultOrchestration": "multi",
+        "multiAgentRoles": ["retrieval_agent", "candidate_agent", "fact_check_agent", "answer_agent"],
     }
 
 
@@ -221,6 +226,8 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "budget_exhausted": False,
                 "budget_stop_reason": "",
                 "tools_enabled": should_enable_tools(payload.messages),
+                "orchestration_mode": payload.options.orchestration,
+                "agent_steps": [],
             }
         state = agent_graph.invoke(state)
         response = state["response"]
@@ -287,6 +294,7 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 stopReason=state.get("budget_stop_reason", ""),
             ),
             toolExecutions=[ToolExecutionAudit(**item) for item in state.get("tool_executions", [])],
+            agentSteps=[AgentStep(**item) for item in state.get("agent_steps", [])],
             finishReason=finish_reason,
             latencyMs=elapsed,
         )
@@ -304,6 +312,7 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             "toolCalls": state.get("tool_calls", 0),
             "toolRounds": state.get("tool_rounds", 0),
             "toolExecutions": state.get("tool_executions", []),
+            "agentSteps": state.get("agent_steps", []),
             "inputTokens": state.get("input_tokens", 0),
             "outputTokens": state.get("output_tokens", 0),
             "totalTokens": state.get("total_tokens", 0),

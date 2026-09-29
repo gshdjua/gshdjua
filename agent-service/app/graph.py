@@ -4,7 +4,7 @@ import time
 from contextvars import ContextVar, Token
 from typing import Annotated, Any, Callable, Dict, List, Optional, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, message_chunk_to_message
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage, message_chunk_to_message
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -58,6 +58,9 @@ class AgentState(TypedDict):
     budget_stop_reason: str
     tools_enabled: bool
     user_message: str
+    orchestration_mode: str
+    draft_response: AIMessage
+    agent_steps: Annotated[List[Dict[str, Any]], operator.add]
 
 
 def message_usage(message: AIMessage) -> Dict[str, int]:
@@ -98,19 +101,31 @@ def prepare_strategy(state: AgentState) -> Dict[str, Any]:
         state.get("cost_budget", "standard"),
     )
     budget = decision.budget
+    multi_agent_calls = (
+        max(2, budget.max_model_calls)
+        if state.get("orchestration_mode", "single") == "multi" and budget.level != "low"
+        else budget.max_model_calls
+    )
     update: Dict[str, Any] = {
         "selected_strategy": decision.selected,
         "strategy_reason": decision.reason,
         "cost_budget": budget.level,
         "max_tool_rounds": budget.max_tool_rounds,
         "max_tool_calls": budget.max_tool_calls,
-        "max_model_calls": budget.max_model_calls,
+        "max_model_calls": multi_agent_calls,
         "max_total_tokens": budget.max_total_tokens,
         "max_execution_ms": budget.max_execution_ms,
         "execution_started_at": state.get("execution_started_at", time.monotonic()),
         "budget_exhausted": state.get("budget_exhausted", False),
         "budget_stop_reason": state.get("budget_stop_reason", ""),
     }
+    if state.get("orchestration_mode", "single") == "multi" and not state.get("tools_enabled", True):
+        update["agent_steps"] = [{
+            "agent": "retrieval_agent",
+            "status": "completed",
+            "durationMs": 0,
+            "summary": "prepared_evidence",
+        }]
     if decision.selected == "direct" and state.get("tools_enabled", True):
         plan = strategy_router.direct.plan(state.get("user_message", ""))
         if plan is not None:
@@ -160,6 +175,7 @@ def call_model(state: AgentState) -> Dict[str, Any]:
             "budget_exhausted": True,
             "budget_stop_reason": "time_limit",
         }
+    call_started = time.monotonic()
     model = llm_provider_registry.create_chat_model(
         state["provider"],
         LlmModelRequest(
@@ -181,7 +197,15 @@ def call_model(state: AgentState) -> Dict[str, Any]:
         model = model.bind_tools(tool_registry.model_tool_schemas())
         tools_bound = True
     stream_sink = MODEL_STREAM_SINK.get()
-    if stream_sink is None:
+    # The candidate is internal only when another model call remains for review.
+    # Under the low-cost one-call budget it is already the final answer, so keep
+    # streaming it to the client instead of delaying all output until `done`.
+    is_multi = state.get("orchestration_mode", "single") == "multi"
+    is_multi_draft = (
+        is_multi
+        and state.get("model_calls", 0) + 1 < state.get("max_model_calls", 1)
+    )
+    if stream_sink is None or is_multi_draft:
         response = model.invoke(state["messages"])
     else:
         aggregate = None
@@ -206,7 +230,7 @@ def call_model(state: AgentState) -> Dict[str, Any]:
         stop_reason = "model_call_limit"
     if stop_reason and response.tool_calls:
         response = AIMessage(content="本次请求已达到执行预算，无法继续调用工具。请缩小问题范围后重试。")
-    return {
+    update = {
         "messages": [response],
         "response": response,
         "model_calls": state.get("model_calls", 0) + 1,
@@ -216,6 +240,26 @@ def call_model(state: AgentState) -> Dict[str, Any]:
         "budget_exhausted": bool(stop_reason),
         "budget_stop_reason": stop_reason,
     }
+    if is_multi and not response.tool_calls:
+        update["draft_response"] = response
+        steps = []
+        if not any(item.get("agent") == "retrieval_agent" for item in state.get("agent_steps", [])):
+            steps.append({
+                "agent": "retrieval_agent",
+                "status": "skipped",
+                "durationMs": 0,
+                "summary": "no_retrieval_required",
+            })
+        steps.append({
+            "agent": "candidate_agent",
+            "status": "completed",
+            "durationMs": max(0, round((time.monotonic() - call_started) * 1000)),
+            "inputTokens": usage["input_tokens"],
+            "outputTokens": usage["output_tokens"],
+            "summary": "candidate_answer_created",
+        })
+        update["agent_steps"] = steps
+    return update
 
 
 def execute_tools(state: AgentState) -> Dict[str, Any]:
@@ -262,13 +306,107 @@ def execute_tools(state: AgentState) -> Dict[str, Any]:
             "durationMs": result.durationMs,
             "errorCode": result.error.code if result.error else "",
         })
-    return {
+    update = {
         "messages": messages,
         "tool_executions": tool_executions,
         "tool_rounds": state.get("tool_rounds", 0) + 1,
         "tool_calls": tool_calls,
         "budget_exhausted": budget_exhausted,
         "budget_stop_reason": stop_reason,
+    }
+    if state.get("orchestration_mode", "single") == "multi":
+        failed = [item for item in tool_executions if not item["success"]]
+        update["agent_steps"] = [{
+            "agent": "retrieval_agent",
+            "status": "failed" if failed and len(failed) == len(tool_executions) else "completed",
+            "durationMs": sum(int(item.get("durationMs", 0) or 0) for item in tool_executions),
+            "summary": ",".join(item["tool"] for item in tool_executions) or "no_tool_result",
+            "errorCode": failed[0].get("errorCode", "") if failed else "",
+        }]
+    return update
+
+
+def review_and_answer(state: AgentState) -> Dict[str, Any]:
+    """Validate the candidate against available evidence and emit only the corrected final answer."""
+    draft = state.get("draft_response") or state.get("response")
+    if draft is None:
+        return {"agent_steps": [{
+            "agent": "fact_check_agent", "status": "skipped", "summary": "missing_candidate"
+        }]}
+    if (
+        state.get("model_calls", 0) >= state.get("max_model_calls", 1)
+        or state.get("budget_exhausted", False)
+        or elapsed_ms(state) >= state.get("max_execution_ms", 25000)
+    ):
+        return {
+            "response": draft,
+            "agent_steps": [
+                {"agent": "fact_check_agent", "status": "skipped", "summary": "budget_limited"},
+                {"agent": "answer_agent", "status": "completed", "summary": "candidate_used_as_final"},
+            ],
+        }
+    started = time.monotonic()
+    remaining_ms = state.get("max_execution_ms", 25000) - elapsed_ms(state)
+    model = llm_provider_registry.create_chat_model(
+        state["provider"],
+        LlmModelRequest(
+            model=state.get("model"),
+            temperature=0.1,
+            timeout_seconds=max(0.25, remaining_ms / 1000.0),
+        ),
+    )
+    review_instruction = SystemMessage(content=(
+        "你现在同时承担事实校验 Agent 和最终回答 Agent。先在内部逐项核对候选回答："
+        "所有关于本地歌库、歌曲、歌手、类型、出处、收藏和推荐的事实必须能由当前对话中的"
+        "结构化工具结果或‘本地歌库提供的最小歌曲元数据’支持。删除或改正无证据、矛盾、"
+        "重复和越权内容；证据不足必须明确说明。最后只输出修正后的自然中文回答，"
+        "不要输出校验过程、评分、JSON、思维链或‘候选回答’字样。"
+    ))
+    review_messages = [review_instruction] + list(state["messages"])
+    stream_sink = MODEL_STREAM_SINK.get()
+    if stream_sink is None:
+        response = model.invoke(review_messages)
+    else:
+        aggregate = None
+        for chunk in model.stream(review_messages):
+            aggregate = chunk if aggregate is None else aggregate + chunk
+            if isinstance(chunk.content, str) and chunk.content:
+                stream_sink(chunk.content)
+        response = AIMessage(content="") if aggregate is None else message_chunk_to_message(aggregate)
+    usage = message_usage(response)
+    review_status = "completed"
+    review_error = ""
+    if not str(response.content or "").strip():
+        response = draft
+        review_status = "failed"
+        review_error = "EMPTY_RESPONSE"
+    total_tokens = state.get("total_tokens", 0) + usage["total_tokens"]
+    stop_reason = state.get("budget_stop_reason", "")
+    if total_tokens >= state.get("max_total_tokens", 8000):
+        stop_reason = "token_limit"
+    duration = max(0, round((time.monotonic() - started) * 1000))
+    return {
+        "messages": [response],
+        "response": response,
+        "model_calls": state.get("model_calls", 0) + 1,
+        "input_tokens": state.get("input_tokens", 0) + usage["input_tokens"],
+        "output_tokens": state.get("output_tokens", 0) + usage["output_tokens"],
+        "total_tokens": total_tokens,
+        "budget_exhausted": bool(stop_reason),
+        "budget_stop_reason": stop_reason,
+        "agent_steps": [
+            {
+                "agent": "fact_check_agent", "status": review_status, "durationMs": duration,
+                "inputTokens": usage["input_tokens"], "outputTokens": 0,
+                "summary": "evidence_checked" if not review_error else "candidate_preserved",
+                "errorCode": review_error,
+            },
+            {
+                "agent": "answer_agent", "status": "completed", "durationMs": duration,
+                "inputTokens": 0, "outputTokens": usage["output_tokens"],
+                "summary": "final_answer_created" if not review_error else "candidate_used_as_final",
+            },
+        ],
     }
 
 
@@ -282,6 +420,11 @@ def route_after_model(state: AgentState) -> str:
         and not state.get("budget_exhausted", False)
     ):
         return "execute_tools"
+    if (
+        state.get("orchestration_mode", "single") == "multi"
+        and state.get("draft_response") is not None
+    ):
+        return "review_and_answer"
     return END
 
 
@@ -289,12 +432,16 @@ builder = StateGraph(AgentState)
 builder.add_node("prepare_strategy", prepare_strategy)
 builder.add_node("call_model", call_model)
 builder.add_node("execute_tools", execute_tools)
+builder.add_node("review_and_answer", review_and_answer)
 builder.add_edge(START, "prepare_strategy")
 builder.add_conditional_edges(
     "prepare_strategy",
     route_after_prepare,
     {"execute_tools": "execute_tools", "call_model": "call_model"},
 )
-builder.add_conditional_edges("call_model", route_after_model, {"execute_tools": "execute_tools", END: END})
+builder.add_conditional_edges("call_model", route_after_model, {
+    "execute_tools": "execute_tools", "review_and_answer": "review_and_answer", END: END
+})
 builder.add_edge("execute_tools", "call_model")
+builder.add_edge("review_and_answer", END)
 agent_graph = builder.compile()

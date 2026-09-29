@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS llm_invocation_log (
     stream_status VARCHAR(24) NOT NULL DEFAULT 'not_streamed',
     interrupted_at_chars INT NOT NULL DEFAULT 0,
     usage_source VARCHAR(20) NOT NULL DEFAULT 'provider',
+    agent_steps LONGTEXT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_llm_invocation_created (created_at),
     KEY idx_llm_invocation_user_created (user_id, created_at),

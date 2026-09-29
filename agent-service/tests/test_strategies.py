@@ -107,6 +107,62 @@ class DirectStrategyTest(unittest.TestCase):
 
 
 class StrategyGraphTest(unittest.TestCase):
+    def test_multi_agent_graph_runs_candidate_fact_check_and_answer(self):
+        class MultiAgentModel:
+            def __init__(self):
+                self.calls = 0
+
+            def invoke(self, messages):
+                self.calls += 1
+                if self.calls == 1:
+                    return AIMessage(
+                        content="候选回答",
+                        usage_metadata={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                    )
+                return AIMessage(
+                    content="校验后的最终回答",
+                    usage_metadata={"input_tokens": 14, "output_tokens": 6, "total_tokens": 20},
+                )
+
+        model = MultiAgentModel()
+        state = {
+            "messages": [HumanMessage(content="介绍这首歌")],
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "temperature": 0.4,
+            "strategy": "auto",
+            "cost_budget": "standard",
+            "orchestration_mode": "multi",
+            "agent_steps": [],
+            "request_id": "multi-request",
+            "trace_id": "multi-trace",
+            "user_id": "7",
+            "tool_rounds": 0,
+            "tool_calls": 0,
+            "tool_executions": [],
+            "model_calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "execution_started_at": 0,
+            "budget_exhausted": False,
+            "budget_stop_reason": "",
+            "tools_enabled": False,
+            "user_message": "介绍这首歌",
+        }
+
+        with patch("app.graph.elapsed_ms", return_value=1):
+            with patch("app.graph.llm_provider_registry.create_chat_model", return_value=model):
+                result = agent_graph.invoke(state)
+
+        self.assertEqual("校验后的最终回答", result["response"].content)
+        self.assertEqual(2, result["model_calls"])
+        self.assertEqual(34, result["total_tokens"])
+        self.assertEqual(
+            ["retrieval_agent", "candidate_agent", "fact_check_agent", "answer_agent"],
+            [item["agent"] for item in result["agent_steps"]],
+        )
+
     def test_prepare_strategy_builds_direct_tool_call(self):
         update = prepare_strategy({
             "strategy": "auto",
