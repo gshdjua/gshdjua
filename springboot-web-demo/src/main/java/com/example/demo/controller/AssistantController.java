@@ -15,6 +15,7 @@ import com.example.demo.service.AgentMemoryClient;
 import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.service.LlmModelCatalogService;
 import com.example.demo.service.ModelInvocationLogService;
+import com.example.demo.service.AgentServiceClient;
 import com.example.demo.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -42,7 +43,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -88,10 +93,15 @@ public class AssistantController {
     @Autowired
     private PlatformTransactionManager transactionManager;
 
+    @Autowired
+    private AgentServiceClient agentServiceClient;
+
+    private final ConcurrentMap<String, StreamSession> activeStreams = new ConcurrentHashMap<>();
+
     @PostMapping("/chat")
     @Transactional
     public Map<String, Object> chat(@RequestBody Map<String, Object> payload, HttpServletRequest request) {
-        return processChat(payload, getUserId(request), null);
+        return processChat(payload, getUserId(request), null, null);
     }
 
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -101,38 +111,73 @@ public class AssistantController {
         response.setHeader("Cache-Control", "no-cache, no-transform");
         response.setHeader("X-Accel-Buffering", "no");
         SseEmitter emitter = new SseEmitter(60000L);
-        CompletableFuture.runAsync(() -> {
+        String suppliedStreamId = String.valueOf(payload.getOrDefault("streamId", "")).trim();
+        String candidateStreamId = suppliedStreamId.matches("[A-Za-z0-9_-]{8,100}")
+                ? suppliedStreamId : UUID.randomUUID().toString();
+        Long conversationId = toLong(payload.get("conversationId"));
+        String originalMessage = String.valueOf(payload.getOrDefault("message", "")).trim();
+        StreamSession candidateSession = new StreamSession(candidateStreamId, userId, conversationId, originalMessage);
+        while (activeStreams.putIfAbsent(candidateStreamId, candidateSession) != null) {
+            candidateStreamId = UUID.randomUUID().toString();
+            candidateSession = new StreamSession(candidateStreamId, userId, conversationId, originalMessage);
+        }
+        final String streamId = candidateStreamId;
+        final StreamSession session = candidateSession;
+        emitter.onTimeout(() -> cancelStream(streamId));
+        emitter.onError(error -> cancelStream(streamId));
+        CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
             AtomicBoolean emittedModelDelta = new AtomicBoolean(false);
             AtomicBoolean streamOpen = new AtomicBoolean(true);
             try {
-                emitter.send(SseEmitter.event().name("start").data(Collections.singletonMap(
-                        "conversationId", payload.get("conversationId"))));
+                Map<String, Object> start = new HashMap<>();
+                start.put("streamId", streamId);
+                start.put("conversationId", payload.get("conversationId"));
+                emitter.send(SseEmitter.event().name("start").data(start));
                 Consumer<String> modelDelta = content -> {
-                    if (!streamOpen.get() || content == null || content.isEmpty()) return;
+                    if (!streamOpen.get() || session.cancelled.get() || content == null || content.isEmpty()) return;
                     try {
-                        emitter.send(SseEmitter.event().name("delta").data(
-                                Collections.singletonMap("content", content)));
+                        sendDelta(emitter, session, content);
                         emittedModelDelta.set(true);
                     } catch (IOException exception) {
                         streamOpen.set(false);
+                        cancelStream(streamId);
                     }
                 };
                 Map<String, Object> result = new TransactionTemplate(transactionManager).execute(
-                        status -> processChat(payload, userId, modelDelta));
+                        status -> processChat(payload, userId, modelDelta, session));
                 if (result == null) throw new IllegalStateException("流式回答事务未返回结果");
+                session.chatCommitted.set(true);
+                ensureStreamActive(session);
                 if (!Integer.valueOf(200).equals(result.get("code"))) {
                     emitter.send(SseEmitter.event().name("error").data(result));
+                    finishStreamMetric(session, "error");
+                    activeStreams.remove(streamId, session);
                     emitter.complete();
                     return;
                 }
                 @SuppressWarnings("unchecked")
                 Map<String, Object> data = (Map<String, Object>) result.get("data");
                 if (!emittedModelDelta.get()) {
-                    emitReplyDeltas(emitter, String.valueOf(data.getOrDefault("reply", "")));
+                    emitReplyDeltas(emitter, session, String.valueOf(data.getOrDefault("reply", "")));
                 }
+                finishStreamMetric(session, "completed");
+                data.put("streamMetrics", session.metrics());
                 emitter.send(SseEmitter.event().name("done").data(data));
+                activeStreams.remove(streamId, session);
                 emitter.complete();
             } catch (Exception exception) {
+                String status = session.cancelled.get() ? "cancelled" : "error";
+                if (session.cancelled.get() && !session.chatCommitted.get()
+                        && session.cancelledExchangeSaved.compareAndSet(false, true)) {
+                    saveCancelledExchange(session.conversationId, session.userId,
+                            session.originalMessage, session.partialReply());
+                }
+                finishStreamMetric(session, status);
+                activeStreams.remove(streamId, session);
+                if (session.cancelled.get()) {
+                    emitter.complete();
+                    return;
+                }
                 LOGGER.log(Level.WARNING, "Assistant SSE stream failed", exception);
                 try {
                     Map<String, Object> error = new HashMap<>();
@@ -145,22 +190,95 @@ public class AssistantController {
                 }
             }
         });
+        session.future = future;
         return emitter;
     }
 
-    private void emitReplyDeltas(SseEmitter emitter, String reply) throws IOException {
+    @DeleteMapping("/chat/stream/{streamId}")
+    public Map<String, Object> cancelChatStream(@PathVariable String streamId, HttpServletRequest request) {
+        Integer userId = getUserId(request);
+        StreamSession session = activeStreams.get(streamId);
+        boolean cancelled = session != null && session.userId.equals(userId);
+        if (cancelled) cancelStream(streamId);
+        Map<String, Object> data = new HashMap<>();
+        data.put("streamId", streamId);
+        data.put("cancelled", cancelled);
+        return result(200, cancelled ? "生成已停止" : "流式请求已结束", data);
+    }
+
+    private void cancelStream(String streamId) {
+        StreamSession session = activeStreams.get(streamId);
+        if (session == null || !session.cancelled.compareAndSet(false, true)) return;
+        String requestId = session.agentRequestId;
+        if (requestId != null && !requestId.isEmpty()) agentServiceClient.cancelChat(requestId);
+        CompletableFuture<Void> future = session.future;
+        if (future != null) future.cancel(true);
+    }
+
+    private void sendDelta(SseEmitter emitter, StreamSession session, String content) throws IOException {
+        ensureStreamActive(session);
+        emitter.send(SseEmitter.event().name("delta").data(Collections.singletonMap("content", content)));
+        session.recordDelta(content);
+    }
+
+    private void emitReplyDeltas(SseEmitter emitter, StreamSession session, String reply) throws IOException {
         int offset = 0;
         while (offset < reply.length()) {
             int remainingCodePoints = reply.codePointCount(offset, reply.length());
             int end = reply.offsetByCodePoints(offset, Math.min(16, remainingCodePoints));
-            emitter.send(SseEmitter.event().name("delta").data(
-                    Collections.singletonMap("content", reply.substring(offset, end))));
+            sendDelta(emitter, session, reply.substring(offset, end));
             offset = end;
         }
     }
 
+    private void finishStreamMetric(StreamSession session, String status) {
+        if (!session.finished.compareAndSet(false, true)) return;
+        try {
+            modelInvocationLogService.finishStream(session.traceId(), session.provider, session.model,
+                    session.firstTokenMs(), session.totalMs(), session.eventCount.get(),
+                    session.charCount.get(), session.modelCallCount.get(), session.estimatedInputTokens.get(),
+                    session.estimatedOutputTokens(), session.estimatedCost(), status);
+        } catch (RuntimeException exception) {
+            LOGGER.log(Level.WARNING, "Could not persist SSE performance metrics", exception);
+        }
+    }
+
+    private void ensureStreamActive(StreamSession session) {
+        if (session != null && (session.cancelled.get() || Thread.currentThread().isInterrupted())) {
+            throw new StreamCancelledException();
+        }
+    }
+
+    private void saveCancelledExchange(Long conversationId, Integer userId,
+                                       String originalMessage, String partialReply) {
+        if (conversationId == null || originalMessage == null || originalMessage.isEmpty()
+                || originalMessage.length() > 2000) return;
+        try {
+            new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+                AssistantConversation conversation = assistantConversationMapper
+                        .selectByIdAndUserId(conversationId, userId);
+                if (conversation == null) return;
+                assistantConversationMapper.insertMessage(message(conversationId, "user", originalMessage));
+                String visibleReply = partialReply == null ? "" : partialReply.trim();
+                visibleReply = visibleReply.isEmpty()
+                        ? "（已停止生成，尚未生成回答）"
+                        : visibleReply + "\n\n（已停止生成）";
+                assistantConversationMapper.insertMessage(message(conversationId, "assistant", visibleReply));
+                if ("新对话".equals(conversation.getTitle())) {
+                    assistantConversationMapper.updateTitle(conversationId, userId,
+                            originalMessage.substring(0, Math.min(originalMessage.length(), 18)));
+                } else {
+                    assistantConversationMapper.touchConversation(conversationId);
+                }
+            });
+        } catch (RuntimeException exception) {
+            LOGGER.log(Level.WARNING, "Could not persist cancelled assistant exchange", exception);
+        }
+    }
+
     private Map<String, Object> processChat(Map<String, Object> payload, Integer userId,
-                                            Consumer<String> onDelta) {
+                                            Consumer<String> onDelta, StreamSession streamSession) {
+        ensureStreamActive(streamSession);
         Long conversationId = toLong(payload.get("conversationId"));
         AssistantConversation conversation = conversationId == null ? null
                 : assistantConversationMapper.selectByIdAndUserId(conversationId, userId);
@@ -180,6 +298,10 @@ public class AssistantController {
             assistantConversationMapper.updateSelectedModel(conversationId, userId, selectedModel.getId());
             conversation.setSelectedModelId(selectedModel.getId());
         }
+        if (streamSession != null) {
+            streamSession.provider = selectedModel.getProvider();
+            streamSession.model = selectedModel.getModel();
+        }
 
         String message = String.valueOf(payload.getOrDefault("message", "")).trim();
         if (message.isEmpty()) return result(500, "Message cannot be empty", null);
@@ -192,8 +314,11 @@ public class AssistantController {
         String memoryRequestId = userMessage.getId() == null
                 ? "assistant-message-" + UUID.randomUUID()
                 : "assistant-message-" + userMessage.getId();
+        if (streamSession != null) streamSession.agentRequestId = memoryRequestId;
         DeepSeekMusicAgent.ReplyResult replyResult = invokeAgent(messageForAgent, userId, history,
-                conversationId, memoryRequestId, selectedModel, onDelta);
+                conversationId, memoryRequestId, prepareStreamModelCall(streamSession, selectedModel,
+                        messageForAgent, history), onDelta);
+        ensureStreamActive(streamSession);
         recordModelAttempt(selectedModel, replyResult);
 
         LlmModelCatalogService.ModelConfig fallbackModel = null;
@@ -204,8 +329,11 @@ public class AssistantController {
             fallbackModel = llmModelCatalogService.resolveHealthyFallback(selectedModel.getId()).orElse(null);
             if (fallbackModel != null) {
                 effectiveMemoryRequestId = memoryRequestId + "-fallback";
+                if (streamSession != null) streamSession.agentRequestId = effectiveMemoryRequestId;
                 fallbackAttempt = invokeAgent(messageForAgent, userId, history, conversationId,
-                        effectiveMemoryRequestId, fallbackModel, onDelta);
+                        effectiveMemoryRequestId, prepareStreamModelCall(streamSession, fallbackModel,
+                                messageForAgent, history), onDelta);
+                ensureStreamActive(streamSession);
                 recordModelAttempt(fallbackModel, fallbackAttempt);
                 replyResult = DeepSeekMusicAgent.ReplyResult.afterFailover(requestedAttempt, fallbackAttempt);
             }
@@ -262,6 +390,108 @@ public class AssistantController {
         data.put("requestedTraceId", memoryRequestId);
         data.put("fallbackTraceId", fallbackModel == null ? "" : effectiveMemoryRequestId);
         return result(200, "success", data);
+    }
+
+    private static final class StreamCancelledException extends RuntimeException { }
+
+    private LlmModelCatalogService.ModelConfig prepareStreamModelCall(StreamSession session,
+                                                                       LlmModelCatalogService.ModelConfig model,
+                                                                       String message,
+                                                                       List<Map<String, String>> history) {
+        if (session != null) session.beginModelCall(model, message, history);
+        return model;
+    }
+
+    private static final class StreamSession {
+        private final String streamId;
+        private final Integer userId;
+        private final Long conversationId;
+        private final String originalMessage;
+        private final long startedAtNanos = System.nanoTime();
+        private final StringBuilder partialReply = new StringBuilder();
+        private final AtomicLong firstTokenNanos = new AtomicLong(0);
+        private final AtomicInteger eventCount = new AtomicInteger(0);
+        private final AtomicInteger charCount = new AtomicInteger(0);
+        private final AtomicInteger modelCallCount = new AtomicInteger(0);
+        private final AtomicInteger estimatedInputTokens = new AtomicInteger(0);
+        private final AtomicBoolean cancelled = new AtomicBoolean(false);
+        private final AtomicBoolean finished = new AtomicBoolean(false);
+        private final AtomicBoolean chatCommitted = new AtomicBoolean(false);
+        private final AtomicBoolean cancelledExchangeSaved = new AtomicBoolean(false);
+        private volatile String agentRequestId = "";
+        private volatile String provider = "none";
+        private volatile String model = "none";
+        private volatile double estimatedInputCost;
+        private volatile double activeOutputPrice;
+        private volatile CompletableFuture<Void> future;
+
+        private StreamSession(String streamId, Integer userId, Long conversationId, String originalMessage) {
+            this.streamId = streamId;
+            this.userId = userId;
+            this.conversationId = conversationId;
+            this.originalMessage = originalMessage;
+        }
+
+        private synchronized void recordDelta(String content) {
+            firstTokenNanos.compareAndSet(0, System.nanoTime());
+            eventCount.incrementAndGet();
+            charCount.addAndGet(content.codePointCount(0, content.length()));
+            partialReply.append(content);
+        }
+
+        private synchronized String partialReply() { return partialReply.toString(); }
+
+        private synchronized void beginModelCall(LlmModelCatalogService.ModelConfig modelConfig,
+                                                 String message, List<Map<String, String>> history) {
+            int tokens = 256 + estimateTokenCount(message);
+            for (Map<String, String> item : history) tokens += estimateTokenCount(item.get("content"));
+            modelCallCount.incrementAndGet();
+            estimatedInputTokens.addAndGet(tokens);
+            estimatedInputCost += tokens * modelConfig.getInputPrice() / 1_000_000d;
+            activeOutputPrice = modelConfig.getOutputPrice();
+        }
+
+        private synchronized int estimatedOutputTokens() { return estimateTokenCount(partialReply.toString()); }
+
+        private synchronized double estimatedCost() {
+            return estimatedInputCost + estimatedOutputTokens() * activeOutputPrice / 1_000_000d;
+        }
+
+        private static int estimateTokenCount(String value) {
+            if (value == null || value.isEmpty()) return 0;
+            double tokens = 0;
+            for (int offset = 0; offset < value.length();) {
+                int codePoint = value.codePointAt(offset);
+                Character.UnicodeScript script = Character.UnicodeScript.of(codePoint);
+                boolean cjk = script == Character.UnicodeScript.HAN
+                        || script == Character.UnicodeScript.HIRAGANA
+                        || script == Character.UnicodeScript.KATAKANA
+                        || script == Character.UnicodeScript.HANGUL;
+                tokens += cjk ? 0.6d : 0.3d;
+                offset += Character.charCount(codePoint);
+            }
+            return Math.max(1, (int) Math.ceil(tokens));
+        }
+
+        private long firstTokenMs() {
+            long first = firstTokenNanos.get();
+            return first == 0 ? 0 : Math.max(0, (first - startedAtNanos) / 1_000_000L);
+        }
+
+        private long totalMs() { return Math.max(0, (System.nanoTime() - startedAtNanos) / 1_000_000L); }
+
+        private String traceId() { return agentRequestId.isEmpty() ? "stream-" + streamId : agentRequestId; }
+
+        private Map<String, Object> metrics() {
+            Map<String, Object> result = new HashMap<>();
+            result.put("streamId", streamId);
+            result.put("firstTokenMs", firstTokenMs());
+            result.put("totalMs", totalMs());
+            result.put("eventCount", eventCount.get());
+            result.put("charCount", charCount.get());
+            result.put("status", cancelled.get() ? "cancelled" : "completed");
+            return result;
+        }
     }
 
     private DeepSeekMusicAgent.ReplyResult invokeAgent(String message, Integer userId,

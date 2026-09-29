@@ -1,10 +1,17 @@
 import json
 import time
+from threading import Event
 from unittest.mock import patch
 
 from langchain_core.messages import AIMessageChunk, HumanMessage
 
-from app.main import answer_chunks, sse_event
+from app.main import (
+    ACTIVE_STREAMS,
+    ACTIVE_STREAMS_LOCK,
+    answer_chunks,
+    cancel_chat_stream,
+    sse_event,
+)
 from app.graph import (
     call_model,
     llm_provider_registry,
@@ -72,3 +79,16 @@ def test_graph_forwards_real_model_chunks_and_preserves_usage():
     assert "".join(chunks) == "流式回答"
     assert result["response"].content == "流式回答"
     assert result["total_tokens"] == 5
+
+
+def test_cancel_endpoint_signals_active_model_stream():
+    cancelled = Event()
+    with ACTIVE_STREAMS_LOCK:
+        ACTIVE_STREAMS["request-cancel-test"] = cancelled
+    try:
+        result = cancel_chat_stream("request-cancel-test")
+        assert result["cancelled"] is True
+        assert cancelled.is_set()
+    finally:
+        with ACTIVE_STREAMS_LOCK:
+            ACTIVE_STREAMS.pop("request-cancel-test", None)

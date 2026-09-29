@@ -16,10 +16,14 @@ import com.example.demo.service.ModelInvocationLogService;
 import com.example.demo.util.JwtUtil;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 
 import javax.servlet.http.HttpServletRequest;
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
@@ -33,6 +37,38 @@ import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.eq;
 
 class AssistantControllerTest {
+
+    @Test
+    void persistsQuestionAndPartialAnswerWhenStreamingIsCancelled() {
+        AssistantConversationMapper conversationMapper = mock(AssistantConversationMapper.class);
+        PlatformTransactionManager transactionManager = mock(PlatformTransactionManager.class);
+        TransactionStatus transactionStatus = mock(TransactionStatus.class);
+        AssistantController controller = new AssistantController();
+        ReflectionTestUtils.setField(controller, "assistantConversationMapper", conversationMapper);
+        ReflectionTestUtils.setField(controller, "transactionManager", transactionManager);
+
+        AssistantConversation conversation = new AssistantConversation();
+        conversation.setId(11L);
+        conversation.setTitle("会话");
+        when(transactionManager.getTransaction(any())).thenReturn(transactionStatus);
+        when(conversationMapper.selectByIdAndUserId(11L, 7)).thenReturn(conversation);
+        List<AssistantMessage> savedMessages = new ArrayList<>();
+        doAnswer(invocation -> {
+            savedMessages.add(invocation.getArgument(0));
+            return null;
+        }).when(conversationMapper).insertMessage(any(AssistantMessage.class));
+
+        ReflectionTestUtils.invokeMethod(controller, "saveCancelledExchange",
+                11L, 7, "请介绍这首歌", "这是已经生成的部分回答");
+
+        assertEquals(2, savedMessages.size());
+        assertEquals("user", savedMessages.get(0).getRole());
+        assertEquals("请介绍这首歌", savedMessages.get(0).getContent());
+        assertEquals("assistant", savedMessages.get(1).getRole());
+        assertEquals("这是已经生成的部分回答\n\n（已停止生成）", savedMessages.get(1).getContent());
+        verify(conversationMapper).touchConversation(11L);
+        verify(transactionManager).commit(transactionStatus);
+    }
 
     @Test
     void keepsUserSelectionButUsesOneHealthyFallbackAfterTechnicalFailure() {

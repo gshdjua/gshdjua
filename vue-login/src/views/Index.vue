@@ -260,7 +260,7 @@
             <div class="conversation-list">
               <div v-for="conversation in conversations" :key="conversation.id" class="conversation-item" :class="{ active: conversation.id === activeConversationId }" @click="selectConversation(conversation.id)">
                 <span class="conversation-title">{{ conversation.title }}</span>
-                <span class="conversation-count">{{ conversation.messageCount || 0 }} 条</span>
+                <span class="conversation-count">{{ conversation.questionCount || 0 }} 次提问</span>
                 <button class="conversation-delete" title="删除对话" @click.stop="deleteConversation(conversation.id)">×</button>
               </div>
             </div>
@@ -310,7 +310,8 @@
           </div>
           <div class="chat-input-row">
             <input v-model="assistantInput" @keyup.enter="sendAssistantMessage" placeholder="问问歌库，例如：Good knows 是谁唱的？" :disabled="assistantLoading" />
-            <button @click="sendAssistantMessage" :disabled="assistantLoading || !assistantInput.trim()">发送</button>
+            <button v-if="assistantLoading" class="stop-generation-btn" @click="stopAssistantGeneration">■ 停止生成</button>
+            <button v-else @click="sendAssistantMessage" :disabled="!assistantInput.trim()">发送</button>
           </div>
         </div>
       </section>
@@ -398,6 +399,8 @@ export default {
       assistantInput: '',
       assistantLoading: false,
       assistantStreamController: null,
+      currentAssistantStreamId: '',
+      assistantCancelledByUser: false,
       assistantModelReady: null,
       assistantProviderName: 'LLM',
       assistantModelName: '',
@@ -1090,7 +1093,10 @@ export default {
       this.assistantMessages.push(userMessage, assistantMessage)
       this.scrollChatToBottom()
       const controller = new AbortController()
+      const streamId = this.createAssistantStreamId()
       this.assistantStreamController = controller
+      this.currentAssistantStreamId = streamId
+      this.assistantCancelledByUser = false
       try {
         const response = await fetch('/api/assistant/chat/stream', {
           method: 'POST',
@@ -1099,7 +1105,7 @@ export default {
             Accept: 'text/event-stream',
             Authorization: localStorage.getItem('token') || ''
           },
-          body: JSON.stringify({ message, conversationId, modelId: this.selectedModelId }),
+          body: JSON.stringify({ message, conversationId, modelId: this.selectedModelId, streamId }),
           signal: controller.signal
         })
         if (!response.ok || !response.body) throw new Error(`流式连接失败（HTTP ${response.status}）`)
@@ -1136,13 +1142,39 @@ export default {
         }
         await this.refreshConversationSummary()
       } catch (err) {
-        const userIndex = this.assistantMessages.indexOf(userMessage)
-        if (userIndex >= 0) this.assistantMessages.splice(userIndex, 2)
-        if (err.name !== 'AbortError') alert(err.message || '连接歌库失败，请确认后端服务已经启动。')
+        if (this.assistantCancelledByUser) {
+          userMessage.streaming = false
+          assistantMessage.streaming = false
+          const partialReply = assistantMessage.content.trim()
+          assistantMessage.content = partialReply
+            ? `${partialReply}\n\n（已停止生成）`
+            : '（已停止生成，尚未生成回答）'
+          await this.refreshConversationSummary().catch(() => {})
+        } else {
+          const userIndex = this.assistantMessages.indexOf(userMessage)
+          if (userIndex >= 0) this.assistantMessages.splice(userIndex, 2)
+          if (err.name !== 'AbortError') alert(err.message || '连接歌库失败，请确认后端服务已经启动。')
+        }
       } finally {
         if (this.assistantStreamController === controller) this.assistantStreamController = null
+        if (this.currentAssistantStreamId === streamId) this.currentAssistantStreamId = ''
+        this.assistantCancelledByUser = false
         this.assistantLoading = false
         this.scrollChatToBottom()
+      }
+    },
+    createAssistantStreamId() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID()
+      return `stream_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`
+    },
+    stopAssistantGeneration() {
+      if (!this.assistantLoading || !this.assistantStreamController) return
+      this.assistantCancelledByUser = true
+      const streamId = this.currentAssistantStreamId
+      this.assistantStreamController.abort()
+      if (streamId) {
+        request.delete(`/assistant/chat/stream/${encodeURIComponent(streamId)}`)
+          .catch(error => console.warn('停止上游模型生成失败:', error))
       }
     },
     async readAssistantSse(response, onEvent) {
@@ -1364,7 +1396,7 @@ export default {
 .assistant-settings-wrap { position: relative; flex: 0 0 auto; }.assistant-settings-btn { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid #e1ddef; border-radius: 10px; color: #756b8c; background: #faf9fd; font-size: 17px; cursor: pointer; transition: .2s ease; }.assistant-settings-btn:hover { border-color: #9d8bd7; color: #664caf; background: #f2effd; }.assistant-settings-menu { position: absolute; top: 45px; right: 0; z-index: 12; width: 225px; padding: 7px; border: 1px solid #e7e2f3; border-radius: 13px; background: #fff; box-shadow: 0 14px 35px rgba(44,35,82,.18); }.assistant-settings-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-radius: 9px; color: #4c4264; background: transparent; font: inherit; text-align: left; cursor: pointer; }.assistant-settings-menu > button:hover { background: #f4f1fd; }.assistant-settings-menu > button > span { display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border-radius: 9px; color: #7256be; background: #ece7fb; font-size: 16px; }.assistant-settings-menu strong, .assistant-settings-menu small { display: block; }.assistant-settings-menu strong { font-size: 13px; }.assistant-settings-menu small { margin-top: 3px; color: #91899f; font-size: 11px; }
 .chat-content { min-width: 0; flex: 1; }.chat-row.has-recommendations { max-width: 92%; }.recommendation-picker { display: grid; grid-template-columns: repeat(3, minmax(170px, 1fr)); gap: 12px; margin-top: 12px; }.recommendation-card { display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px; text-align: left; border: 1px solid #e4e0fb; border-radius: 13px; background: #fbfaff; cursor: pointer; transition: .2s ease; }.recommendation-card:hover { border-color: #8061d7; transform: translateY(-2px); box-shadow: 0 8px 18px rgba(99,77,180,.15); }.recommendation-card img, .recommendation-cover { width: 46px; height: 46px; border-radius: 10px; object-fit: cover; }.recommendation-cover { display: grid; place-items: center; background: linear-gradient(135deg, #7177e9, #8c50bc); color: #fff; font-size: 21px; }.recommendation-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.recommendation-info strong, .recommendation-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recommendation-info strong { color: #322b58; font-size: 13px; }.recommendation-info small, .recommendation-info em { color: #807896; font-size: 11px; font-style: normal; }.recommendation-play { grid-column: 1 / -1; padding: 5px 8px; border-radius: 7px; background: #eeeafd; color: #6f56bd; font-size: 11px; font-weight: 700; text-align: center; }
 .assistant-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 7px; color: #938ca4; font-size: 11px; }.assistant-feedback > button, .feedback-reasons button { padding: 3px 8px; border: 1px solid #e3def2; border-radius: 999px; background: transparent; color: #756b8c; font: inherit; cursor: pointer; }.assistant-feedback button:hover:not(:disabled), .assistant-feedback button.active { border-color: #9b82dc; background: #f1edff; color: #674bb4; }.assistant-feedback button:disabled { cursor: wait; opacity: .55; }.assistant-feedback .feedback-undo { border-color: transparent; color: #a29bad; }.feedback-reasons { flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding-top: 2px; }.feedback-reasons small { margin-right: 2px; color: #aaa3b6; }
-.quick-questions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }.quick-questions button { padding: 7px 11px; border: 1px solid #ddd9f7; border-radius: 20px; color: #705bb8; background: #faf9ff; font-size: 12px; cursor: pointer; }.quick-questions button:hover { border-color: #8e75dc; background: #f0edff; }.chat-input-row { display: flex; gap: 10px; }.chat-input-row input { flex: 1; min-width: 0; padding: 13px 15px; border: 1px solid #e2e0ed; border-radius: 12px; outline: none; font: inherit; }.chat-input-row input:focus { border-color: #7961c9; box-shadow: 0 0 0 3px rgba(121,97,201,.1); }.chat-input-row button { padding: 0 21px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #6c73e9, #8051ba); color: #fff; font-weight: 600; cursor: pointer; }.chat-input-row button:disabled { cursor: not-allowed; opacity: .55; }
+.quick-questions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }.quick-questions button { padding: 7px 11px; border: 1px solid #ddd9f7; border-radius: 20px; color: #705bb8; background: #faf9ff; font-size: 12px; cursor: pointer; }.quick-questions button:hover { border-color: #8e75dc; background: #f0edff; }.chat-input-row { display: flex; gap: 10px; }.chat-input-row input { flex: 1; min-width: 0; padding: 13px 15px; border: 1px solid #e2e0ed; border-radius: 12px; outline: none; font: inherit; }.chat-input-row input:focus { border-color: #7961c9; box-shadow: 0 0 0 3px rgba(121,97,201,.1); }.chat-input-row button { padding: 0 21px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #6c73e9, #8051ba); color: #fff; font-weight: 600; cursor: pointer; }.chat-input-row button:disabled { cursor: not-allowed; opacity: .55; }.chat-input-row .stop-generation-btn { background: linear-gradient(135deg, #6f687c, #4f485e); }
 @media (max-width: 640px) { .main-area { padding: 16px; }.daily-recommendation-header { align-items: flex-start; flex-direction: column; }.refresh-recommendations { width: 100%; justify-content: center; }.assistant-page { margin: 0; }.assistant-intro { padding: 22px; }.assistant-intro h2 { font-size: 24px; }.chat-panel { min-height: 500px; padding: 16px; }.chat-history-toolbar { align-items: flex-start; flex-direction: column; gap: 9px; }.new-conversation-btn { width: 100%; }.conversation-list { width: 100%; }.conversation-item { min-width: 138px; }.chat-messages { min-height: 330px; }.chat-row { max-width: 92%; }.recommendation-picker { grid-template-columns: 1fr; }.quick-questions { overflow-x: auto; flex-wrap: nowrap; }.quick-questions button { white-space: nowrap; } }
 
 .memory-dialog-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: 20px; background: rgba(22,18,48,.58); backdrop-filter: blur(5px); }.memory-dialog { width: min(680px, 100%); max-height: 82vh; overflow-y: auto; padding: 26px; border-radius: 22px; background: #fff; box-shadow: 0 25px 70px rgba(20,14,54,.35); }.memory-dialog header { display: flex; align-items: flex-start; justify-content: space-between; }.memory-dialog header span { color: #7b63c7; font-size: 11px; font-weight: 800; letter-spacing: 1.5px; }.memory-dialog h3 { margin: 5px 0 0; color: #302650; font-size: 24px; }.memory-close { width: 34px; height: 34px; border: 0; border-radius: 50%; color: #766b8b; background: #f1eef8; font-size: 22px; cursor: pointer; }.memory-setting-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 24px; padding: 17px; border: 1px solid #e7e2f4; border-radius: 15px; background: #faf9ff; }.memory-setting-row strong { color: #3a3158; }.memory-setting-row p { margin: 5px 0 0; color: #8a8299; font-size: 13px; }.memory-switch { min-width: 76px; padding: 8px 11px; border: 0; border-radius: 18px; color: #8a6170; background: #f6e8ed; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.memory-switch.enabled { color: #246d54; background: #dff5eb; }.memory-privacy-note { padding: 11px 13px; border-radius: 10px; color: #756d86; background: #f5f3fa; font-size: 12px; line-height: 1.6; }.memory-empty { padding: 42px 15px; color: #948ca3; text-align: center; }.memory-list { display: flex; flex-direction: column; gap: 9px; margin-top: 16px; }.memory-list article { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 14px 15px; border: 1px solid #ece8f5; border-radius: 13px; }.memory-list article.memory-expired, .memory-list article.memory-superseded { background: #fafafa; opacity: .78; }.memory-content { min-width: 0; }.memory-labels { display: flex; align-items: center; gap: 7px; }.memory-list article span { color: #8168c5; font-size: 11px; font-weight: 700; }.memory-labels em { padding: 2px 7px; border-radius: 10px; color: #277258; background: #e1f4ec; font-size: 10px; font-style: normal; }.memory-labels em.expired, .memory-labels em.superseded { color: #756d86; background: #ece9f2; }.memory-list article p { margin: 4px 0 0; color: #3d3650; font-size: 14px; }.memory-list article small { display: block; margin-top: 5px; color: #948ca3; font-size: 11px; }.memory-actions { display: flex; flex-shrink: 0; gap: 6px; }.memory-actions button, .memory-clear { padding: 7px 10px; border: 1px solid #ded8ee; border-radius: 8px; color: #6955a5; background: #fff; cursor: pointer; }.memory-actions .danger, .memory-clear { color: #c25570; }.memory-dialog footer { display: flex; justify-content: flex-end; margin-top: 20px; padding-top: 16px; border-top: 1px solid #eeeaf5; }.memory-clear:disabled { cursor: not-allowed; opacity: .45; }

@@ -2,7 +2,7 @@ import logging
 import json
 import time
 from queue import Queue
-from threading import Thread
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 from typing import Iterator, List, Tuple
 
@@ -39,6 +39,12 @@ from .tools.models import ToolCatalogResponse
 
 app = FastAPI(title="MusicHub Agent Service", version="0.1.0")
 LOGGER = logging.getLogger(__name__)
+ACTIVE_STREAMS: dict[str, Event] = {}
+ACTIVE_STREAMS_LOCK = Lock()
+
+
+class AgentStreamCancelled(Exception):
+    pass
 
 
 def sse_event(event: str, data: dict) -> str:
@@ -319,6 +325,13 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
         )
         save_failed_audit(payload, model_name, trace_id, started, state, "INVALID_REQUEST")
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except AgentStreamCancelled as error:
+        LOGGER.info("Agent stream cancelled: traceId=%s", trace_id)
+        save_failed_audit(payload, model_name, trace_id, started, state, "CLIENT_CANCELLED")
+        raise HTTPException(status_code=499, detail={
+            "code": "CLIENT_CANCELLED",
+            "message": "用户已停止生成",
+        }) from error
     except Exception as error:
         error_code, safe_message = classify_provider_error(error)
         LOGGER.exception(
@@ -346,11 +359,17 @@ def chat_stream(payload: AgentChatRequest) -> StreamingResponse:
             "model": payload.options.model or "",
         })
         events: Queue[Tuple[str, dict]] = Queue()
+        cancelled = Event()
+        with ACTIVE_STREAMS_LOCK:
+            ACTIVE_STREAMS[payload.requestId] = cancelled
+
+        def forward_delta(content: str) -> None:
+            if cancelled.is_set():
+                raise AgentStreamCancelled()
+            events.put(("delta", {"content": content}))
 
         def run_chat() -> None:
-            token = set_model_stream_sink(
-                lambda content: events.put(("delta", {"content": content}))
-            )
+            token = set_model_stream_sink(forward_delta)
             try:
                 result = chat(payload)
                 events.put(("done", result.model_dump()))
@@ -371,6 +390,8 @@ def chat_stream(payload: AgentChatRequest) -> StreamingResponse:
                 }))
             finally:
                 reset_model_stream_sink(token)
+                with ACTIVE_STREAMS_LOCK:
+                    ACTIVE_STREAMS.pop(payload.requestId, None)
 
         Thread(target=run_chat, name="agent-sse-" + payload.requestId, daemon=True).start()
         while True:
@@ -388,6 +409,17 @@ def chat_stream(payload: AgentChatRequest) -> StreamingResponse:
             "Connection": "keep-alive",
         },
     )
+
+
+@app.delete("/v1/chat/stream/{request_id}")
+def cancel_chat_stream(request_id: str) -> dict:
+    if not request_id or len(request_id) > 100:
+        raise HTTPException(status_code=400, detail="Invalid requestId")
+    with ACTIVE_STREAMS_LOCK:
+        cancelled = ACTIVE_STREAMS.get(request_id)
+        if cancelled is not None:
+            cancelled.set()
+    return {"cancelled": cancelled is not None, "requestId": request_id}
 
 
 @app.get("/v1/audit/traces/{trace_id}", response_model=ExecutionAuditRecord)

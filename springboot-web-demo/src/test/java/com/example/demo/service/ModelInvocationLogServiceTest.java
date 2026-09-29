@@ -9,8 +9,11 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.startsWith;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class ModelInvocationLogServiceTest {
 
@@ -53,5 +56,49 @@ class ModelInvocationLogServiceTest {
         ModelInvocationLogService service = new ModelInvocationLogService(mock(JdbcTemplate.class));
         assertThrows(IllegalArgumentException.class,
                 () -> service.search(7, "", "", "unexpected", 100));
+    }
+
+    @Test
+    void recordsCompletedStreamPerformanceAgainstTrace() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.update(startsWith("UPDATE llm_invocation_log SET first_token_ms="),
+                any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+        ModelInvocationLogService service = new ModelInvocationLogService(jdbc);
+
+        service.finishStream("trace-stream", "qwen", "qwen-plus", 320, 1450, 12, 96,
+                1, 800, 60, 0.00294d, "completed");
+
+        ArgumentCaptor<Object> values = ArgumentCaptor.forClass(Object.class);
+        verify(jdbc).update(startsWith("UPDATE llm_invocation_log SET first_token_ms="),
+                values.capture(), values.capture(), values.capture(), values.capture(),
+                values.capture(), values.capture(), values.capture());
+        assertEquals(320L, values.getAllValues().get(0));
+        assertEquals(12, values.getAllValues().get(1));
+        assertEquals(96, values.getAllValues().get(2));
+        assertEquals("completed", values.getAllValues().get(3));
+        assertEquals(0, values.getAllValues().get(4));
+        assertEquals(1450L, values.getAllValues().get(5));
+        assertEquals("trace-stream", values.getAllValues().get(6));
+    }
+
+    @Test
+    void storesInterruptedUsageAsAnExplicitEstimate() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        ModelInvocationLogService service = new ModelInvocationLogService(jdbc);
+
+        service.finishStream("trace-cancel", "deepseek", "deepseek-chat", 480, 2100, 8, 120,
+                1, 720, 72, 0.002808d, "cancelled");
+
+        String insertSql = mockingDetails(jdbc).getInvocations().stream()
+                .map(invocation -> {
+                    Object sql = invocation.getArgument(0);
+                    return String.valueOf(sql);
+                })
+                .filter(sql -> sql.startsWith("INSERT INTO llm_invocation_log"))
+                .findFirst().orElseThrow(AssertionError::new);
+        assertEquals(18, insertSql.chars().filter(character -> character == '?').count());
+        verify(jdbc).update(startsWith("INSERT INTO llm_invocation_log"),
+                any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any(), any(), any(), any(), any(), any(), any(), any());
     }
 }

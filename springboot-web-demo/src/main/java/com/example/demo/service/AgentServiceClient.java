@@ -101,6 +101,29 @@ public class AgentServiceClient {
         return code == null || code.trim().isEmpty() ? "AGENT_SERVICE_UNAVAILABLE" : code;
     }
 
+    public boolean cancelChat(String requestId) {
+        if (baseUrl == null || baseUrl.trim().isEmpty() || requestId == null || requestId.trim().isEmpty()) {
+            return false;
+        }
+        HttpURLConnection connection = null;
+        try {
+            String encoded = URLEncoder.encode(requestId.trim(), StandardCharsets.UTF_8.name());
+            URL endpoint = new URL(baseUrl.replaceAll("/+$", "") + "/v1/chat/stream/" + encoded);
+            connection = (HttpURLConnection) endpoint.openConnection();
+            connection.setRequestMethod("DELETE");
+            connection.setConnectTimeout(1000);
+            connection.setReadTimeout(2000);
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) return false;
+            JSONObject result = JSON.parseObject(readAll(connection.getInputStream()));
+            return result != null && result.getBooleanValue("cancelled");
+        } catch (Exception ignored) {
+            return false;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
     public AgentResult chatNativeEvaluation(String question, Integer userId, String strategy, String costBudget) {
         return chatNativeEvaluation(question, userId, strategy, costBudget, getConfiguredProvider(), null);
     }

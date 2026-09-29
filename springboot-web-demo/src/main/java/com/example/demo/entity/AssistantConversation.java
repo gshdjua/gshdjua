@@ -9,7 +9,7 @@ public class AssistantConversation {
     private String title;
     private Integer currentAudioId;
     private String selectedModelId;
-    private Integer messageCount;
+    private Integer questionCount;
     private Date createTime;
     private Date updateTime;
     private List<AssistantMessage> messages;
@@ -24,8 +24,8 @@ public class AssistantConversation {
     public void setCurrentAudioId(Integer currentAudioId) { this.currentAudioId = currentAudioId; }
     public String getSelectedModelId() { return selectedModelId; }
     public void setSelectedModelId(String selectedModelId) { this.selectedModelId = selectedModelId; }
-    public Integer getMessageCount() { return messageCount; }
-    public void setMessageCount(Integer messageCount) { this.messageCount = messageCount; }
+    public Integer getQuestionCount() { return questionCount; }
+    public void setQuestionCount(Integer questionCount) { this.questionCount = questionCount; }
     public Date getCreateTime() { return createTime; }
     public void setCreateTime(Date createTime) { this.createTime = createTime; }
     public Date getUpdateTime() { return updateTime; }
