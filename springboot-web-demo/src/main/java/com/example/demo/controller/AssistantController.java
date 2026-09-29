@@ -106,8 +106,34 @@ public class AssistantController {
         DeepSeekMusicAgent.ReplyResult replyResult = deepSeekMusicAgent.replyWithResult(
                 messageForAgent, userId, history, conversationId, memoryRequestId,
                 selectedModel.getProvider(), selectedModel.getModel());
+        recordModelAttempt(selectedModel, replyResult);
+
+        LlmModelCatalogService.ModelConfig fallbackModel = null;
+        DeepSeekMusicAgent.ReplyResult requestedAttempt = replyResult;
+        String effectiveMemoryRequestId = memoryRequestId;
+        if ("local_fallback".equals(replyResult.getExecutionPath())) {
+            fallbackModel = llmModelCatalogService.resolveHealthyFallback(selectedModel.getId()).orElse(null);
+            if (fallbackModel != null) {
+                effectiveMemoryRequestId = memoryRequestId + "-fallback";
+                DeepSeekMusicAgent.ReplyResult fallbackAttempt = deepSeekMusicAgent.replyWithResult(
+                        messageForAgent, userId, history, conversationId, effectiveMemoryRequestId,
+                        fallbackModel.getProvider(), fallbackModel.getModel());
+                recordModelAttempt(fallbackModel, fallbackAttempt);
+                replyResult = DeepSeekMusicAgent.ReplyResult.afterFailover(requestedAttempt, fallbackAttempt);
+            }
+        }
+
         String reply = replyResult.getReply();
-        Object memoryCapture = agentMemoryClient.capture(userId, conversationId, memoryRequestId, message);
+        if (fallbackModel != null) {
+            String reason = fallbackReasonLabel(requestedAttempt.getFallbackReason());
+            if ("model_fallback".equals(replyResult.getExecutionPath())) {
+                reply = "你选择的 " + selectedModel.getDisplayName() + " 暂时不可用（" + reason
+                        + "），本次已切换至 " + fallbackModel.getDisplayName() + "。\n\n" + reply;
+            } else {
+                reply = "你选择的模型与备用模型当前均不可用，本次已使用本地歌库回答。\n\n" + reply;
+            }
+        }
+        Object memoryCapture = agentMemoryClient.capture(userId, conversationId, effectiveMemoryRequestId, message);
         if (memoryCapture == null && !reply.contains("Agent Service 当前不可用")) {
             reply += "\n\n（Agent 记忆服务当前不可用，本轮长期偏好可能未保存。）";
         }
@@ -115,14 +141,6 @@ public class AssistantController {
         assistantConversationMapper.insertMessage(assistantMessage);
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
         assistantMessage.setPromptVersion(replyResult.getPromptVersion());
-        promptOnlineMetricsService.record(replyResult.getPromptVersion(), replyResult.getRequestedProvider(), replyResult.getRequestedModel(),
-                selectedModel.getInputPrice(), selectedModel.getOutputPrice(), replyResult.getModelCalls(),
-                replyResult.isSuccess(), replyResult.getInputTokens(), replyResult.getOutputTokens(),
-                replyResult.getLatencyMs());
-        if (replyResult.getModelCalls() > 0) {
-            llmModelCatalogService.recordInvocationHealth(selectedModel.getId(), replyResult.isSuccess(), replyResult.getLatencyMs());
-        }
-
         if ("新对话".equals(conversation.getTitle())) {
             assistantConversationMapper.updateTitle(conversationId, userId, message.substring(0, Math.min(message.length(), 18)));
         } else {
@@ -142,7 +160,33 @@ public class AssistantController {
         data.put("actualModel", replyResult.getModel());
         data.put("executionPath", replyResult.getExecutionPath());
         data.put("fallbackReason", replyResult.getFallbackReason());
+        data.put("retryCount", replyResult.getRetryCount());
+        data.put("fallbackCount", replyResult.getFallbackCount());
+        data.put("fallbackModelId", fallbackModel == null ? "" : fallbackModel.getId());
+        data.put("fallbackModelName", fallbackModel == null ? "" : fallbackModel.getDisplayName());
+        data.put("requestedTraceId", memoryRequestId);
+        data.put("fallbackTraceId", fallbackModel == null ? "" : effectiveMemoryRequestId);
         return result(200, "success", data);
+    }
+
+    private void recordModelAttempt(LlmModelCatalogService.ModelConfig model,
+                                    DeepSeekMusicAgent.ReplyResult attempt) {
+        promptOnlineMetricsService.record(attempt.getPromptVersion(), model.getProvider(), model.getModel(),
+                model.getInputPrice(), model.getOutputPrice(), attempt.getModelCalls(), attempt.isSuccess(),
+                attempt.getInputTokens(), attempt.getOutputTokens(), attempt.getLatencyMs());
+        if (attempt.getModelCalls() > 0) {
+            llmModelCatalogService.recordInvocationHealth(model.getId(), attempt.isSuccess(),
+                    attempt.getLatencyMs(), attempt.getFallbackReason());
+        }
+    }
+
+    private String fallbackReasonLabel(String code) {
+        if ("AUTHENTICATION_FAILED".equals(code)) return "认证失败";
+        if ("MODEL_NOT_FOUND".equals(code)) return "模型不存在";
+        if ("RATE_LIMITED".equals(code)) return "请求限流";
+        if ("TIMEOUT".equals(code)) return "调用超时";
+        if ("EMPTY_RESPONSE".equals(code)) return "模型返回空内容";
+        return "模型服务异常";
     }
 
     @PutMapping("/messages/{messageId}/feedback")

@@ -11,6 +11,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -23,6 +24,8 @@ import java.util.UUID;
 
 @Service
 public class AgentServiceClient {
+
+    private final ThreadLocal<String> lastFailureCode = new ThreadLocal<>();
 
     @Value("${agent-service.base-url:http://127.0.0.1:8100}")
     private String baseUrl;
@@ -48,6 +51,7 @@ public class AgentServiceClient {
 
     public AgentResult chat(JSONArray messages, String provider, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId, String requestId, String promptVersion) {
+        lastFailureCode.remove();
         if (baseUrl == null || baseUrl.trim().isEmpty()) return null;
         try {
             JSONObject options = new JSONObject();
@@ -68,10 +72,25 @@ public class AgentServiceClient {
             metadata.put("userMessage", userMessage);
             if (promptVersion != null) metadata.put("promptVersion", promptVersion);
             request.put("metadata", metadata);
-            return sendChatRequest(request);
+            AgentResult result = sendChatRequest(request);
+            if (result == null) lastFailureCode.set("EMPTY_RESPONSE");
+            return result;
+        } catch (AgentCallException exception) {
+            lastFailureCode.set(exception.getCode());
+            return null;
+        } catch (SocketTimeoutException exception) {
+            lastFailureCode.set("TIMEOUT");
+            return null;
         } catch (Exception ignored) {
+            lastFailureCode.set("AGENT_SERVICE_UNAVAILABLE");
             return null;
         }
+    }
+
+    public String consumeLastFailureCode() {
+        String code = lastFailureCode.get();
+        lastFailureCode.remove();
+        return code == null || code.trim().isEmpty() ? "AGENT_SERVICE_UNAVAILABLE" : code;
     }
 
     public AgentResult chatNativeEvaluation(String question, Integer userId, String strategy, String costBudget) {
@@ -215,11 +234,31 @@ public class AgentServiceClient {
             try (OutputStream output = connection.getOutputStream()) {
                 output.write(JSON.toJSONString(request).getBytes(StandardCharsets.UTF_8));
             }
-            if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) return null;
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) {
+                throw new AgentCallException(parseAgentErrorCode(readAll(connection.getErrorStream()), status));
+            }
             return parseAgentResult(readAll(connection.getInputStream()));
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    static String parseAgentErrorCode(String content, int status) {
+        try {
+            JSONObject response = JSON.parseObject(content);
+            Object detail = response == null ? null : response.get("detail");
+            if (detail instanceof JSONObject) {
+                String code = ((JSONObject) detail).getString("code");
+                if (code != null && !code.trim().isEmpty()) return code.trim();
+            }
+        } catch (Exception ignored) {
+        }
+        if (status == 401 || status == 403) return "AUTHENTICATION_FAILED";
+        if (status == 404) return "MODEL_NOT_FOUND";
+        if (status == 429) return "RATE_LIMITED";
+        if (status >= 500) return "PROVIDER_UNAVAILABLE";
+        return "INVALID_REQUEST";
     }
 
     private static String normalizeStrategy(String value) {
@@ -386,5 +425,16 @@ public class AgentServiceClient {
         public List<Map<String, Object>> getToolExecutions() { return toolExecutions; }
         public String getProvider() { return provider; }
         public String getModel() { return model; }
+    }
+
+    private static final class AgentCallException extends Exception {
+        private final String code;
+
+        private AgentCallException(String code) {
+            super(code);
+            this.code = code;
+        }
+
+        private String getCode() { return code; }
     }
 }

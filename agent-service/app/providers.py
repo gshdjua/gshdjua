@@ -18,6 +18,21 @@ from .config import (
 )
 
 
+def classify_provider_error(error: Exception) -> tuple[str, str]:
+    """Return a stable, credential-safe error classification for provider failures."""
+    name = error.__class__.__name__.lower()
+    status_code = getattr(error, "status_code", None)
+    if status_code in (401, 403) or "authentication" in name or "permission" in name:
+        return "AUTHENTICATION_FAILED", "API Key 无效或无权访问该模型"
+    if status_code == 404 or "notfound" in name:
+        return "MODEL_NOT_FOUND", "模型名称或接口地址不存在"
+    if status_code == 429 or "ratelimit" in name:
+        return "RATE_LIMITED", "请求受限，请检查额度或稍后重试"
+    if "timeout" in name:
+        return "TIMEOUT", "模型连接超时"
+    return "PROVIDER_UNAVAILABLE", "模型服务暂时不可用，请检查 Base URL、模型名称和服务状态"
+
+
 @dataclass(frozen=True)
 class LlmModelRequest:
     """Provider-neutral options needed to construct one chat model client."""
@@ -179,7 +194,7 @@ class LlmProviderRegistry:
                 "checkedAt": checked_at,
             }
         except Exception as error:
-            code, message = self._safe_health_error(error)
+            code, message = classify_provider_error(error)
             return {
                 "provider": provider.name,
                 "model": model_name,
@@ -191,20 +206,5 @@ class LlmProviderRegistry:
                 "errorMessage": message,
                 "checkedAt": checked_at,
             }
-
-    @staticmethod
-    def _safe_health_error(error: Exception) -> tuple[str, str]:
-        name = error.__class__.__name__.lower()
-        status_code = getattr(error, "status_code", None)
-        if status_code == 401 or "authentication" in name:
-            return "AUTHENTICATION_FAILED", "API Key 无效或无权访问该模型"
-        if status_code == 404 or "notfound" in name:
-            return "MODEL_NOT_FOUND", "模型名称或接口地址不存在"
-        if status_code == 429 or "ratelimit" in name:
-            return "RATE_LIMITED", "请求受限，请检查额度或稍后重试"
-        if "timeout" in name:
-            return "TIMEOUT", "模型连接超时"
-        return "PROVIDER_UNAVAILABLE", "模型服务暂时不可用，请检查 Base URL、模型名称和服务状态"
-
 
 llm_provider_registry = LlmProviderRegistry([DeepSeekProvider(), QwenProvider()])

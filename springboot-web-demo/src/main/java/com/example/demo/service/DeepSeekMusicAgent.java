@@ -198,7 +198,8 @@ public class DeepSeekMusicAgent {
             int modelCalls = metrics == null ? 0 : metrics.modelCalls;
             boolean modelSuccess = metrics == null || modelCalls == 0 || metrics.success;
             String executionPath = modelCalls == 0 ? "local" : modelSuccess ? "model" : "local_fallback";
-            String fallbackReason = modelCalls > 0 && !modelSuccess ? "MODEL_INVOCATION_FAILED" : "";
+            String fallbackReason = modelCalls > 0 && !modelSuccess
+                    ? nonEmpty(metrics == null ? "" : metrics.failureReason, "MODEL_INVOCATION_FAILED") : "";
             return new ReplyResult(reply, currentRecommendationOutcome.get(),
                     lastPromptVersion.get() == null ? "none" : lastPromptVersion.get(),
                     modelCalls, modelSuccess,
@@ -441,8 +442,9 @@ public class DeepSeekMusicAgent {
     }
 
     private boolean isSelectedModelConfigured() {
-        String provider = currentProvider.get() == null ? getConfiguredProviderName() : currentProvider.get();
-        return !"deepseek".equalsIgnoreCase(provider) || !getApiKey().isEmpty();
+        // Provider credentials are owned by Agent Service. Always attempt the user-selected
+        // catalog model so an unconfigured provider can be classified and safely failed over.
+        return true;
     }
 
     public String getConfiguredModelName() {
@@ -548,7 +550,11 @@ public class DeepSeekMusicAgent {
             return answer;
         }
 
-        if (!"deepseek".equalsIgnoreCase(providerName)) {
+        String agentFailureCode = agentServiceClient.consumeLastFailureCode();
+        if (metrics != null) metrics.failureReason = agentFailureCode;
+
+        if (!"deepseek".equalsIgnoreCase(providerName)
+                || !"AGENT_SERVICE_UNAVAILABLE".equals(agentFailureCode)) {
             throw new IllegalStateException("所选 Provider 的 Agent 服务当前不可用");
         }
 
@@ -573,7 +579,11 @@ public class DeepSeekMusicAgent {
         InputStream responseStream = connection.getResponseCode() >= 200 && connection.getResponseCode() < 300
                 ? connection.getInputStream() : connection.getErrorStream();
         String response = readAll(responseStream);
-        if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) return "";
+        int responseCode = connection.getResponseCode();
+        if (responseCode < 200 || responseCode >= 300) {
+            if (metrics != null) metrics.failureReason = providerFailureCode(responseCode);
+            return "";
+        }
 
         JSONObject responseJson = JSON.parseObject(response);
         JSONObject usage = responseJson.getJSONObject("usage");
@@ -584,11 +594,17 @@ public class DeepSeekMusicAgent {
                     usage.getIntValue("total_tokens")));
         }
         JSONArray choices = responseJson.getJSONArray("choices");
-        if (choices == null || choices.isEmpty()) return "";
+        if (choices == null || choices.isEmpty()) {
+            if (metrics != null) metrics.failureReason = "EMPTY_RESPONSE";
+            return "";
+        }
         JSONObject firstChoice = choices.getJSONObject(0);
         JSONObject responseMessage = firstChoice.getJSONObject("message");
         String answer = responseMessage == null ? "" : responseMessage.getString("content");
-        if (answer == null || answer.trim().isEmpty()) return "";
+        if (answer == null || answer.trim().isEmpty()) {
+            if (metrics != null) metrics.failureReason = "EMPTY_RESPONSE";
+            return "";
+        }
         if (metrics != null) metrics.success = true;
         return "Agent Service 当前不可用，已临时直连 DeepSeek；本轮长期记忆可能未保存。\n"
                 + ensureEvidenceReferences(answer, evidenceContext);
@@ -1007,6 +1023,18 @@ public class DeepSeekMusicAgent {
         return normalized;
     }
 
+    private static String nonEmpty(String value, String fallback) {
+        return value == null || value.trim().isEmpty() ? fallback : value.trim();
+    }
+
+    private static String providerFailureCode(int status) {
+        if (status == 401 || status == 403) return "AUTHENTICATION_FAILED";
+        if (status == 404) return "MODEL_NOT_FOUND";
+        if (status == 429) return "RATE_LIMITED";
+        if (status >= 500) return "PROVIDER_UNAVAILABLE";
+        return "MODEL_INVOCATION_FAILED";
+    }
+
     public static class ReplyResult {
         private final String reply;
         private final MusicLibraryAgent.RecommendationOutcome recommendationOutcome;
@@ -1022,6 +1050,8 @@ public class DeepSeekMusicAgent {
         private final String requestedModel;
         private final String executionPath;
         private final String fallbackReason;
+        private final int retryCount;
+        private final int fallbackCount;
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
             this(reply, recommendationOutcome, "none");
@@ -1035,20 +1065,29 @@ public class DeepSeekMusicAgent {
                            String promptVersion, int modelCalls, boolean success,
                            int inputTokens, int outputTokens, long latencyMs) {
             this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
-                    latencyMs, "none", "none", "none", "none", modelCalls > 0 ? "model" : "local", "");
+                    latencyMs, "none", "none", "none", "none", modelCalls > 0 ? "model" : "local", "", 0, 0);
         }
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
                            String promptVersion, int modelCalls, boolean success,
                            int inputTokens, int outputTokens, long latencyMs, String provider, String model) {
             this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
-                    latencyMs, provider, model, provider, model, modelCalls > 0 ? "model" : "local", "");
+                    latencyMs, provider, model, provider, model, modelCalls > 0 ? "model" : "local", "", 0, 0);
         }
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
                            String promptVersion, int modelCalls, boolean success,
                            int inputTokens, int outputTokens, long latencyMs, String provider, String model,
                            String requestedProvider, String requestedModel, String executionPath, String fallbackReason) {
+            this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
+                    latencyMs, provider, model, requestedProvider, requestedModel, executionPath, fallbackReason, 0, 0);
+        }
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
+                           String promptVersion, int modelCalls, boolean success,
+                           int inputTokens, int outputTokens, long latencyMs, String provider, String model,
+                           String requestedProvider, String requestedModel, String executionPath, String fallbackReason,
+                           int retryCount, int fallbackCount) {
             this.reply = reply;
             this.recommendationOutcome = recommendationOutcome;
             this.promptVersion = promptVersion;
@@ -1063,6 +1102,29 @@ public class DeepSeekMusicAgent {
             this.requestedModel = requestedModel;
             this.executionPath = executionPath;
             this.fallbackReason = fallbackReason;
+            this.retryCount = retryCount;
+            this.fallbackCount = fallbackCount;
+        }
+
+        public static ReplyResult afterFailover(ReplyResult requested, ReplyResult fallback) {
+            boolean fallbackSucceeded = fallback.modelCalls > 0 && fallback.success;
+            return new ReplyResult(
+                    fallback.reply,
+                    fallback.recommendationOutcome,
+                    fallback.promptVersion,
+                    requested.modelCalls + fallback.modelCalls,
+                    fallbackSucceeded,
+                    requested.inputTokens + fallback.inputTokens,
+                    requested.outputTokens + fallback.outputTokens,
+                    requested.latencyMs + fallback.latencyMs,
+                    fallbackSucceeded ? fallback.provider : "local",
+                    fallbackSucceeded ? fallback.model : "local",
+                    requested.requestedProvider,
+                    requested.requestedModel,
+                    fallbackSucceeded ? "model_fallback" : "local_fallback",
+                    nonEmpty(requested.fallbackReason, "MODEL_INVOCATION_FAILED"),
+                    0,
+                    1);
         }
 
         public String getReply() { return reply; }
@@ -1079,6 +1141,8 @@ public class DeepSeekMusicAgent {
         public String getRequestedModel() { return requestedModel; }
         public String getExecutionPath() { return executionPath; }
         public String getFallbackReason() { return fallbackReason; }
+        public int getRetryCount() { return retryCount; }
+        public int getFallbackCount() { return fallbackCount; }
 
         public List<Audio> getRecommendations() {
             return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();
@@ -1160,5 +1224,6 @@ public class DeepSeekMusicAgent {
     private static final class ModelInvocationMetrics {
         private int modelCalls;
         private boolean success;
+        private String failureReason = "";
     }
 }

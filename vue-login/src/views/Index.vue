@@ -1091,9 +1091,16 @@ export default {
         if (selected && res.data.data.executionPath === 'model') {
           this.$set(selected, 'healthStatus', 'available')
           this.$set(selected, 'healthErrorMessage', '')
-        } else if (selected && res.data.data.executionPath === 'local_fallback') {
+        } else if (selected && ['model_fallback', 'local_fallback'].includes(res.data.data.executionPath)) {
           this.$set(selected, 'healthStatus', 'unavailable')
-          this.$set(selected, 'healthErrorMessage', '最近一次模型调用失败，回答已使用本地兜底')
+          this.$set(selected, 'healthErrorMessage', `最近一次调用失败：${res.data.data.fallbackReason || 'MODEL_INVOCATION_FAILED'}`)
+        }
+        if (res.data.data.executionPath === 'model_fallback' && res.data.data.fallbackModelId) {
+          const fallback = this.availableModels.find(item => item.id === res.data.data.fallbackModelId)
+          if (fallback) {
+            this.$set(fallback, 'healthStatus', 'available')
+            this.$set(fallback, 'healthErrorMessage', '')
+          }
         }
         await this.refreshConversationSummary()
       } catch (err) {

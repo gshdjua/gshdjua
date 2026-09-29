@@ -27,7 +27,7 @@ from .contracts import (
 )
 from .graph import agent_graph
 from .memory import memory_repository
-from .providers import llm_provider_registry
+from .providers import classify_provider_error, llm_provider_registry
 from .strategies import strategy_router
 from .tools import tool_registry
 from .tools.models import ToolCatalogResponse
@@ -305,14 +305,18 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
         save_failed_audit(payload, model_name, trace_id, started, state, "INVALID_REQUEST")
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:
+        error_code, safe_message = classify_provider_error(error)
         LOGGER.exception(
             "Agent model invocation failed: provider=%s model=%s traceId=%s",
             payload.options.provider,
             model_name,
             trace_id,
         )
-        save_failed_audit(payload, model_name, trace_id, started, state, "MODEL_INVOCATION_FAILED")
-        raise HTTPException(status_code=502, detail="Model invocation failed: " + str(error)) from error
+        save_failed_audit(payload, model_name, trace_id, started, state, error_code)
+        raise HTTPException(status_code=502, detail={
+            "code": error_code,
+            "message": safe_message,
+        }) from error
 
 
 @app.get("/v1/audit/traces/{trace_id}", response_model=ExecutionAuditRecord)

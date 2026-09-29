@@ -61,4 +61,13 @@ class AgentServiceClientTest {
         assertFalse(tool.containsKey("arguments"));
         assertFalse(tool.containsKey("data"));
     }
+
+    @Test
+    void parsesStructuredProviderFailureWithoutExposingErrorDetails() {
+        String response = "{\"detail\":{\"code\":\"RATE_LIMITED\",\"message\":\"safe\"}}";
+
+        assertEquals("RATE_LIMITED", AgentServiceClient.parseAgentErrorCode(response, 502));
+        assertEquals("AUTHENTICATION_FAILED", AgentServiceClient.parseAgentErrorCode("", 401));
+        assertEquals("PROVIDER_UNAVAILABLE", AgentServiceClient.parseAgentErrorCode("not-json", 503));
+    }
 }

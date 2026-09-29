@@ -9,6 +9,7 @@ import javax.annotation.PostConstruct;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class LlmModelCatalogService {
@@ -88,9 +89,14 @@ public class LlmModelCatalogService {
     }
 
     public void recordInvocationHealth(String id, boolean success, long latencyMs) {
+        recordInvocationHealth(id, success, latencyMs, success ? "" : "MODEL_INVOCATION_FAILED");
+    }
+
+    public void recordInvocationHealth(String id, boolean success, long latencyMs, String errorCode) {
+        String safeCode = success ? "" : normalize(errorCode, "MODEL_INVOCATION_FAILED");
         jdbc.update("UPDATE llm_model_config SET health_status=?,health_error_code=?,health_error_message=?,health_latency_ms=?,health_checked_at=CURRENT_TIMESTAMP WHERE id=?",
-                success ? "available" : "unavailable", success ? "" : "MODEL_INVOCATION_FAILED",
-                success ? "" : "最近一次模型调用失败，回答已使用本地兜底", Math.max(0, Math.min(Integer.MAX_VALUE, latencyMs)), id);
+                success ? "available" : "unavailable", safeCode,
+                success ? "" : failureMessage(safeCode), Math.max(0, Math.min(Integer.MAX_VALUE, latencyMs)), id);
     }
 
     @Transactional
@@ -128,6 +134,15 @@ public class LlmModelCatalogService {
                                 + "FROM llm_model_config WHERE enabled=1 AND id=?", this::map, id.trim());
         if (rows.isEmpty()) throw new IllegalArgumentException("模型不存在或已停用");
         return rows.get(0);
+    }
+
+    public Optional<ModelConfig> resolveHealthyFallback(String excludedId) {
+        List<ModelConfig> rows = jdbc.query(
+                "SELECT id,provider,model_name,display_name,is_default,input_price_per_million,output_price_per_million "
+                        + "FROM llm_model_config WHERE enabled=1 AND id<>? AND health_status='available' "
+                        + "ORDER BY is_default DESC,sort_order,id LIMIT 1",
+                this::map, excludedId == null ? "" : excludedId.trim());
+        return rows.stream().findFirst();
     }
 
     private ModelConfig map(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
@@ -168,6 +183,14 @@ public class LlmModelCatalogService {
     private boolean bool(Object value, boolean fallback) { return value == null ? fallback : value instanceof Boolean ? (Boolean)value : Boolean.parseBoolean(text(value)); }
     private double number(Object value) { try { return Math.max(0d, Double.parseDouble(text(value))); } catch(Exception ignored){ return 0d; } }
     private int integer(Object value, int fallback) { try { return Integer.parseInt(text(value)); } catch(Exception ignored){ return fallback; } }
+    private String failureMessage(String code) {
+        if ("AUTHENTICATION_FAILED".equals(code)) return "API Key 无效或无权访问该模型，已尝试备用模型";
+        if ("MODEL_NOT_FOUND".equals(code)) return "模型名称或接口地址不存在，已尝试备用模型";
+        if ("RATE_LIMITED".equals(code)) return "模型请求受限，已尝试备用模型";
+        if ("TIMEOUT".equals(code)) return "模型调用超时，已尝试备用模型";
+        if ("EMPTY_RESPONSE".equals(code)) return "模型返回空内容，已尝试备用模型";
+        return "模型服务暂时不可用，已尝试备用模型";
+    }
 
     public static final class ModelConfig {
         private final String id, provider, model, displayName;

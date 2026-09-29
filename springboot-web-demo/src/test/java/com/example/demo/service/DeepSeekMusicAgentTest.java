@@ -27,6 +27,27 @@ import static org.mockito.ArgumentMatchers.eq;
 
 class DeepSeekMusicAgentTest {
 
+    @Test
+    void combinesRequestedAndFallbackAttemptsWithoutChangingUserChoice() {
+        DeepSeekMusicAgent.ReplyResult requested = new DeepSeekMusicAgent.ReplyResult(
+                "本地兜底", null, "music_answer:v1", 1, false, 0, 0, 120,
+                "local", "local", "qwen", "qwen-plus", "local_fallback", "RATE_LIMITED");
+        DeepSeekMusicAgent.ReplyResult fallback = new DeepSeekMusicAgent.ReplyResult(
+                "备用模型回答", null, "music_answer:v1", 1, true, 100, 20, 80,
+                "deepseek", "deepseek-chat", "deepseek", "deepseek-chat", "model", "");
+
+        DeepSeekMusicAgent.ReplyResult result = DeepSeekMusicAgent.ReplyResult.afterFailover(requested, fallback);
+
+        assertEquals("qwen", result.getRequestedProvider());
+        assertEquals("qwen-plus", result.getRequestedModel());
+        assertEquals("deepseek", result.getProvider());
+        assertEquals("deepseek-chat", result.getModel());
+        assertEquals("model_fallback", result.getExecutionPath());
+        assertEquals("RATE_LIMITED", result.getFallbackReason());
+        assertEquals(2, result.getModelCalls());
+        assertEquals(1, result.getFallbackCount());
+    }
+
     private final DeepSeekMusicAgent agent = new DeepSeekMusicAgent();
 
     @Test
