@@ -92,6 +92,7 @@ class DeepSeekProvider(LlmProvider):
             temperature=request.temperature,
             timeout=request.timeout_seconds,
             max_retries=0,
+            stream_usage=True,
         )
 
     def public_status(self) -> Dict[str, object]:
@@ -124,6 +125,7 @@ class QwenProvider(LlmProvider):
             temperature=request.temperature,
             timeout=request.timeout_seconds,
             max_retries=0,
+            stream_usage=True,
         )
 
     def public_status(self) -> Dict[str, object]:

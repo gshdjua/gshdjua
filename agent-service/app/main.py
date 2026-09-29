@@ -1,9 +1,13 @@
 import logging
+import json
 import time
+from queue import Queue
+from threading import Thread
 from types import SimpleNamespace
-from typing import List
+from typing import Iterator, List, Tuple
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .audit import audit_repository
@@ -25,7 +29,7 @@ from .contracts import (
     TokenUsage,
     ToolExecutionAudit,
 )
-from .graph import agent_graph
+from .graph import agent_graph, reset_model_stream_sink, set_model_stream_sink
 from .memory import memory_repository
 from .providers import classify_provider_error, llm_provider_registry
 from .strategies import strategy_router
@@ -35,6 +39,17 @@ from .tools.models import ToolCatalogResponse
 
 app = FastAPI(title="MusicHub Agent Service", version="0.1.0")
 LOGGER = logging.getLogger(__name__)
+
+
+def sse_event(event: str, data: dict) -> str:
+    """Encode one SSE event without allowing payload newlines to break framing."""
+    return "event: " + event + "\ndata: " + json.dumps(data, ensure_ascii=False) + "\n\n"
+
+
+def answer_chunks(answer: str, size: int = 24) -> Iterator[str]:
+    safe_size = max(1, min(200, size))
+    for offset in range(0, len(answer), safe_size):
+        yield answer[offset:offset + safe_size]
 
 
 def should_enable_tools(messages: List[AgentMessage]) -> bool:
@@ -317,6 +332,62 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             "code": error_code,
             "message": safe_message,
         }) from error
+
+
+@app.post("/v1/chat/stream")
+def chat_stream(payload: AgentChatRequest) -> StreamingResponse:
+    """SSE variant of chat. The final `done` event contains the complete v1 response."""
+    def generate() -> Iterator[str]:
+        trace_id = payload.metadata.get("traceId", payload.requestId)
+        yield sse_event("start", {
+            "requestId": payload.requestId,
+            "traceId": trace_id,
+            "provider": payload.options.provider,
+            "model": payload.options.model or "",
+        })
+        events: Queue[Tuple[str, dict]] = Queue()
+
+        def run_chat() -> None:
+            token = set_model_stream_sink(
+                lambda content: events.put(("delta", {"content": content}))
+            )
+            try:
+                result = chat(payload)
+                events.put(("done", result.model_dump()))
+            except HTTPException as error:
+                detail = error.detail
+                if isinstance(detail, dict):
+                    code = str(detail.get("code", "AGENT_STREAM_FAILED"))
+                    message = str(detail.get("message", "Agent Service 调用失败"))
+                else:
+                    code = "INVALID_REQUEST" if error.status_code < 500 else "AGENT_STREAM_FAILED"
+                    message = str(detail)
+                events.put(("error", {"code": code, "message": message}))
+            except Exception:
+                LOGGER.exception("Unexpected Agent SSE failure: traceId=%s", trace_id)
+                events.put(("error", {
+                    "code": "AGENT_STREAM_FAILED",
+                    "message": "Agent Service 流式调用失败",
+                }))
+            finally:
+                reset_model_stream_sink(token)
+
+        Thread(target=run_chat, name="agent-sse-" + payload.requestId, daemon=True).start()
+        while True:
+            event, data = events.get()
+            yield sse_event(event, data)
+            if event in ("done", "error"):
+                break
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/v1/audit/traces/{trace_id}", response_model=ExecutionAuditRecord)

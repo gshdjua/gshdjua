@@ -1,9 +1,10 @@
 import logging
 import operator
 import time
-from typing import Annotated, Any, Dict, List, TypedDict
+from contextvars import ContextVar, Token
+from typing import Annotated, Any, Callable, Dict, List, Optional, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, message_chunk_to_message
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -14,6 +15,17 @@ from .tools.models import ToolError, ToolExecutionResult
 
 
 LOGGER = logging.getLogger(__name__)
+MODEL_STREAM_SINK: ContextVar[Optional[Callable[[str], None]]] = ContextVar(
+    "model_stream_sink", default=None
+)
+
+
+def set_model_stream_sink(sink: Callable[[str], None]) -> Token:
+    return MODEL_STREAM_SINK.set(sink)
+
+
+def reset_model_stream_sink(token: Token) -> None:
+    MODEL_STREAM_SINK.reset(token)
 
 
 class AgentState(TypedDict):
@@ -168,7 +180,19 @@ def call_model(state: AgentState) -> Dict[str, Any]:
     ):
         model = model.bind_tools(tool_registry.model_tool_schemas())
         tools_bound = True
-    response = model.invoke(state["messages"])
+    stream_sink = MODEL_STREAM_SINK.get()
+    if stream_sink is None:
+        response = model.invoke(state["messages"])
+    else:
+        aggregate = None
+        for chunk in model.stream(state["messages"]):
+            aggregate = chunk if aggregate is None else aggregate + chunk
+            if isinstance(chunk.content, str) and chunk.content:
+                stream_sink(chunk.content)
+        if aggregate is None:
+            response = AIMessage(content="")
+        else:
+            response = message_chunk_to_message(aggregate)
     usage = message_usage(response)
     input_tokens = state.get("input_tokens", 0) + usage["input_tokens"]
     output_tokens = state.get("output_tokens", 0) + usage["output_tokens"]

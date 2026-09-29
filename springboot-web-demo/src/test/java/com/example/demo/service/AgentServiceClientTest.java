@@ -3,6 +3,8 @@ package com.example.demo.service;
 import com.alibaba.fastjson.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.io.BufferedReader;
+import java.io.StringReader;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -69,5 +71,24 @@ class AgentServiceClientTest {
         assertEquals("RATE_LIMITED", AgentServiceClient.parseAgentErrorCode(response, 502));
         assertEquals("AUTHENTICATION_FAILED", AgentServiceClient.parseAgentErrorCode("", 401));
         assertEquals("PROVIDER_UNAVAILABLE", AgentServiceClient.parseAgentErrorCode("not-json", 503));
+    }
+
+    @Test
+    void consumesAgentSseDeltasAndFinalResponse() throws Exception {
+        String stream = "event: start\ndata: {\"traceId\":\"trace-1\"}\n\n"
+                + "event: delta\ndata: {\"content\":\"你\"}\n\n"
+                + "event: delta\ndata: {\"content\":\"好\"}\n\n"
+                + "event: done\ndata: {\"answer\":\"你好\",\"provider\":\"qwen\",\"model\":\"qwen-plus\","
+                + "\"traceId\":\"trace-1\",\"usage\":{\"inputTokens\":2,\"outputTokens\":1},"
+                + "\"budget\":{\"level\":\"standard\"}}\n\n";
+        StringBuilder deltas = new StringBuilder();
+
+        AgentServiceClient.AgentResult result = AgentServiceClient.consumeChatStream(
+                new BufferedReader(new StringReader(stream)), deltas::append);
+
+        assertEquals("你好", deltas.toString());
+        assertEquals("你好", result.getAnswer());
+        assertEquals("qwen", result.getProvider());
+        assertEquals("qwen-plus", result.getModel());
     }
 }

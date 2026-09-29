@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,6 +56,7 @@ public class DeepSeekMusicAgent {
     private final ThreadLocal<ModelInvocationMetrics> currentModelMetrics = new ThreadLocal<>();
     private final ThreadLocal<String> currentProvider = new ThreadLocal<>();
     private final ThreadLocal<String> currentModel = new ThreadLocal<>();
+    private final ThreadLocal<Consumer<String>> currentStreamConsumer = new ThreadLocal<>();
 
     @Autowired
     private AudioMapper audioMapper;
@@ -177,12 +179,19 @@ public class DeepSeekMusicAgent {
 
     public ReplyResult replyWithResult(String message, Integer userId, List<Map<String, String>> history,
                                        Long conversationId, String requestId, String provider, String model) {
+        return replyWithResult(message, userId, history, conversationId, requestId, provider, model, null);
+    }
+
+    public ReplyResult replyWithResult(String message, Integer userId, List<Map<String, String>> history,
+                                       Long conversationId, String requestId, String provider, String model,
+                                       Consumer<String> onDelta) {
         long startedAt = System.currentTimeMillis();
         currentConversationId.set(conversationId);
         currentUserId.set(userId);
         currentRequestId.set(requestId);
         currentProvider.set(provider);
         currentModel.set(model);
+        if (onDelta != null) currentStreamConsumer.set(onDelta);
         currentRecommendationOutcome.remove();
         lastPromptVersion.remove();
         currentModelMetrics.set(new ModelInvocationMetrics());
@@ -220,6 +229,7 @@ public class DeepSeekMusicAgent {
             currentModelMetrics.remove();
             currentProvider.remove();
             currentModel.remove();
+            currentStreamConsumer.remove();
         }
     }
 
@@ -540,7 +550,7 @@ public class DeepSeekMusicAgent {
         JSONArray messages = buildRequestMessages(message, evidenceContext, history);
         AgentServiceClient.AgentResult agentResult = agentServiceClient.chat(
                 messages, providerName, modelName, 0.4, message, currentConversationId.get(), currentUserId.get(),
-                currentRequestId.get(), lastPromptVersion.get());
+                currentRequestId.get(), lastPromptVersion.get(), currentStreamConsumer.get());
         if (agentResult != null) {
             if (metrics != null) metrics.modelCalls = Math.max(1, agentResult.getModelCalls());
             lastAgentResult.set(agentResult);

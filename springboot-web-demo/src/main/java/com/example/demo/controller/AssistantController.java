@@ -27,13 +27,23 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.http.MediaType;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -75,10 +85,82 @@ public class AssistantController {
     @Autowired
     private ModelInvocationLogService modelInvocationLogService;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     @PostMapping("/chat")
     @Transactional
     public Map<String, Object> chat(@RequestBody Map<String, Object> payload, HttpServletRequest request) {
+        return processChat(payload, getUserId(request), null);
+    }
+
+    @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(@RequestBody Map<String, Object> payload, HttpServletRequest request,
+                                 HttpServletResponse response) {
         Integer userId = getUserId(request);
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
+        SseEmitter emitter = new SseEmitter(60000L);
+        CompletableFuture.runAsync(() -> {
+            AtomicBoolean emittedModelDelta = new AtomicBoolean(false);
+            AtomicBoolean streamOpen = new AtomicBoolean(true);
+            try {
+                emitter.send(SseEmitter.event().name("start").data(Collections.singletonMap(
+                        "conversationId", payload.get("conversationId"))));
+                Consumer<String> modelDelta = content -> {
+                    if (!streamOpen.get() || content == null || content.isEmpty()) return;
+                    try {
+                        emitter.send(SseEmitter.event().name("delta").data(
+                                Collections.singletonMap("content", content)));
+                        emittedModelDelta.set(true);
+                    } catch (IOException exception) {
+                        streamOpen.set(false);
+                    }
+                };
+                Map<String, Object> result = new TransactionTemplate(transactionManager).execute(
+                        status -> processChat(payload, userId, modelDelta));
+                if (result == null) throw new IllegalStateException("流式回答事务未返回结果");
+                if (!Integer.valueOf(200).equals(result.get("code"))) {
+                    emitter.send(SseEmitter.event().name("error").data(result));
+                    emitter.complete();
+                    return;
+                }
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) result.get("data");
+                if (!emittedModelDelta.get()) {
+                    emitReplyDeltas(emitter, String.valueOf(data.getOrDefault("reply", "")));
+                }
+                emitter.send(SseEmitter.event().name("done").data(data));
+                emitter.complete();
+            } catch (Exception exception) {
+                LOGGER.log(Level.WARNING, "Assistant SSE stream failed", exception);
+                try {
+                    Map<String, Object> error = new HashMap<>();
+                    error.put("code", 500);
+                    error.put("msg", "流式回答失败，请稍后重试");
+                    emitter.send(SseEmitter.event().name("error").data(error));
+                    emitter.complete();
+                } catch (IOException sendError) {
+                    emitter.completeWithError(sendError);
+                }
+            }
+        });
+        return emitter;
+    }
+
+    private void emitReplyDeltas(SseEmitter emitter, String reply) throws IOException {
+        int offset = 0;
+        while (offset < reply.length()) {
+            int remainingCodePoints = reply.codePointCount(offset, reply.length());
+            int end = reply.offsetByCodePoints(offset, Math.min(16, remainingCodePoints));
+            emitter.send(SseEmitter.event().name("delta").data(
+                    Collections.singletonMap("content", reply.substring(offset, end))));
+            offset = end;
+        }
+    }
+
+    private Map<String, Object> processChat(Map<String, Object> payload, Integer userId,
+                                            Consumer<String> onDelta) {
         Long conversationId = toLong(payload.get("conversationId"));
         AssistantConversation conversation = conversationId == null ? null
                 : assistantConversationMapper.selectByIdAndUserId(conversationId, userId);
@@ -110,9 +192,8 @@ public class AssistantController {
         String memoryRequestId = userMessage.getId() == null
                 ? "assistant-message-" + UUID.randomUUID()
                 : "assistant-message-" + userMessage.getId();
-        DeepSeekMusicAgent.ReplyResult replyResult = deepSeekMusicAgent.replyWithResult(
-                messageForAgent, userId, history, conversationId, memoryRequestId,
-                selectedModel.getProvider(), selectedModel.getModel());
+        DeepSeekMusicAgent.ReplyResult replyResult = invokeAgent(messageForAgent, userId, history,
+                conversationId, memoryRequestId, selectedModel, onDelta);
         recordModelAttempt(selectedModel, replyResult);
 
         LlmModelCatalogService.ModelConfig fallbackModel = null;
@@ -123,9 +204,8 @@ public class AssistantController {
             fallbackModel = llmModelCatalogService.resolveHealthyFallback(selectedModel.getId()).orElse(null);
             if (fallbackModel != null) {
                 effectiveMemoryRequestId = memoryRequestId + "-fallback";
-                fallbackAttempt = deepSeekMusicAgent.replyWithResult(
-                        messageForAgent, userId, history, conversationId, effectiveMemoryRequestId,
-                        fallbackModel.getProvider(), fallbackModel.getModel());
+                fallbackAttempt = invokeAgent(messageForAgent, userId, history, conversationId,
+                        effectiveMemoryRequestId, fallbackModel, onDelta);
                 recordModelAttempt(fallbackModel, fallbackAttempt);
                 replyResult = DeepSeekMusicAgent.ReplyResult.afterFailover(requestedAttempt, fallbackAttempt);
             }
@@ -182,6 +262,19 @@ public class AssistantController {
         data.put("requestedTraceId", memoryRequestId);
         data.put("fallbackTraceId", fallbackModel == null ? "" : effectiveMemoryRequestId);
         return result(200, "success", data);
+    }
+
+    private DeepSeekMusicAgent.ReplyResult invokeAgent(String message, Integer userId,
+                                                        List<Map<String, String>> history,
+                                                        Long conversationId, String requestId,
+                                                        LlmModelCatalogService.ModelConfig model,
+                                                        Consumer<String> onDelta) {
+        if (onDelta == null) {
+            return deepSeekMusicAgent.replyWithResult(message, userId, history, conversationId, requestId,
+                    model.getProvider(), model.getModel());
+        }
+        return deepSeekMusicAgent.replyWithResult(message, userId, history, conversationId, requestId,
+                model.getProvider(), model.getModel(), onDelta);
     }
 
     private void recordModelAttempt(LlmModelCatalogService.ModelConfig model,

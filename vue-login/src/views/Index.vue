@@ -278,7 +278,10 @@
                 <template v-else>{{ message.role === 'assistant' ? '✦' : '你' }}</template>
               </div>
               <div class="chat-content">
-                <div class="chat-bubble">{{ message.content }}</div>
+                <div class="chat-bubble" :class="{ typing: message.streaming && !message.content }">
+                  <template v-if="message.streaming && !message.content">正在查询歌库数据<span></span><span></span><span></span></template>
+                  <template v-else>{{ message.content }}<i v-if="message.streaming" class="stream-cursor"></i></template>
+                </div>
                 <div v-if="message.recommendations && message.recommendations.length" class="recommendation-picker">
                   <button v-for="song in message.recommendations" :key="song.id" class="recommendation-card" @click="openPlayer(song)">
                     <img v-if="song.coverPath" :src="getImageUrl(song.coverPath)" :alt="song.songName" />
@@ -299,7 +302,6 @@
                 </div>
               </div>
             </div>
-            <div v-if="assistantLoading" class="chat-row assistant"><div class="message-avatar">✦</div><div class="chat-bubble typing">正在查询歌库数据<span></span><span></span><span></span></div></div>
           </div>
           <div class="quick-questions">
             <button @click="askAssistant('歌库有多少歌？')">歌库有多少歌？</button>
@@ -395,6 +397,7 @@ export default {
       currentAudio: null,
       assistantInput: '',
       assistantLoading: false,
+      assistantStreamController: null,
       assistantModelReady: null,
       assistantProviderName: 'LLM',
       assistantModelName: '',
@@ -493,6 +496,7 @@ export default {
   },
   beforeDestroy() {
     if (this.dailyRefreshTimer) clearTimeout(this.dailyRefreshTimer)
+    if (this.assistantStreamController) this.assistantStreamController.abort()
   },
   methods: {
     async loadAudioData() {
@@ -1078,25 +1082,53 @@ export default {
     async sendAssistantMessage() {
       const message = this.assistantInput.trim()
       if (!message || this.assistantLoading || !this.activeConversationId) return
+      const conversationId = this.activeConversationId
       this.assistantInput = ''
       this.assistantLoading = true
+      const userMessage = { role: 'user', content: message, streaming: true }
+      const assistantMessage = { role: 'assistant', content: '', streaming: true, recommendations: [], recommendationMeta: {} }
+      this.assistantMessages.push(userMessage, assistantMessage)
+      this.scrollChatToBottom()
+      const controller = new AbortController()
+      this.assistantStreamController = controller
       try {
-        const res = await request.post('/assistant/chat', { message, conversationId: this.activeConversationId, modelId: this.selectedModelId })
-        if (res.data.code !== 200) throw new Error(res.data.msg || '暂时无法回答')
-        const assistantMessage = res.data.data.assistantMessage
-        assistantMessage.recommendations = res.data.data.recommendations || []
-        assistantMessage.recommendationMeta = res.data.data.recommendationMeta || {}
-        this.assistantMessages.push(res.data.data.userMessage, assistantMessage)
+        const response = await fetch('/api/assistant/chat/stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'text/event-stream',
+            Authorization: localStorage.getItem('token') || ''
+          },
+          body: JSON.stringify({ message, conversationId, modelId: this.selectedModelId }),
+          signal: controller.signal
+        })
+        if (!response.ok || !response.body) throw new Error(`流式连接失败（HTTP ${response.status}）`)
+        let completedData = null
+        let streamError = null
+        await this.readAssistantSse(response, async (event, data) => {
+          if (event === 'delta' && data.content) await this.typeAssistantDelta(assistantMessage, data.content)
+          else if (event === 'done') completedData = data
+          else if (event === 'error') streamError = new Error(data.msg || data.message || '暂时无法回答')
+        })
+        if (streamError) throw streamError
+        if (!completedData || !completedData.assistantMessage) throw new Error('流式回答未完整结束')
+        Object.assign(userMessage, completedData.userMessage, { streaming: false })
+        Object.assign(assistantMessage, completedData.assistantMessage, {
+          content: completedData.assistantMessage.content,
+          recommendations: completedData.recommendations || [],
+          recommendationMeta: completedData.recommendationMeta || {},
+          streaming: false
+        })
         const selected = this.availableModels.find(item => item.id === this.selectedModelId)
-        if (selected && res.data.data.executionPath === 'model') {
+        if (selected && completedData.executionPath === 'model') {
           this.$set(selected, 'healthStatus', 'available')
           this.$set(selected, 'healthErrorMessage', '')
-        } else if (selected && ['model_fallback', 'local_fallback'].includes(res.data.data.executionPath)) {
+        } else if (selected && ['model_fallback', 'local_fallback'].includes(completedData.executionPath)) {
           this.$set(selected, 'healthStatus', 'unavailable')
-          this.$set(selected, 'healthErrorMessage', `最近一次调用失败：${res.data.data.fallbackReason || 'MODEL_INVOCATION_FAILED'}`)
+          this.$set(selected, 'healthErrorMessage', `最近一次调用失败：${completedData.fallbackReason || 'MODEL_INVOCATION_FAILED'}`)
         }
-        if (res.data.data.executionPath === 'model_fallback' && res.data.data.fallbackModelId) {
-          const fallback = this.availableModels.find(item => item.id === res.data.data.fallbackModelId)
+        if (completedData.executionPath === 'model_fallback' && completedData.fallbackModelId) {
+          const fallback = this.availableModels.find(item => item.id === completedData.fallbackModelId)
           if (fallback) {
             this.$set(fallback, 'healthStatus', 'available')
             this.$set(fallback, 'healthErrorMessage', '')
@@ -1104,10 +1136,64 @@ export default {
         }
         await this.refreshConversationSummary()
       } catch (err) {
-        alert(err.message || '连接歌库失败，请确认后端服务已经启动。')
+        const userIndex = this.assistantMessages.indexOf(userMessage)
+        if (userIndex >= 0) this.assistantMessages.splice(userIndex, 2)
+        if (err.name !== 'AbortError') alert(err.message || '连接歌库失败，请确认后端服务已经启动。')
       } finally {
+        if (this.assistantStreamController === controller) this.assistantStreamController = null
         this.assistantLoading = false
         this.scrollChatToBottom()
+      }
+    },
+    async readAssistantSse(response, onEvent) {
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
+      const consumeFrames = async (flush = false) => {
+        buffer = buffer.replace(/\r\n/g, '\n')
+        let boundary = buffer.indexOf('\n\n')
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          await this.handleAssistantSseFrame(frame, onEvent)
+          boundary = buffer.indexOf('\n\n')
+        }
+        if (flush && buffer.trim()) {
+          await this.handleAssistantSseFrame(buffer, onEvent)
+          buffer = ''
+        }
+      }
+      let streamFinished = false
+      while (!streamFinished) {
+        const { value, done } = await reader.read()
+        if (done) {
+          streamFinished = true
+          continue
+        }
+        buffer += decoder.decode(value, { stream: true })
+        await consumeFrames()
+      }
+      buffer += decoder.decode()
+      await consumeFrames(true)
+    },
+    async handleAssistantSseFrame(frame, onEvent) {
+      if (!frame || frame.startsWith(':')) return
+      let event = 'message'
+      const dataLines = []
+      frame.split('\n').forEach(line => {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim())
+      })
+      if (!dataLines.length) return
+      const data = JSON.parse(dataLines.join('\n'))
+      await onEvent(event, data)
+    },
+    async typeAssistantDelta(target, text) {
+      const characters = Array.from(text)
+      for (let index = 0; index < characters.length; index++) {
+        target.content += characters[index]
+        if (index % 4 === 0) this.scrollChatToBottom()
+        await new Promise(resolve => setTimeout(resolve, 7))
       }
     },
     scrollChatToBottom() {
@@ -1273,7 +1359,7 @@ export default {
 .assistant-orb { display: grid; place-items: center; flex: 0 0 66px; height: 66px; border-radius: 21px; font-size: 30px; background: rgba(255,255,255,.16); box-shadow: 0 0 30px rgba(157,229,255,.72); }
 .assistant-intro p { margin: 0 0 5px; color: #bce8ff; font-size: 13px; letter-spacing: 2px; text-transform: uppercase; }.assistant-intro h2 { margin: 0; font-size: 31px; }.assistant-intro span { display: block; margin-top: 7px; color: rgba(255,255,255,.76); font-size: 16px; }.assistant-status { margin-left: auto; padding: 8px 12px; border: 1px solid rgba(255,255,255,.25); border-radius: 20px; background: rgba(255,255,255,.12); color: #d7eaff; font-size: 12px; white-space: nowrap; }.assistant-status.ready { color: #adffdb; }.assistant-status.offline { color: #ffd3d8; }
 .assistant-model-control { display: flex; align-items: flex-end; gap: 12px; margin-left: auto; }.assistant-model-control label { color: rgba(255,255,255,.72); font-size: 11px; }.assistant-model-control select { display: block; min-width: 210px; margin-top: 6px; padding: 9px 32px 9px 12px; border: 1px solid rgba(255,255,255,.28); border-radius: 12px; color: #fff; background: rgba(255,255,255,.13); font: inherit; cursor: pointer; }.assistant-model-control option { color: #272044; background: #fff; }.assistant-model-control .assistant-status { margin-left: 0; }
-.chat-panel { min-height: 620px; display: flex; flex-direction: column; overflow: hidden; padding: 28px 32px; border: 1px solid rgba(111,95,199,.13); border-radius: 24px; background: #fff; box-shadow: 0 14px 36px rgba(44, 37, 90, .09); }.chat-messages { flex: 1; min-height: 470px; max-height: 58vh; overflow-y: auto; padding: 8px 8px 22px; display: flex; flex-direction: column; gap: 19px; }.chat-row { display: flex; align-items: flex-start; gap: 12px; max-width: 76%; }.chat-row.user { align-self: flex-end; flex-direction: row-reverse; }.message-avatar { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; overflow: hidden; border-radius: 14px; background: #eeeafd; color: #7651c7; font-size: 16px; font-weight: 700; }.message-avatar img { width: 100%; height: 100%; object-fit: cover; }.chat-row.user .message-avatar { background: #7651c7; color: #fff; }.chat-bubble { padding: 14px 17px; border-radius: 6px 18px 18px 18px; background: #f3f4fa; color: #2a2940; font-size: 15px; line-height: 1.7; white-space: pre-wrap; }.chat-row.user .chat-bubble { border-radius: 18px 6px 18px 18px; background: linear-gradient(135deg, #6d73e8, #8051ba); color: #fff; }.typing span { display: inline-block; width: 4px; height: 4px; margin-left: 3px; border-radius: 50%; background: #7860c3; animation: typing 1s infinite ease-in-out; }.typing span:nth-child(2) { animation-delay: .15s; }.typing span:nth-child(3) { animation-delay: .3s; }@keyframes typing { 50% { transform: translateY(-3px); opacity: .4; } }
+.chat-panel { min-height: 620px; display: flex; flex-direction: column; overflow: hidden; padding: 28px 32px; border: 1px solid rgba(111,95,199,.13); border-radius: 24px; background: #fff; box-shadow: 0 14px 36px rgba(44, 37, 90, .09); }.chat-messages { flex: 1; min-height: 470px; max-height: 58vh; overflow-y: auto; padding: 8px 8px 22px; display: flex; flex-direction: column; gap: 19px; }.chat-row { display: flex; align-items: flex-start; gap: 12px; max-width: 76%; }.chat-row.user { align-self: flex-end; flex-direction: row-reverse; }.message-avatar { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 40px; overflow: hidden; border-radius: 14px; background: #eeeafd; color: #7651c7; font-size: 16px; font-weight: 700; }.message-avatar img { width: 100%; height: 100%; object-fit: cover; }.chat-row.user .message-avatar { background: #7651c7; color: #fff; }.chat-bubble { padding: 14px 17px; border-radius: 6px 18px 18px 18px; background: #f3f4fa; color: #2a2940; font-size: 15px; line-height: 1.7; white-space: pre-wrap; }.chat-row.user .chat-bubble { border-radius: 18px 6px 18px 18px; background: linear-gradient(135deg, #6d73e8, #8051ba); color: #fff; }.typing span { display: inline-block; width: 4px; height: 4px; margin-left: 3px; border-radius: 50%; background: #7860c3; animation: typing 1s infinite ease-in-out; }.typing span:nth-child(2) { animation-delay: .15s; }.typing span:nth-child(3) { animation-delay: .3s; }.stream-cursor { display: inline-block; width: 2px; height: 1.05em; margin-left: 3px; vertical-align: -2px; border-radius: 2px; background: #7651c7; animation: stream-cursor-blink .8s steps(1) infinite; }@keyframes typing { 50% { transform: translateY(-3px); opacity: .4; } }@keyframes stream-cursor-blink { 50% { opacity: 0; } }
 .chat-history-toolbar { display: flex; align-items: center; gap: 12px; margin: -4px 0 18px; padding-bottom: 15px; border-bottom: 1px solid #efedf8; }.new-conversation-btn { flex: 0 0 auto; padding: 9px 13px; border: 0; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #6d73e8, #8051ba); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }.conversation-list { display: flex; flex: 1; gap: 8px; overflow-x: auto; padding: 2px; }.conversation-item { position: relative; display: flex; align-items: center; gap: 7px; min-width: 150px; max-width: 220px; padding: 8px 28px 8px 11px; border: 1px solid #e5e1f7; border-radius: 10px; color: #736c8d; background: #faf9ff; cursor: pointer; transition: .2s ease; }.conversation-item:hover { border-color: #b4a6e9; }.conversation-item.active { border-color: #765ad0; color: #49357d; background: #f0edff; box-shadow: 0 4px 12px rgba(106,82,186,.12); }.conversation-title { overflow: hidden; flex: 1; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.conversation-count { flex: 0 0 auto; color: #a49cb7; font-size: 11px; }.conversation-delete { position: absolute; right: 7px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; color: #948aa9; background: transparent; font-size: 17px; cursor: pointer; }.conversation-delete:hover { color: #fff; background: #e26b82; }
 .assistant-settings-wrap { position: relative; flex: 0 0 auto; }.assistant-settings-btn { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid #e1ddef; border-radius: 10px; color: #756b8c; background: #faf9fd; font-size: 17px; cursor: pointer; transition: .2s ease; }.assistant-settings-btn:hover { border-color: #9d8bd7; color: #664caf; background: #f2effd; }.assistant-settings-menu { position: absolute; top: 45px; right: 0; z-index: 12; width: 225px; padding: 7px; border: 1px solid #e7e2f3; border-radius: 13px; background: #fff; box-shadow: 0 14px 35px rgba(44,35,82,.18); }.assistant-settings-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-radius: 9px; color: #4c4264; background: transparent; font: inherit; text-align: left; cursor: pointer; }.assistant-settings-menu > button:hover { background: #f4f1fd; }.assistant-settings-menu > button > span { display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border-radius: 9px; color: #7256be; background: #ece7fb; font-size: 16px; }.assistant-settings-menu strong, .assistant-settings-menu small { display: block; }.assistant-settings-menu strong { font-size: 13px; }.assistant-settings-menu small { margin-top: 3px; color: #91899f; font-size: 11px; }
 .chat-content { min-width: 0; flex: 1; }.chat-row.has-recommendations { max-width: 92%; }.recommendation-picker { display: grid; grid-template-columns: repeat(3, minmax(170px, 1fr)); gap: 12px; margin-top: 12px; }.recommendation-card { display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px; text-align: left; border: 1px solid #e4e0fb; border-radius: 13px; background: #fbfaff; cursor: pointer; transition: .2s ease; }.recommendation-card:hover { border-color: #8061d7; transform: translateY(-2px); box-shadow: 0 8px 18px rgba(99,77,180,.15); }.recommendation-card img, .recommendation-cover { width: 46px; height: 46px; border-radius: 10px; object-fit: cover; }.recommendation-cover { display: grid; place-items: center; background: linear-gradient(135deg, #7177e9, #8c50bc); color: #fff; font-size: 21px; }.recommendation-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.recommendation-info strong, .recommendation-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recommendation-info strong { color: #322b58; font-size: 13px; }.recommendation-info small, .recommendation-info em { color: #807896; font-size: 11px; font-style: normal; }.recommendation-play { grid-column: 1 / -1; padding: 5px 8px; border-radius: 7px; background: #eeeafd; color: #6f56bd; font-size: 11px; font-weight: 700; text-align: center; }

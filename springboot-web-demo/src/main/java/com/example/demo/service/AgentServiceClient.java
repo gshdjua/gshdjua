@@ -21,6 +21,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 @Service
 public class AgentServiceClient {
@@ -51,6 +52,13 @@ public class AgentServiceClient {
 
     public AgentResult chat(JSONArray messages, String provider, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId, String requestId, String promptVersion) {
+        return chat(messages, provider, model, temperature, userMessage, conversationId, userId,
+                requestId, promptVersion, null);
+    }
+
+    public AgentResult chat(JSONArray messages, String provider, String model, double temperature, String userMessage,
+                            Long conversationId, Integer userId, String requestId, String promptVersion,
+                            Consumer<String> onDelta) {
         lastFailureCode.remove();
         if (baseUrl == null || baseUrl.trim().isEmpty()) return null;
         try {
@@ -72,7 +80,7 @@ public class AgentServiceClient {
             metadata.put("userMessage", userMessage);
             if (promptVersion != null) metadata.put("promptVersion", promptVersion);
             request.put("metadata", metadata);
-            AgentResult result = sendChatRequest(request);
+            AgentResult result = sendChatStreamRequest(request, onDelta);
             if (result == null) lastFailureCode.set("EMPTY_RESPONSE");
             return result;
         } catch (AgentCallException exception) {
@@ -242,6 +250,75 @@ public class AgentServiceClient {
         } finally {
             if (connection != null) connection.disconnect();
         }
+    }
+
+    private AgentResult sendChatStreamRequest(JSONObject request, Consumer<String> onDelta) throws Exception {
+        HttpURLConnection connection = null;
+        try {
+            URL endpoint = new URL(baseUrl.replaceAll("/+$", "") + "/v1/chat/stream");
+            connection = (HttpURLConnection) endpoint.openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(1200);
+            connection.setReadTimeout(35000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+            connection.setRequestProperty("Accept", "text/event-stream");
+            connection.setRequestProperty("Cache-Control", "no-cache");
+            try (OutputStream output = connection.getOutputStream()) {
+                output.write(JSON.toJSONString(request).getBytes(StandardCharsets.UTF_8));
+            }
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) {
+                throw new AgentCallException(parseAgentErrorCode(readAll(connection.getErrorStream()), status));
+            }
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                return consumeChatStream(reader, onDelta);
+            }
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    static AgentResult consumeChatStream(BufferedReader reader, Consumer<String> onDelta) throws Exception {
+        String event = "";
+        StringBuilder data = new StringBuilder();
+        AgentResult result = null;
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (line.isEmpty()) {
+                result = consumeSseFrame(event, data.toString(), onDelta, result);
+                event = "";
+                data.setLength(0);
+                continue;
+            }
+            if (line.startsWith("event:")) event = line.substring(6).trim();
+            else if (line.startsWith("data:")) {
+                if (data.length() > 0) data.append('\n');
+                data.append(line.substring(5).trim());
+            }
+        }
+        if (!event.isEmpty() || data.length() > 0) {
+            result = consumeSseFrame(event, data.toString(), onDelta, result);
+        }
+        return result;
+    }
+
+    private static AgentResult consumeSseFrame(String event, String data, Consumer<String> onDelta,
+                                                AgentResult current) throws AgentCallException {
+        if (data == null || data.trim().isEmpty()) return current;
+        JSONObject payload = JSON.parseObject(data);
+        if ("delta".equals(event)) {
+            String content = payload == null ? "" : payload.getString("content");
+            if (onDelta != null && content != null && !content.isEmpty()) onDelta.accept(content);
+            return current;
+        }
+        if ("done".equals(event)) return parseAgentResult(data);
+        if ("error".equals(event)) {
+            String code = payload == null ? "AGENT_STREAM_FAILED" : payload.getString("code");
+            throw new AgentCallException(code == null || code.trim().isEmpty() ? "AGENT_STREAM_FAILED" : code);
+        }
+        return current;
     }
 
     static String parseAgentErrorCode(String content, int status) {
