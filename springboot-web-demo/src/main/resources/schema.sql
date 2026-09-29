@@ -186,6 +186,44 @@ CREATE TABLE IF NOT EXISTS llm_quota_event (
     FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS conversation_snapshot (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source_conversation_id BIGINT NULL,
+    source_user_id INT NOT NULL,
+    title VARCHAR(100) NOT NULL,
+    selected_model_id VARCHAR(80) NULL,
+    message_count INT NOT NULL,
+    snapshot_json LONGTEXT NOT NULL,
+    checksum CHAR(64) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_conversation_snapshot_created (created_at),
+    KEY idx_conversation_snapshot_source (source_conversation_id, created_at),
+    FOREIGN KEY (source_conversation_id) REFERENCES assistant_conversation(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS conversation_replay_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    snapshot_id BIGINT NOT NULL,
+    target_model_id VARCHAR(80) NOT NULL,
+    provider VARCHAR(40) NOT NULL DEFAULT 'none',
+    model_name VARCHAR(120) NOT NULL DEFAULT 'none',
+    prompt_version VARCHAR(120) NOT NULL DEFAULT 'none',
+    execution_path VARCHAR(30) NOT NULL DEFAULT 'local',
+    status VARCHAR(20) NOT NULL,
+    input_tokens INT NOT NULL DEFAULT 0,
+    output_tokens INT NOT NULL DEFAULT 0,
+    latency_ms INT NOT NULL DEFAULT 0,
+    estimated_cost DECIMAL(16,8) NOT NULL DEFAULT 0,
+    similarity_score DECIMAL(8,6) NOT NULL DEFAULT 0,
+    original_reply LONGTEXT NOT NULL,
+    replay_reply LONGTEXT NOT NULL,
+    error_message VARCHAR(500) NOT NULL DEFAULT '',
+    trace_id VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_conversation_replay_snapshot (snapshot_id, created_at),
+    FOREIGN KEY (snapshot_id) REFERENCES conversation_snapshot(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 
 CREATE TABLE IF NOT EXISTS prompt_answer_feedback (
     assistant_message_id BIGINT PRIMARY KEY,

@@ -42,6 +42,10 @@
           <span class="nav-icon">🛡️</span>
           <span>费用保护</span>
         </div>
+        <div class="nav-item" :class="{active: currentMenu === 'replay'}" @click="openConversationReplay">
+          <span class="nav-icon">⏮️</span>
+          <span>会话快照与重放</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <button class="back-btn" @click="$router.push('/index')">
@@ -732,7 +736,7 @@
                   <td><input v-model.number="item.dailyCostLimit" type="number" min="0" max="100000" step="0.01"><small>0 表示不限</small></td>
                   <td><strong>{{ Number(item.usedTokens || 0).toLocaleString() }} Token</strong><small>{{ formatLlmCost(item.usedCost) }} · {{ item.modelCalls || 0 }} 次</small></td>
                   <td><span :class="['quota-blocked-tag', { active: Number(item.blockedCount || 0) > 0 }]">{{ item.blockedCount || 0 }} 次</span></td>
-                  <td><button class="evaluation-export-btn" :disabled="quotaSavingId === item.userId" @click="saveUserQuota(item)">{{ quotaSavingId === item.userId ? '保存中…' : '保存' }}</button></td>
+                  <td><button class="table-primary-btn" :disabled="quotaSavingId === item.userId" @click="saveUserQuota(item)">{{ quotaSavingId === item.userId ? '保存中…' : '保存' }}</button></td>
                 </tr>
                 <tr v-if="!quotaLoading && !quotaUsers.length"><td colspan="8" class="evaluation-empty">暂无用户</td></tr>
               </tbody>
@@ -740,6 +744,82 @@
           </div>
           <p class="prompt-decision-note">请求频率与并发超限会返回 HTTP 429；每日 Token 或费用达到上限时，仅暂停新的外部模型调用，不影响本地歌库查询。统计按内部用户 ID 聚合，不保存问题、回答或 API Key。</p>
         </template>
+      </section>
+
+      <section v-if="currentMenu === 'replay'" class="evaluation-dashboard replay-dashboard">
+        <div class="evaluation-hero replay-hero">
+          <div>
+            <p class="evaluation-eyebrow">SESSION SNAPSHOT & REPLAY</p>
+            <h2>会话快照导出与重新执行</h2>
+            <p>冻结某次会话的模型选择和消息副本，用相同上下文重新执行最后一个问题，并对比回答、Token、费用和耗时。</p>
+          </div>
+          <div class="evaluation-actions">
+            <span v-if="replayLastUpdated" class="cache-updated-at">更新于 {{ replayLastUpdated }}</span>
+            <button type="button" class="evaluation-export-btn" :disabled="replayLoading" @click="loadConversationReplay">
+              {{ replayLoading ? '刷新中…' : '刷新数据' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="replayError" class="evaluation-state error">{{ replayError }}</div>
+
+        <div class="replay-panel">
+          <div class="replay-panel-head"><div><span>STEP 1</span><h3>从现有会话创建不可变快照</h3></div><small>快照保存完整消息内容，请仅由管理员用于调试和回归。</small></div>
+          <div class="quota-table-wrap">
+            <table class="evaluation-table replay-source-table">
+              <thead><tr><th>会话</th><th>用户</th><th>模型</th><th>消息 / 提问</th><th>更新时间</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr v-for="item in replayConversations" :key="item.id">
+                  <td><strong>{{ item.title }}</strong><small>#{{ item.id }}</small></td>
+                  <td>{{ item.username }}<small>内部 ID：{{ item.userId }}</small></td>
+                  <td>{{ replayModelName(item.selectedModelId) }}</td>
+                  <td>{{ item.messageCount || 0 }} / {{ item.questionCount || 0 }}</td>
+                  <td>{{ formatReplayTime(item.updateTime) }}</td>
+                  <td><button class="table-primary-btn" :disabled="replayBusyKey === `snapshot-${item.id}`" @click="createConversationSnapshot(item)">{{ replayBusyKey === `snapshot-${item.id}` ? '创建中…' : '创建快照' }}</button></td>
+                </tr>
+                <tr v-if="!replayLoading && !replayConversations.length"><td colspan="6" class="evaluation-empty">暂无可创建快照的会话</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="replay-panel">
+          <div class="replay-panel-head"><div><span>STEP 2</span><h3>导出或重新执行快照</h3></div><small>重放不会向原会话追加消息，也不会覆盖用户历史。</small></div>
+          <div class="quota-table-wrap">
+            <table class="evaluation-table replay-snapshot-table">
+              <thead><tr><th>快照</th><th>来源</th><th>消息</th><th>校验值</th><th>目标模型</th><th>重放</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr v-for="item in replaySnapshots" :key="item.id" :class="{ selected: replaySelectedSnapshotId === item.id }" @click="selectReplaySnapshot(item.id)">
+                  <td><strong>#{{ item.id }} · {{ item.title }}</strong><small>{{ formatReplayTime(item.createdAt) }}</small></td>
+                  <td>会话 #{{ item.sourceConversationId || '已删除' }}<small>用户 {{ item.sourceUserId }}</small></td>
+                  <td>{{ item.messageCount }}</td>
+                  <td><code :title="item.checksum">{{ String(item.checksum || '').slice(0, 12) }}…</code></td>
+                  <td><select v-model="item.replayModelId" @click.stop><option v-for="model in replayEnabledModels" :key="model.id" :value="model.id">{{ model.displayName }}</option></select></td>
+                  <td>{{ item.replayCount || 0 }} 次<small v-if="item.lastReplayAt">最近 {{ formatReplayTime(item.lastReplayAt) }}</small></td>
+                  <td><div class="replay-row-actions"><button class="btn-edit" @click.stop="exportConversationSnapshot(item)">导出 JSON</button><button class="table-primary-btn" :disabled="replayBusyKey === `replay-${item.id}`" @click.stop="runConversationReplay(item)">{{ replayBusyKey === `replay-${item.id}` ? '执行中…' : '重新执行' }}</button></div></td>
+                </tr>
+                <tr v-if="!replayLoading && !replaySnapshots.length"><td colspan="7" class="evaluation-empty">尚未创建会话快照</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div v-if="replaySelectedSnapshotId" class="replay-panel">
+          <div class="replay-panel-head"><div><span>STEP 3</span><h3>快照 #{{ replaySelectedSnapshotId }} 的重放结果</h3></div><small>相似度仅用于快速观察文本变化，不代表回答质量。</small></div>
+          <div v-if="!replayRuns.length" class="evaluation-empty">该快照还没有重放记录</div>
+          <article v-for="run in replayRuns" :key="run.id" class="replay-run-card">
+            <div class="replay-run-summary">
+              <div><span :class="['replay-status', run.status]">{{ run.status === 'completed' ? '执行完成' : '执行失败' }}</span><strong>{{ run.provider }} / {{ run.model }}</strong><small>{{ run.promptVersion }} · {{ formatReplayTime(run.createdAt) }}</small></div>
+              <div><span>相似度</span><strong>{{ formatPercent(run.similarityScore || 0) }}</strong></div>
+              <div><span>Token</span><strong>{{ run.inputTokens || 0 }} / {{ run.outputTokens || 0 }}</strong></div>
+              <div><span>耗时</span><strong>{{ run.latencyMs || 0 }}ms</strong></div>
+              <div><span>费用</span><strong>{{ formatLlmCost(run.estimatedCost) }}</strong></div>
+            </div>
+            <p v-if="run.errorMessage" class="replay-run-error">{{ run.errorMessage }}</p>
+            <details v-else class="replay-answer-compare"><summary>查看原回答与重放回答</summary><div><section><h4>原回答</h4><pre>{{ run.originalReply || '（原会话没有对应回答）' }}</pre></section><section><h4>重放回答</h4><pre>{{ run.replayReply }}</pre></section></div></details>
+            <code class="replay-trace">{{ run.traceId }}</code>
+          </article>
+        </div>
+        <p class="prompt-decision-note">导出的 JSON 包含会话消息正文和内部用户 ID，但不包含用户名、JWT、API Key 或模型隐藏思维链。重放会产生真实模型调用和相应费用，并受每日模型预算保护。</p>
       </section>
 
       <div class="dialog-overlay" v-if="showLlmCostCaseDialog" @click.self="closeLlmCostCaseDialog">
@@ -1141,7 +1221,10 @@ export default {
       promptCompareRunning: false, promptCompareProgress: 0, promptCompareError: '', promptCompareResults: [],
       cacheStats: {}, cacheLoading: false, cacheError: '', cacheLastUpdated: '',
       quotaUsers: [], quotaDefaults: {}, quotaLoading: false, quotaError: '',
-      quotaLastUpdated: '', quotaSavingId: null
+      quotaLastUpdated: '', quotaSavingId: null,
+      replayConversations: [], replaySnapshots: [], replayRuns: [],
+      replaySelectedSnapshotId: null, replayLoading: false, replayError: '',
+      replayBusyKey: '', replayLastUpdated: ''
     }
   },
   computed: {
@@ -1150,10 +1233,10 @@ export default {
       return selected ? selected.displayName : (this.llmModelName ? `${this.llmProviderName} / ${this.llmModelName}` : this.llmProviderName)
     },
     menuTitle() {
-      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录', cache: '缓存监控', quota: '费用保护' }[this.currentMenu] || '管理后台'
+      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录', cache: '缓存监控', quota: '费用保护', replay: '会话快照与重放' }[this.currentMenu] || '管理后台'
     },
     menuIcon() {
-      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠', cache: '⚡', quota: '🛡️' }[this.currentMenu] || '🎵'
+      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠', cache: '⚡', quota: '🛡️', replay: '⏮️' }[this.currentMenu] || '🎵'
     },
     llmInvocationProviders() {
       return [...new Set(this.llmAdminModels.map(item => item.provider).filter(Boolean))]
@@ -1256,6 +1339,9 @@ export default {
         total.blocked += Number(item.blockedCount || 0)
         return total
       }, { modelCalls: 0, tokens: 0, cost: 0, blocked: 0 })
+    },
+    replayEnabledModels() {
+      return this.llmAdminModels.filter(item => item.enabled !== false)
     }
   },
   mounted() {
@@ -1263,6 +1349,108 @@ export default {
     this.loadFullAudioList();
   },
   methods: {
+    async openConversationReplay() {
+      this.currentMenu = 'replay'
+      await this.loadAdminLlmModels()
+      await this.loadConversationReplay()
+    },
+    async loadConversationReplay() {
+      this.replayLoading = true
+      this.replayError = ''
+      try {
+        const [conversations, snapshots] = await Promise.all([
+          request.get('/admin/conversation-replays/conversations', { params: { limit: 100 } }),
+          request.get('/admin/conversation-replays/snapshots', { params: { limit: 100 } })
+        ])
+        if (conversations.data.code !== 200) throw new Error(conversations.data.msg || '会话列表加载失败')
+        if (snapshots.data.code !== 200) throw new Error(snapshots.data.msg || '快照列表加载失败')
+        this.replayConversations = conversations.data.data || []
+        const fallbackModelId = this.replayEnabledModels.find(item => item.default)?.id || this.replayEnabledModels[0]?.id || ''
+        this.replaySnapshots = (snapshots.data.data || []).map(item => ({
+          ...item,
+          replayModelId: this.replayEnabledModels.some(model => model.id === item.selectedModelId)
+            ? item.selectedModelId : fallbackModelId
+        }))
+        if (this.replaySelectedSnapshotId && !this.replaySnapshots.some(item => item.id === this.replaySelectedSnapshotId)) {
+          this.replaySelectedSnapshotId = null
+          this.replayRuns = []
+        } else if (this.replaySelectedSnapshotId) {
+          await this.loadReplayRuns(this.replaySelectedSnapshotId)
+        }
+        this.replayLastUpdated = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '会话快照数据加载失败'
+      } finally { this.replayLoading = false }
+    },
+    async createConversationSnapshot(item) {
+      this.replayBusyKey = `snapshot-${item.id}`
+      this.replayError = ''
+      try {
+        const res = await request.post('/admin/conversation-replays/snapshots', { conversationId: item.id })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '快照创建失败')
+        this.replaySelectedSnapshotId = res.data.data?.id || null
+        await this.loadConversationReplay()
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '快照创建失败'
+      } finally { this.replayBusyKey = '' }
+    },
+    async selectReplaySnapshot(snapshotId) {
+      this.replaySelectedSnapshotId = snapshotId
+      await this.loadReplayRuns(snapshotId)
+    },
+    async loadReplayRuns(snapshotId) {
+      try {
+        const res = await request.get(`/admin/conversation-replays/snapshots/${snapshotId}/runs`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '重放记录加载失败')
+        this.replayRuns = res.data.data || []
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '重放记录加载失败'
+      }
+    },
+    async exportConversationSnapshot(item) {
+      this.replayError = ''
+      try {
+        const res = await request.get(`/admin/conversation-replays/snapshots/${item.id}/export`, { responseType: 'blob' })
+        const url = URL.createObjectURL(new Blob([res.data], { type: 'application/json;charset=utf-8' }))
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `musichub-session-snapshot-${item.id}.json`
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        URL.revokeObjectURL(url)
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '快照导出失败'
+      }
+    },
+    async runConversationReplay(item) {
+      if (!item.replayModelId) {
+        this.replayError = '请先在统一模型目录中启用至少一个模型'
+        return
+      }
+      this.replayBusyKey = `replay-${item.id}`
+      this.replayError = ''
+      this.replaySelectedSnapshotId = item.id
+      try {
+        const res = await request.post(`/admin/conversation-replays/snapshots/${item.id}/replay`, { modelId: item.replayModelId })
+        if (res.data.code !== 200) throw new Error(res.data.msg || '快照重放失败')
+        await Promise.all([this.loadReplayRuns(item.id), this.loadConversationReplay()])
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '快照重放失败'
+      } finally { this.replayBusyKey = '' }
+    },
+    formatReplayTime(value) {
+      if (!value) return '—'
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
+    },
+    replayModelName(modelId) {
+      if (!modelId) return '默认模型'
+      const model = this.llmAdminModels.find(item => item.id === modelId)
+      if (model) return model.displayName || `${model.provider} / ${model.model}`
+      const separator = modelId.indexOf('-')
+      return separator > 0 ? `${modelId.slice(0, separator)} / ${modelId.slice(separator + 1)}` : modelId
+    },
     async openQuotaProtection() {
       this.currentMenu = 'quota'
       await this.loadQuotaProtection()
@@ -2527,6 +2715,44 @@ export default {
 .quota-table input { width: 125px; padding: 9px 10px; border: 1px solid #ddd4f1; border-radius: 9px; color: #30264c; background: #fbfaff; }
 .quota-blocked-tag { display: inline-flex; padding: 5px 10px; border-radius: 999px; color: #777087; background: #f2f0f7; white-space: nowrap; }
 .quota-blocked-tag.active { color: #bd4c68; background: #fdebf0; }
+.table-primary-btn { padding: 9px 15px; border: 1px solid #7953c7; border-radius: 9px; color: #fff; background: linear-gradient(135deg, #7651c8, #8b5bd5); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; box-shadow: 0 5px 12px rgba(105, 70, 177, .16); }
+.table-primary-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 7px 16px rgba(105, 70, 177, .24); }
+.table-primary-btn:disabled { cursor: not-allowed; opacity: .55; box-shadow: none; }
+.replay-dashboard { gap: 20px; }
+.replay-hero { background: linear-gradient(120deg, #202b52, #4c3b91 58%, #7d4fd1); }
+.replay-panel { padding: 24px; border: 1px solid #e9e3f5; border-radius: 20px; background: #fff; box-shadow: 0 12px 28px rgba(62, 43, 105, .06); }
+.replay-panel-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+.replay-panel-head span { color: #8a66d1; font-size: 12px; font-weight: 800; letter-spacing: .12em; }
+.replay-panel-head h3 { margin: 5px 0 0; color: #251d3c; }
+.replay-panel-head > small { color: #918aa3; }
+.replay-source-table { min-width: 960px; }
+.replay-snapshot-table { min-width: 1250px; }
+.replay-source-table td > strong, .replay-source-table td > small,
+.replay-snapshot-table td > strong, .replay-snapshot-table td > small { display: block; }
+.replay-source-table td > small, .replay-snapshot-table td > small { margin-top: 5px; color: #918aa3; }
+.replay-snapshot-table tbody tr { cursor: pointer; }
+.replay-snapshot-table tbody tr.selected { background: #f7f2ff; }
+.replay-snapshot-table select { max-width: 210px; padding: 9px 10px; border: 1px solid #ddd4f1; border-radius: 9px; background: #fff; }
+.replay-row-actions { display: flex; gap: 8px; white-space: nowrap; }
+.replay-run-card { margin-top: 14px; padding: 18px; border: 1px solid #e8e1f4; border-radius: 15px; background: #fcfbff; }
+.replay-run-summary { display: grid; grid-template-columns: minmax(240px, 1.8fr) repeat(4, minmax(100px, .7fr)); gap: 12px; align-items: center; }
+.replay-run-summary > div { display: flex; flex-direction: column; gap: 4px; }
+.replay-run-summary span, .replay-run-summary small { color: #8d849f; font-size: 12px; }
+.replay-status { align-self: flex-start; padding: 4px 8px; border-radius: 999px; }
+.replay-status.completed { color: #258765; background: #e3f6ee; }
+.replay-status.failed { color: #bf4e67; background: #fde7ed; }
+.replay-answer-compare { margin-top: 16px; border-top: 1px solid #ece6f6; padding-top: 14px; }
+.replay-answer-compare summary { color: #7250bd; cursor: pointer; font-weight: 700; }
+.replay-answer-compare > div { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 12px; }
+.replay-answer-compare section { min-width: 0; padding: 14px; border-radius: 12px; background: #f5f3fa; }
+.replay-answer-compare h4 { margin: 0 0 8px; color: #32274d; }
+.replay-answer-compare pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.65; color: #4e4661; }
+.replay-run-error { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; color: #b74660; background: #fff0f3; }
+.replay-trace { display: block; margin-top: 12px; color: #9990a8; font-size: 11px; overflow-wrap: anywhere; }
+@media (max-width: 1100px) {
+  .replay-run-summary { grid-template-columns: 1fr 1fr; }
+  .replay-answer-compare > div { grid-template-columns: 1fr; }
+}
 .cache-hero { background: linear-gradient(125deg, #24204f, #7047c8 72%, #8750db); }
 .cache-updated-at { align-self: center; color: rgba(255,255,255,.72); font-size: 12px; white-space: nowrap; }
 .cache-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
