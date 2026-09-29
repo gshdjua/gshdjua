@@ -16,6 +16,7 @@ import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.service.LlmModelCatalogService;
 import com.example.demo.service.ModelInvocationLogService;
 import com.example.demo.service.AgentServiceClient;
+import com.example.demo.service.UserLlmQuotaService;
 import com.example.demo.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -96,18 +97,44 @@ public class AssistantController {
     @Autowired
     private AgentServiceClient agentServiceClient;
 
+    @Autowired(required = false)
+    private UserLlmQuotaService userLlmQuotaService;
+
     private final ConcurrentMap<String, StreamSession> activeStreams = new ConcurrentHashMap<>();
 
     @PostMapping("/chat")
     @Transactional
-    public Map<String, Object> chat(@RequestBody Map<String, Object> payload, HttpServletRequest request) {
-        return processChat(payload, getUserId(request), null, null);
+    public Map<String, Object> chat(@RequestBody Map<String, Object> payload, HttpServletRequest request,
+                                    HttpServletResponse response) {
+        Integer userId = getUserId(request);
+        try (UserLlmQuotaService.Permit ignored = acquireQuota(userId, false)) {
+            return processChat(payload, userId, null, null);
+        } catch (UserLlmQuotaService.QuotaExceededException exception) {
+            applyQuotaResponse(response, exception);
+            return quotaResult(exception);
+        }
+    }
+
+    /** Compatibility entry point retained for focused controller tests. */
+    public Map<String, Object> chat(Map<String, Object> payload, HttpServletRequest request) {
+        return chat(payload, request, null);
     }
 
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@RequestBody Map<String, Object> payload, HttpServletRequest request,
                                  HttpServletResponse response) {
         Integer userId = getUserId(request);
+        final UserLlmQuotaService.Permit quotaPermit;
+        try {
+            quotaPermit = acquireQuota(userId, true);
+        } catch (UserLlmQuotaService.QuotaExceededException exception) {
+            applyQuotaResponse(response, exception);
+            SseEmitter rejected = new SseEmitter(1000L);
+            try { rejected.send(SseEmitter.event().name("error").data(quotaResult(exception))); }
+            catch (IOException ignored) { }
+            rejected.complete();
+            return rejected;
+        }
         response.setHeader("Cache-Control", "no-cache, no-transform");
         response.setHeader("X-Accel-Buffering", "no");
         SseEmitter emitter = new SseEmitter(60000L);
@@ -116,10 +143,12 @@ public class AssistantController {
                 ? suppliedStreamId : UUID.randomUUID().toString();
         Long conversationId = toLong(payload.get("conversationId"));
         String originalMessage = String.valueOf(payload.getOrDefault("message", "")).trim();
-        StreamSession candidateSession = new StreamSession(candidateStreamId, userId, conversationId, originalMessage);
+        StreamSession candidateSession = new StreamSession(candidateStreamId, userId, conversationId,
+                originalMessage, quotaPermit);
         while (activeStreams.putIfAbsent(candidateStreamId, candidateSession) != null) {
             candidateStreamId = UUID.randomUUID().toString();
-            candidateSession = new StreamSession(candidateStreamId, userId, conversationId, originalMessage);
+            candidateSession = new StreamSession(candidateStreamId, userId, conversationId,
+                    originalMessage, quotaPermit);
         }
         final String streamId = candidateStreamId;
         final StreamSession session = candidateSession;
@@ -188,6 +217,8 @@ public class AssistantController {
                 } catch (IOException sendError) {
                     emitter.completeWithError(sendError);
                 }
+            } finally {
+                session.quotaPermit.close();
             }
         });
         session.future = future;
@@ -234,7 +265,7 @@ public class AssistantController {
     private void finishStreamMetric(StreamSession session, String status) {
         if (!session.finished.compareAndSet(false, true)) return;
         try {
-            modelInvocationLogService.finishStream(session.traceId(), session.provider, session.model,
+            modelInvocationLogService.finishStream(session.userId, session.traceId(), session.provider, session.model,
                     session.firstTokenMs(), session.totalMs(), session.eventCount.get(),
                     session.charCount.get(), session.modelCallCount.get(), session.estimatedInputTokens.get(),
                     session.estimatedOutputTokens(), session.estimatedCost(), status);
@@ -342,6 +373,7 @@ public class AssistantController {
             modelInvocationLogService.record(memoryRequestId,
                     fallbackModel == null ? "" : effectiveMemoryRequestId,
                     selectedModel, requestedAttempt, fallbackModel, fallbackAttempt, replyResult);
+            modelInvocationLogService.associateUser(memoryRequestId, userId);
         } catch (RuntimeException exception) {
             LOGGER.log(Level.WARNING, "Could not persist privacy-safe LLM invocation log", exception);
         }
@@ -407,6 +439,7 @@ public class AssistantController {
         private final Integer userId;
         private final Long conversationId;
         private final String originalMessage;
+        private final UserLlmQuotaService.Permit quotaPermit;
         private final long startedAtNanos = System.nanoTime();
         private final StringBuilder partialReply = new StringBuilder();
         private final AtomicLong firstTokenNanos = new AtomicLong(0);
@@ -425,11 +458,13 @@ public class AssistantController {
         private volatile double activeOutputPrice;
         private volatile CompletableFuture<Void> future;
 
-        private StreamSession(String streamId, Integer userId, Long conversationId, String originalMessage) {
+        private StreamSession(String streamId, Integer userId, Long conversationId, String originalMessage,
+                              UserLlmQuotaService.Permit quotaPermit) {
             this.streamId = streamId;
             this.userId = userId;
             this.conversationId = conversationId;
             this.originalMessage = originalMessage;
+            this.quotaPermit = quotaPermit;
         }
 
         private synchronized void recordDelta(String content) {
@@ -714,6 +749,28 @@ public class AssistantController {
         String username = JwtUtil.getUsernameByToken(request.getHeader("Authorization"));
         User user = userMapper.selectByUsername(username);
         return user.getId();
+    }
+
+    private UserLlmQuotaService.Permit acquireQuota(Integer userId, boolean stream) {
+        return userLlmQuotaService == null
+                ? UserLlmQuotaService.Permit.none()
+                : userLlmQuotaService.acquireRequest(userId, stream);
+    }
+
+    private void applyQuotaResponse(HttpServletResponse response,
+                                    UserLlmQuotaService.QuotaExceededException exception) {
+        if (response == null) return;
+        response.setStatus(429);
+        response.setHeader("Retry-After", String.valueOf(exception.getRetryAfterSeconds()));
+    }
+
+    private Map<String, Object> quotaResult(UserLlmQuotaService.QuotaExceededException exception) {
+        Map<String, Object> data = new HashMap<>();
+        data.put("reason", exception.getReason());
+        data.put("retryAfterSeconds", exception.getRetryAfterSeconds());
+        data.put("limit", exception.getLimit());
+        data.put("current", exception.getCurrent());
+        return result(429, exception.getMessage(), data);
     }
 
     private Long toLong(Object value) {

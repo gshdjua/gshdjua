@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS llm_model_config (
 
 CREATE TABLE IF NOT EXISTS llm_invocation_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NULL,
     requested_trace_id VARCHAR(100) NOT NULL,
     fallback_trace_id VARCHAR(120) NOT NULL DEFAULT '',
     prompt_version VARCHAR(120) NOT NULL DEFAULT 'none',
@@ -159,8 +160,30 @@ CREATE TABLE IF NOT EXISTS llm_invocation_log (
     usage_source VARCHAR(20) NOT NULL DEFAULT 'provider',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_llm_invocation_created (created_at),
+    KEY idx_llm_invocation_user_created (user_id, created_at),
     KEY idx_llm_invocation_requested (requested_provider, requested_model, created_at),
     KEY idx_llm_invocation_path (execution_path, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS user_llm_quota (
+    user_id INT PRIMARY KEY,
+    requests_per_minute INT NOT NULL,
+    concurrent_streams INT NOT NULL,
+    daily_token_limit INT NOT NULL,
+    daily_cost_limit DECIMAL(16,4) NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS llm_quota_event (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    event_type VARCHAR(40) NOT NULL,
+    limit_value DECIMAL(18,4) NOT NULL,
+    current_value DECIMAL(18,4) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_quota_event_user_time (user_id, created_at),
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 

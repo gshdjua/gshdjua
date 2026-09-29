@@ -20,7 +20,7 @@ public class ModelInvocationLogService {
     @PostConstruct
     public void ensureSchema() {
         jdbc.execute("CREATE TABLE IF NOT EXISTS llm_invocation_log ("
-                + "id BIGINT AUTO_INCREMENT PRIMARY KEY,requested_trace_id VARCHAR(100) NOT NULL,"
+                + "id BIGINT AUTO_INCREMENT PRIMARY KEY,user_id INT NULL,requested_trace_id VARCHAR(100) NOT NULL,"
                 + "fallback_trace_id VARCHAR(120) NOT NULL DEFAULT '',prompt_version VARCHAR(120) NOT NULL DEFAULT 'none',"
                 + "requested_provider VARCHAR(40) NOT NULL,requested_model VARCHAR(120) NOT NULL,"
                 + "actual_provider VARCHAR(40) NOT NULL,actual_model VARCHAR(120) NOT NULL,"
@@ -32,6 +32,7 @@ public class ModelInvocationLogService {
                 + "stream_char_count INT NOT NULL DEFAULT 0,stream_status VARCHAR(24) NOT NULL DEFAULT 'not_streamed',"
                 + "interrupted_at_chars INT NOT NULL DEFAULT 0,usage_source VARCHAR(20) NOT NULL DEFAULT 'provider',"
                 + "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,KEY idx_llm_invocation_created(created_at),"
+                + "KEY idx_llm_invocation_user_created(user_id,created_at),"
                 + "KEY idx_llm_invocation_requested(requested_provider,requested_model,created_at),"
                 + "KEY idx_llm_invocation_path(execution_path,created_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         addColumnIfMissing("first_token_ms", "INT NOT NULL DEFAULT 0");
@@ -40,9 +41,20 @@ public class ModelInvocationLogService {
         addColumnIfMissing("stream_status", "VARCHAR(24) NOT NULL DEFAULT 'not_streamed'");
         addColumnIfMissing("interrupted_at_chars", "INT NOT NULL DEFAULT 0");
         addColumnIfMissing("usage_source", "VARCHAR(20) NOT NULL DEFAULT 'provider'");
+        addColumnIfMissing("user_id", "INT NULL AFTER id");
+        addIndexIfMissing("idx_llm_invocation_user_created", "user_id,created_at");
         jdbc.update("UPDATE llm_invocation_log SET usage_source='unavailable' "
                 + "WHERE stream_status='cancelled' AND input_tokens=0 AND output_tokens=0 "
                 + "AND model_calls>0 AND usage_source='provider'");
+    }
+
+    public void finishStream(Integer userId, String traceId, String provider, String model, long firstTokenMs,
+                             long totalMs, int eventCount, int charCount, int modelCalls,
+                             int estimatedInputTokens, int estimatedOutputTokens,
+                             double estimatedCost, String status) {
+        finishStream(traceId, provider, model, firstTokenMs, totalMs, eventCount, charCount,
+                modelCalls, estimatedInputTokens, estimatedOutputTokens, estimatedCost, status);
+        associateUser(traceId, userId);
     }
 
     public void finishStream(String traceId, String provider, String model, long firstTokenMs,
@@ -75,6 +87,17 @@ public class ModelInvocationLogService {
         }
     }
 
+    public void record(Integer userId, String requestedTraceId, String fallbackTraceId,
+                       LlmModelCatalogService.ModelConfig requestedModel,
+                       DeepSeekMusicAgent.ReplyResult requestedAttempt,
+                       LlmModelCatalogService.ModelConfig fallbackModel,
+                       DeepSeekMusicAgent.ReplyResult fallbackAttempt,
+                       DeepSeekMusicAgent.ReplyResult finalResult) {
+        record(requestedTraceId, fallbackTraceId, requestedModel, requestedAttempt,
+                fallbackModel, fallbackAttempt, finalResult);
+        associateUser(requestedTraceId, userId);
+    }
+
     public void record(String requestedTraceId, String fallbackTraceId,
                        LlmModelCatalogService.ModelConfig requestedModel,
                        DeepSeekMusicAgent.ReplyResult requestedAttempt,
@@ -96,13 +119,18 @@ public class ModelInvocationLogService {
                 finalResult.getLatencyMs(), cost);
     }
 
+    public void associateUser(String traceId, Integer userId) {
+        if (userId != null) jdbc.update("UPDATE llm_invocation_log SET user_id=? WHERE requested_trace_id=?",
+                userId, safe(traceId));
+    }
+
     public Map<String, Object> search(int days, String provider, String model, String status, int limit) {
         Filter filter = filter(days, provider, model, status);
         int safeLimit = Math.max(1, Math.min(200, limit));
         List<Object> listArgs = new ArrayList<>(filter.args);
         listArgs.add(safeLimit);
         List<Map<String, Object>> items = jdbc.query(
-                "SELECT id,requested_trace_id,fallback_trace_id,prompt_version,requested_provider,requested_model,"
+                "SELECT id,user_id,requested_trace_id,fallback_trace_id,prompt_version,requested_provider,requested_model,"
                         + "actual_provider,actual_model,execution_path,fallback_reason,model_calls,retry_count,fallback_count,"
                         + "input_tokens,output_tokens,latency_ms,estimated_cost,first_token_ms,stream_event_count,"
                         + "stream_char_count,stream_status,interrupted_at_chars,usage_source,created_at FROM llm_invocation_log"
@@ -110,6 +138,7 @@ public class ModelInvocationLogService {
                 (rs, row) -> {
                     Map<String, Object> item = new LinkedHashMap<>();
                     item.put("id", rs.getLong("id"));
+                    item.put("userId", rs.getObject("user_id"));
                     item.put("requestedTraceId", rs.getString("requested_trace_id"));
                     item.put("fallbackTraceId", rs.getString("fallback_trace_id"));
                     item.put("promptVersion", rs.getString("prompt_version"));
@@ -192,6 +221,15 @@ public class ModelInvocationLogService {
                         + "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='llm_invocation_log' AND COLUMN_NAME=?",
                 Integer.class, column);
         if (count == null || count == 0) jdbc.execute("ALTER TABLE llm_invocation_log ADD COLUMN " + column + " " + definition);
+    }
+
+    private void addIndexIfMissing(String index, String columns) {
+        Integer count = jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.STATISTICS "
+                        + "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='llm_invocation_log' AND INDEX_NAME=?",
+                Integer.class, index);
+        if (count == null || count == 0) {
+            jdbc.execute("ALTER TABLE llm_invocation_log ADD KEY " + index + "(" + columns + ")");
+        }
     }
 
     private String safe(String value) { return value == null ? "" : value.trim(); }

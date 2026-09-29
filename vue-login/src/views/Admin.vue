@@ -38,6 +38,10 @@
           <span class="nav-icon">⚡</span>
           <span>缓存监控</span>
         </div>
+        <div class="nav-item" :class="{active: currentMenu === 'quota'}" @click="openQuotaProtection">
+          <span class="nav-icon">🛡️</span>
+          <span>费用保护</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <button class="back-btn" @click="$router.push('/index')">
@@ -638,7 +642,7 @@
           </div>
           <div v-if="!llmInvocationLoading && !llmInvocationRows.length" class="evaluation-empty">当前范围暂无模型调用记录</div>
           <div v-else class="evaluation-table-wrap llm-invocation-table"><table class="evaluation-table"><thead><tr><th>时间</th><th>请求模型</th><th>实际模型</th><th>执行路径</th><th>流式状态</th><th>首 Token / 总耗时</th><th>事件 / 字符</th><th>降级原因</th><th>调用 / Token</th><th>费用</th><th>Trace</th></tr></thead><tbody><tr v-for="item in llmInvocationRows" :key="item.id"><td>{{ formatLlmInvocationTime(item.createdAt) }}</td><td>{{ item.requestedProvider }} / {{ item.requestedModel }}</td><td>{{ item.actualProvider }} / {{ item.actualModel }}</td><td><span class="llm-invocation-status" :class="item.executionPath">{{ llmInvocationPathLabel(item.executionPath) }}</span></td><td><span class="llm-stream-status" :class="item.streamStatus">{{ llmStreamStatusLabel(item.streamStatus) }}</span><small v-if="item.interruptedAtChars">中断于 {{ item.interruptedAtChars }} 字符</small></td><td>{{ item.firstTokenMs || 0 }}ms<br><small>{{ item.latencyMs }}ms</small></td><td>{{ item.streamEventCount || 0 }} / {{ item.streamCharCount || 0 }}</td><td>{{ llmFallbackReasonLabel(item.fallbackReason) }}</td><td>{{ item.modelCalls }} 次<br><small v-if="item.usageSource === 'unavailable'">用量未知</small><small v-else>{{ item.usageSource === 'estimated' ? '≈ ' : '' }}{{ item.inputTokens }} / {{ item.outputTokens }}<em v-if="item.usageSource === 'estimated'">估算</em></small></td><td><template v-if="item.usageSource === 'unavailable'">未知</template><template v-else>{{ item.usageSource === 'estimated' ? '≈ ' : '' }}{{ formatLlmCost(item.estimatedCost) }}</template></td><td class="llm-trace-cell"><code :title="item.requestedTraceId">{{ item.requestedTraceId }}</code><code v-if="item.fallbackTraceId" :title="item.fallbackTraceId">↳ {{ item.fallbackTraceId }}</code></td></tr></tbody></table></div>
-          <p class="prompt-decision-note">仅保存模型、调用状态、Token、费用、延迟和 traceId；不保存用户、问题、回答或模型隐藏思维链。</p>
+          <p class="prompt-decision-note">仅保存内部用户 ID、模型、调用状态、Token、费用、延迟和 traceId；不保存用户名、问题、回答或模型隐藏思维链。</p>
         </div>
       </section>
 
@@ -691,6 +695,50 @@
             </article>
           </div>
           <p class="prompt-decision-note">首次请求通常会显示为未命中；再次发送相同问题或同时发送多个相同请求后，命中数或并发合并数才会增加。音频索引重建以及 Prompt 发布、灰度调整、停用或回滚会主动清空相关缓存。</p>
+        </template>
+      </section>
+
+      <section v-if="currentMenu === 'quota'" class="evaluation-dashboard quota-dashboard">
+        <div class="evaluation-hero quota-hero">
+          <div>
+            <p class="evaluation-eyebrow">USER RATE LIMIT & COST GUARD</p>
+            <h2>用户级限流与模型费用保护</h2>
+            <p>按用户限制请求频率、流式并发和每日模型用量；达到预算后仍可使用本地歌库回答。</p>
+          </div>
+          <div class="evaluation-actions">
+            <span v-if="quotaLastUpdated" class="cache-updated-at">更新于 {{ quotaLastUpdated }}</span>
+            <button type="button" class="evaluation-export-btn" :disabled="quotaLoading" @click="loadQuotaProtection">
+              {{ quotaLoading ? '刷新中…' : '刷新用量' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="quotaError" class="evaluation-state error">{{ quotaError }}</div>
+        <template v-else>
+          <div class="cache-summary-grid">
+            <div class="cache-summary-card primary"><span>今日模型调用</span><strong>{{ quotaTotals.modelCalls }}</strong><small>所有用户外部模型调用次数</small></div>
+            <div class="cache-summary-card"><span>今日 Token</span><strong>{{ quotaTotals.tokens.toLocaleString() }}</strong><small>输入与输出 Token 合计</small></div>
+            <div class="cache-summary-card"><span>今日费用</span><strong>{{ formatLlmCost(quotaTotals.cost) }}</strong><small>依据模型目录价格估算</small></div>
+            <div class="cache-summary-card"><span>今日拦截</span><strong>{{ quotaTotals.blocked }}</strong><small>频率、并发或预算保护触发次数</small></div>
+          </div>
+          <div class="quota-table-wrap">
+            <table class="evaluation-table quota-table">
+              <thead><tr><th>用户</th><th>当前请求</th><th>流式并发</th><th>每日 Token</th><th>每日费用（元）</th><th>今日用量</th><th>保护事件</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr v-for="item in quotaUsers" :key="item.userId">
+                  <td><strong>{{ item.username }}</strong><small>#{{ item.userId }} · {{ item.role === 'admin' ? '管理员' : '普通用户' }}</small></td>
+                  <td><input v-model.number="item.requestsPerMinute" type="number" min="1" max="600"><small>{{ item.requestsInLastMinute || 0 }} / 分钟</small></td>
+                  <td><input v-model.number="item.concurrentStreams" type="number" min="1" max="20"><small>当前 {{ item.activeStreams || 0 }}</small></td>
+                  <td><input v-model.number="item.dailyTokenLimit" type="number" min="0" max="100000000"><small>0 表示不限</small></td>
+                  <td><input v-model.number="item.dailyCostLimit" type="number" min="0" max="100000" step="0.01"><small>0 表示不限</small></td>
+                  <td><strong>{{ Number(item.usedTokens || 0).toLocaleString() }} Token</strong><small>{{ formatLlmCost(item.usedCost) }} · {{ item.modelCalls || 0 }} 次</small></td>
+                  <td><span :class="['quota-blocked-tag', { active: Number(item.blockedCount || 0) > 0 }]">{{ item.blockedCount || 0 }} 次</span></td>
+                  <td><button class="evaluation-export-btn" :disabled="quotaSavingId === item.userId" @click="saveUserQuota(item)">{{ quotaSavingId === item.userId ? '保存中…' : '保存' }}</button></td>
+                </tr>
+                <tr v-if="!quotaLoading && !quotaUsers.length"><td colspan="8" class="evaluation-empty">暂无用户</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="prompt-decision-note">请求频率与并发超限会返回 HTTP 429；每日 Token 或费用达到上限时，仅暂停新的外部模型调用，不影响本地歌库查询。统计按内部用户 ID 聚合，不保存问题、回答或 API Key。</p>
         </template>
       </section>
 
@@ -1091,7 +1139,9 @@ export default {
       promptFeedbackLoading: false, promptFeedbackError: '',
       promptCompareBase: null, promptCompareCandidate: null, promptCompareRealCall: false,
       promptCompareRunning: false, promptCompareProgress: 0, promptCompareError: '', promptCompareResults: [],
-      cacheStats: {}, cacheLoading: false, cacheError: '', cacheLastUpdated: ''
+      cacheStats: {}, cacheLoading: false, cacheError: '', cacheLastUpdated: '',
+      quotaUsers: [], quotaDefaults: {}, quotaLoading: false, quotaError: '',
+      quotaLastUpdated: '', quotaSavingId: null
     }
   },
   computed: {
@@ -1100,10 +1150,10 @@ export default {
       return selected ? selected.displayName : (this.llmModelName ? `${this.llmProviderName} / ${this.llmModelName}` : this.llmProviderName)
     },
     menuTitle() {
-      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录', cache: '缓存监控' }[this.currentMenu] || '管理后台'
+      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录', cache: '缓存监控', quota: '费用保护' }[this.currentMenu] || '管理后台'
     },
     menuIcon() {
-      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠', cache: '⚡' }[this.currentMenu] || '🎵'
+      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠', cache: '⚡', quota: '🛡️' }[this.currentMenu] || '🎵'
     },
     llmInvocationProviders() {
       return [...new Set(this.llmAdminModels.map(item => item.provider).filter(Boolean))]
@@ -1197,6 +1247,15 @@ export default {
     },
     cacheRagUnavailable() {
       return this.cacheStats.retrieval && this.cacheStats.retrieval.ragService?.available === false
+    },
+    quotaTotals() {
+      return this.quotaUsers.reduce((total, item) => {
+        total.modelCalls += Number(item.modelCalls || 0)
+        total.tokens += Number(item.usedTokens || 0)
+        total.cost += Number(item.usedCost || 0)
+        total.blocked += Number(item.blockedCount || 0)
+        return total
+      }, { modelCalls: 0, tokens: 0, cost: 0, blocked: 0 })
     }
   },
   mounted() {
@@ -1204,6 +1263,40 @@ export default {
     this.loadFullAudioList();
   },
   methods: {
+    async openQuotaProtection() {
+      this.currentMenu = 'quota'
+      await this.loadQuotaProtection()
+    },
+    async loadQuotaProtection() {
+      this.quotaLoading = true
+      this.quotaError = ''
+      try {
+        const res = await request.get('/admin/llm-quotas')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '费用保护数据加载失败')
+        this.quotaUsers = res.data.data?.users || []
+        this.quotaDefaults = res.data.data?.defaults || {}
+        this.quotaLastUpdated = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      } catch (error) {
+        this.quotaError = error.response?.data?.msg || error.message || '费用保护数据加载失败'
+      } finally { this.quotaLoading = false }
+    },
+    async saveUserQuota(item) {
+      this.quotaSavingId = item.userId
+      this.quotaError = ''
+      try {
+        const payload = {
+          requestsPerMinute: Number(item.requestsPerMinute),
+          concurrentStreams: Number(item.concurrentStreams),
+          dailyTokenLimit: Number(item.dailyTokenLimit),
+          dailyCostLimit: Number(item.dailyCostLimit)
+        }
+        const res = await request.put(`/admin/llm-quotas/${item.userId}`, payload)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '限额保存失败')
+        await this.loadQuotaProtection()
+      } catch (error) {
+        this.quotaError = error.response?.data?.msg || error.message || '限额保存失败'
+      } finally { this.quotaSavingId = null }
+    },
     async openCacheMetrics() {
       this.currentMenu = 'cache'
       await this.loadCacheMetrics()
@@ -2424,6 +2517,16 @@ export default {
 .sidebar-footer .back-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
 
 .cache-dashboard { gap: 20px; }
+.quota-dashboard { gap: 20px; }
+.quota-hero { background: linear-gradient(120deg, #24345d, #6844bc 68%, #8750dd); }
+.quota-table-wrap { overflow-x: auto; background: #fff; border: 1px solid #ebe6f7; border-radius: 18px; }
+.quota-table { min-width: 1180px; }
+.quota-table td { vertical-align: middle; }
+.quota-table td > strong, .quota-table td > small { display: block; }
+.quota-table td > small { margin-top: 5px; color: #918aa6; white-space: nowrap; }
+.quota-table input { width: 125px; padding: 9px 10px; border: 1px solid #ddd4f1; border-radius: 9px; color: #30264c; background: #fbfaff; }
+.quota-blocked-tag { display: inline-flex; padding: 5px 10px; border-radius: 999px; color: #777087; background: #f2f0f7; white-space: nowrap; }
+.quota-blocked-tag.active { color: #bd4c68; background: #fdebf0; }
 .cache-hero { background: linear-gradient(125deg, #24204f, #7047c8 72%, #8750db); }
 .cache-updated-at { align-self: center; color: rgba(255,255,255,.72); font-size: 12px; white-space: nowrap; }
 .cache-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }

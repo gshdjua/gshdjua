@@ -1108,7 +1108,8 @@ export default {
           body: JSON.stringify({ message, conversationId, modelId: this.selectedModelId, streamId }),
           signal: controller.signal
         })
-        if (!response.ok || !response.body) throw new Error(`流式连接失败（HTTP ${response.status}）`)
+        if (!response.ok) throw new Error(await this.assistantHttpError(response))
+        if (!response.body) throw new Error('流式连接未返回可读取内容')
         let completedData = null
         let streamError = null
         await this.readAssistantSse(response, async (event, data) => {
@@ -1166,6 +1167,19 @@ export default {
     createAssistantStreamId() {
       if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID()
       return `stream_${Date.now()}_${Math.random().toString(36).slice(2, 12)}`
+    },
+    async assistantHttpError(response) {
+      const fallback = response.status === 429
+        ? '请求过于频繁或已有回答正在生成，请稍后再试。'
+        : `流式连接失败（HTTP ${response.status}）`
+      try {
+        const text = await response.text()
+        const dataLine = text.split(/\r?\n/).find(line => line.startsWith('data:'))
+        const payload = JSON.parse(dataLine ? dataLine.slice(5).trim() : text)
+        return payload.msg || payload.message || fallback
+      } catch (error) {
+        return fallback
+      }
     },
     stopAssistantGeneration() {
       if (!this.assistantLoading || !this.assistantStreamController) return

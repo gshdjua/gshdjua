@@ -82,6 +82,9 @@ public class DeepSeekMusicAgent {
     @Autowired
     private PromptVersionService promptVersionService;
 
+    @Autowired(required = false)
+    private UserLlmQuotaService userLlmQuotaService;
+
     public String reply(String message, Integer userId, List<Map<String, String>> history) {
         StructuredEntityQuery entityQuery = entityQueryParser.parse(message);
         if (entityQuery.isStrict()) {
@@ -158,7 +161,8 @@ public class DeepSeekMusicAgent {
             String answer = requestDeepSeek(message, evidenceContext, history);
             return answer.isEmpty() ? ensureEvidenceReferences(modelFallback(message, userId), evidenceContext) : answer;
         } catch (Exception exception) {
-            return ensureEvidenceReferences(modelFallback(message, userId), evidenceContext);
+            return quotaAwareFallback(exception,
+                    ensureEvidenceReferences(modelFallback(message, userId), evidenceContext));
         }
     }
 
@@ -257,7 +261,7 @@ public class DeepSeekMusicAgent {
             return answer;
         } catch (Exception exception) {
             if (modelJudgesMood) currentRecommendationOutcome.remove();
-            return localAnswer;
+            return quotaAwareFallback(exception, localAnswer);
         }
     }
 
@@ -316,7 +320,7 @@ public class DeepSeekMusicAgent {
             String answer = requestDeepSeek(message, evidenceContext, history);
             return answer.isEmpty() ? unavailableModelFallback(localAnswer, evidenceContext) : answer;
         } catch (Exception exception) {
-            return unavailableModelFallback(localAnswer, evidenceContext);
+            return quotaAwareFallback(exception, unavailableModelFallback(localAnswer, evidenceContext));
         }
     }
 
@@ -343,7 +347,8 @@ public class DeepSeekMusicAgent {
                     ? unavailableModelFallback(musicLibraryAgent.reply(message, userId, fallbackIntent), evidenceContext)
                     : answer;
         } catch (Exception exception) {
-            return unavailableModelFallback(musicLibraryAgent.reply(message, userId, fallbackIntent), evidenceContext);
+            return quotaAwareFallback(exception,
+                    unavailableModelFallback(musicLibraryAgent.reply(message, userId, fallbackIntent), evidenceContext));
         }
     }
 
@@ -539,6 +544,7 @@ public class DeepSeekMusicAgent {
     }
 
     private String requestDeepSeek(String message, EvidenceContext evidenceContext, List<Map<String, String>> history) throws Exception {
+        if (userLlmQuotaService != null) userLlmQuotaService.assertModelBudget(currentUserId.get());
         ModelInvocationMetrics metrics = currentModelMetrics.get();
         if (metrics != null) metrics.modelCalls = Math.max(1, metrics.modelCalls);
         String baseUrl = getFirstConfig("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL");
@@ -618,6 +624,13 @@ public class DeepSeekMusicAgent {
         if (metrics != null) metrics.success = true;
         return "Agent Service 当前不可用，已临时直连 DeepSeek；本轮长期记忆可能未保存。\n"
                 + ensureEvidenceReferences(answer, evidenceContext);
+    }
+
+    private String quotaAwareFallback(Exception exception, String localAnswer) {
+        if (exception instanceof UserLlmQuotaService.QuotaExceededException) {
+            return exception.getMessage() + "。\n\n" + localAnswer;
+        }
+        return localAnswer;
     }
 
     private JSONArray buildRequestMessages(String message, EvidenceContext evidenceContext,
