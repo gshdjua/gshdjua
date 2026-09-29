@@ -12,7 +12,17 @@ import pymysql
 import torch
 from sentence_transformers import SentenceTransformer
 
-from .config import MODEL_NAME, MODEL_PATH, MYSQL_CONFIG, get_data_dir
+from .cache import SingleFlightTTLCache
+from .config import (
+    EMBEDDING_CACHE_MAX_ENTRIES,
+    EMBEDDING_CACHE_TTL_SECONDS,
+    MODEL_NAME,
+    MODEL_PATH,
+    MYSQL_CONFIG,
+    SEARCH_CACHE_MAX_ENTRIES,
+    SEARCH_CACHE_TTL_SECONDS,
+    get_data_dir,
+)
 
 
 class VectorRagEngine:
@@ -26,6 +36,13 @@ class VectorRagEngine:
         self._data_dir = get_data_dir()
         self._index_path = self._data_dir / "music.faiss"
         self._metadata_path = self._data_dir / "music_metadata.json"
+        self._index_generation = 0
+        self._embedding_cache = SingleFlightTTLCache(
+            EMBEDDING_CACHE_TTL_SECONDS, EMBEDDING_CACHE_MAX_ENTRIES
+        )
+        self._search_cache = SingleFlightTTLCache(
+            SEARCH_CACHE_TTL_SECONDS, SEARCH_CACHE_MAX_ENTRIES
+        )
         self._load_saved_index()
 
     @property
@@ -40,6 +57,14 @@ class VectorRagEngine:
             "index_ready": self._index is not None,
             "document_count": len(self._metadata),
             "device": self.device,
+            "cache": self.cache_stats(),
+        }
+
+    def cache_stats(self) -> Dict:
+        return {
+            "embedding": self._embedding_cache.stats(),
+            "search": self._search_cache.stats(),
+            "indexGeneration": self._index_generation,
         }
 
     def rebuild(self) -> Dict:
@@ -54,16 +79,11 @@ class VectorRagEngine:
                 self._index = None
                 self._metadata = []
                 self._remove_index_files()
+                self._invalidate_index_caches()
                 return {"document_count": 0, "model": MODEL_NAME, "device": self.device}
 
-            model = self._get_model()
-            passages = ["passage: " + document["text"] for document in documents]
-            vectors = model.encode(
-                passages,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            ).astype("float32")
+            passages = [document["text"] for document in documents]
+            vectors = self._encode_cached(passages, "passage")
             index = faiss.IndexFlatIP(vectors.shape[1])
             index.add(vectors)
 
@@ -73,6 +93,7 @@ class VectorRagEngine:
             )
             self._index = index
             self._metadata = documents
+            self._invalidate_index_caches()
             return {
                 "document_count": len(documents),
                 "model": MODEL_NAME,
@@ -85,16 +106,18 @@ class VectorRagEngine:
         normalized_query = (query or "").strip()
         if not normalized_query:
             return []
+        normalized_ids = tuple(sorted(set(audio_ids or [])))
+        key = (self._index_generation, normalized_query, int(top_k), normalized_ids)
+        results = self._search_cache.get_or_load(
+            key, lambda: self._search_uncached(normalized_query, top_k, list(normalized_ids))
+        )
+        return [dict(item) for item in results]
+
+    def _search_uncached(self, normalized_query: str, top_k: int, audio_ids: List[int]) -> List[Dict]:
         with self._lock:
             if self._index is None or not self._metadata:
                 return []
-            model = self._get_model()
-            query_vector = model.encode(
-                ["query: " + normalized_query],
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            ).astype("float32")
+            query_vector = self._encode_cached([normalized_query], "query")
             requested_count = min(max(top_k * 4, top_k), len(self._metadata)) if audio_ids else min(top_k, len(self._metadata))
             scores, positions = self._index.search(query_vector, requested_count)
             allowed_ids = set(audio_ids) if audio_ids else None
@@ -120,15 +143,28 @@ class VectorRagEngine:
         normalized = [str(text).strip() for text in texts if str(text).strip()]
         if not normalized:
             return []
-        prefix = "query: " if input_type == "query" else "passage: "
-        with self._lock:
-            vectors = self._get_model().encode(
-                [prefix + text for text in normalized],
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            ).astype("float32")
+        vectors = self._encode_cached(normalized, input_type)
         return [[round(float(value), 8) for value in vector] for vector in vectors]
+
+    def _encode_cached(self, texts: List[str], input_type: str) -> np.ndarray:
+        normalized = tuple(str(text).strip() for text in texts if str(text).strip())
+        key = (input_type, normalized)
+
+        def encode() -> np.ndarray:
+            prefix = "query: " if input_type == "query" else "passage: "
+            with self._lock:
+                return self._get_model().encode(
+                    [prefix + text for text in normalized],
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                ).astype("float32")
+
+        return self._embedding_cache.get_or_load(key, encode).copy()
+
+    def _invalidate_index_caches(self) -> None:
+        self._index_generation += 1
+        self._search_cache.clear()
 
     def _get_model(self) -> SentenceTransformer:
         if self._model is None:

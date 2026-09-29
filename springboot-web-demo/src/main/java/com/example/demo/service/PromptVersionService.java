@@ -1,13 +1,17 @@
 package com.example.demo.service;
 
+import com.example.demo.service.cache.TimedSingleFlightCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 import java.util.LinkedHashMap;
@@ -29,9 +33,23 @@ public class PromptVersionService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PromptVersionService.class);
     private final JdbcTemplate jdbc;
+    private final TimedSingleFlightCache<String, PromptSnapshot> activePromptCache =
+            new TimedSingleFlightCache<>(30000L, 2);
+    private final TimedSingleFlightCache<Integer, SelectedPrompt> evaluationPromptCache =
+            new TimedSingleFlightCache<>(300000L, 100);
 
     public PromptVersionService(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    @Value("${prompt.cache.ttl-ms:30000}")
+    void configureActiveCache(long ttlMillis) {
+        activePromptCache.configure(ttlMillis, 2);
+    }
+
+    @Value("${prompt.evaluation-cache.ttl-ms:300000}")
+    void configureEvaluationCache(long ttlMillis) {
+        evaluationPromptCache.configure(ttlMillis, 100);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -40,6 +58,7 @@ public class PromptVersionService {
             jdbc.update("INSERT IGNORE INTO prompt_version(name,version,template_text,status,applicable_strategy,published_at) "
                             + "VALUES(?,1,?,'published','production',CURRENT_TIMESTAMP)",
                     ANSWER_PROMPT, FALLBACK_TEMPLATE);
+            clearCachesNow();
         } catch (DataAccessException exception) {
             LOGGER.warn("Could not initialize answer prompt; built-in fallback remains available: {}",
                     exception.getClass().getSimpleName());
@@ -51,6 +70,16 @@ public class PromptVersionService {
     }
 
     public SelectedPrompt currentAnswerPrompt(Integer userId) {
+        boolean includeRollout = userId != null;
+        String cacheKey = includeRollout ? ANSWER_PROMPT + ":rollout" : ANSWER_PROMPT + ":baseline";
+        PromptSnapshot snapshot = activePromptCache.get(cacheKey, () -> loadPromptSnapshot(includeRollout));
+        SelectedPrompt baseline = snapshot.baseline;
+        if (userId != null && snapshot.candidate != null
+                && stableBucket(userId) < snapshot.candidate.percent) return snapshot.candidate.prompt;
+        return baseline;
+    }
+
+    private PromptSnapshot loadPromptSnapshot(boolean includeRollout) {
         SelectedPrompt baseline;
         try {
             List<SelectedPrompt> prompts = jdbc.query(
@@ -61,9 +90,11 @@ public class PromptVersionService {
                     ? prompts.get(0) : new SelectedPrompt(FALLBACK_TEMPLATE, "music_answer:fallback");
         } catch (DataAccessException exception) {
             LOGGER.warn("Published answer prompt unavailable; using built-in fallback: {}", exception.getClass().getSimpleName());
-            return new SelectedPrompt(FALLBACK_TEMPLATE, "music_answer:fallback");
+            return new PromptSnapshot(new SelectedPrompt(FALLBACK_TEMPLATE, "music_answer:fallback"), null);
         }
-        if (userId == null || "music_answer:fallback".equals(baseline.version)) return baseline;
+        if (!includeRollout || "music_answer:fallback".equals(baseline.version)) {
+            return new PromptSnapshot(baseline, null);
+        }
         try {
             List<RolloutCandidate> candidates = jdbc.query(
                     "SELECT pv.version,pv.template_text,pr.traffic_percent FROM prompt_rollout pr "
@@ -72,15 +103,20 @@ public class PromptVersionService {
                     (rs, rowNum) -> new RolloutCandidate(
                             new SelectedPrompt(rs.getString("template_text"), "music_answer:v" + rs.getInt("version")),
                             rs.getInt("traffic_percent")), ANSWER_PROMPT);
-            if (!candidates.isEmpty() && !candidates.get(0).prompt.template.trim().isEmpty()
-                    && stableBucket(userId) < candidates.get(0).percent) return candidates.get(0).prompt;
+            if (!candidates.isEmpty() && !candidates.get(0).prompt.template.trim().isEmpty()) {
+                return new PromptSnapshot(baseline, candidates.get(0));
+            }
         } catch (DataAccessException exception) {
             LOGGER.warn("Prompt rollout unavailable; using published baseline: {}", exception.getClass().getSimpleName());
         }
-        return baseline;
+        return new PromptSnapshot(baseline, null);
     }
 
     public SelectedPrompt forEvaluation(int version) {
+        return evaluationPromptCache.get(version, () -> loadEvaluationPrompt(version));
+    }
+
+    private SelectedPrompt loadEvaluationPrompt(int version) {
         List<SelectedPrompt> prompts = jdbc.query(
                 "SELECT version,template_text FROM prompt_version WHERE name=? AND version=? AND status<>'deleted'",
                 (rs, rowNum) -> new SelectedPrompt(rs.getString("template_text"),
@@ -89,6 +125,13 @@ public class PromptVersionService {
             throw new IllegalArgumentException("指定的 Prompt 版本不存在或已删除");
         }
         return prompts.get(0);
+    }
+
+    public Map<String, Object> cacheStats() {
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("activePrompt", activePromptCache.stats());
+        stats.put("evaluationPrompt", evaluationPromptCache.stats());
+        return stats;
     }
 
     int stableBucket(Integer userId) {
@@ -128,6 +171,7 @@ public class PromptVersionService {
                         + "ON DUPLICATE KEY UPDATE candidate_id=VALUES(candidate_id),"
                         + "traffic_percent=VALUES(traffic_percent),enabled=1",
                 ANSWER_PROMPT, candidateId, percent);
+        invalidateCaches();
         return rollout();
     }
 
@@ -142,6 +186,7 @@ public class PromptVersionService {
         if (candidateId != null) jdbc.update(
                 "UPDATE prompt_version SET status='inactive' WHERE id=? AND name=? AND status='gray'",
                 candidateId, ANSWER_PROMPT);
+        invalidateCaches();
         return rollout();
     }
 
@@ -152,6 +197,7 @@ public class PromptVersionService {
         int changed = jdbc.update("UPDATE prompt_rollout SET traffic_percent=? WHERE name=? AND enabled=1",
                 percent, ANSWER_PROMPT);
         if (changed != 1) throw new IllegalArgumentException("当前没有运行中的灰度发布");
+        invalidateCaches();
         return rollout();
     }
 
@@ -173,6 +219,7 @@ public class PromptVersionService {
                 + "WHERE id=? AND name=? AND status='gray'", candidateId, ANSWER_PROMPT);
         if (changed != 1) throw new IllegalArgumentException("灰度候选全量发布失败");
         jdbc.update("UPDATE prompt_rollout SET enabled=0,traffic_percent=0 WHERE name=?", ANSWER_PROMPT);
+        invalidateCaches();
         return byId(candidateId);
     }
 
@@ -219,6 +266,7 @@ public class PromptVersionService {
         int changed = jdbc.update("UPDATE prompt_version SET template_text=? WHERE id=? AND name=? AND status='draft'",
                 template.trim(), id, ANSWER_PROMPT);
         if (changed != 1) throw new IllegalArgumentException("只允许修改存在的草稿版本");
+        evaluationPromptCache.clear();
         return byId(id);
     }
 
@@ -235,6 +283,7 @@ public class PromptVersionService {
         jdbc.update("UPDATE prompt_version SET status='inactive' WHERE name=? AND status='published'", ANSWER_PROMPT);
         jdbc.update("UPDATE prompt_version SET status='published',published_at=CURRENT_TIMESTAMP WHERE id=? AND name=?",
                 id, ANSWER_PROMPT);
+        invalidateCaches();
         return byId(id);
     }
 
@@ -245,6 +294,7 @@ public class PromptVersionService {
         int changed = jdbc.update("UPDATE prompt_version SET status='inactive' WHERE id=? AND name=? AND status='published'",
                 id, ANSWER_PROMPT);
         if (changed != 1) throw new IllegalArgumentException("只有已发布版本可以停用");
+        invalidateCaches();
         return byId(id);
     }
 
@@ -254,6 +304,7 @@ public class PromptVersionService {
                         + "WHERE id=? AND name=? AND status IN ('draft','inactive')",
                 id, ANSWER_PROMPT);
         if (changed != 1) throw new IllegalArgumentException("只能删除草稿或已停用版本；当前发布版本请先停用");
+        invalidateCaches();
         // Retain the version number for existing audit labels and to prevent future reuse.
         return byId(id);
     }
@@ -295,6 +346,25 @@ public class PromptVersionService {
         }
     }
 
+    private void invalidateCaches() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()
+                && TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    clearCachesNow();
+                }
+            });
+            return;
+        }
+        clearCachesNow();
+    }
+
+    private void clearCachesNow() {
+        activePromptCache.clear();
+        evaluationPromptCache.clear();
+    }
+
     public static final class SelectedPrompt {
         private final String template;
         private final String version;
@@ -315,6 +385,16 @@ public class PromptVersionService {
         private RolloutCandidate(SelectedPrompt prompt, int percent) {
             this.prompt = prompt;
             this.percent = percent;
+        }
+    }
+
+    private static final class PromptSnapshot {
+        private final SelectedPrompt baseline;
+        private final RolloutCandidate candidate;
+
+        private PromptSnapshot(SelectedPrompt baseline, RolloutCandidate candidate) {
+            this.baseline = baseline;
+            this.candidate = candidate;
         }
     }
 }

@@ -34,6 +34,10 @@
           <span class="nav-icon">🧠</span>
           <span>模型目录</span>
         </div>
+        <div class="nav-item" :class="{active: currentMenu === 'cache'}" @click="openCacheMetrics">
+          <span class="nav-icon">⚡</span>
+          <span>缓存监控</span>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <button class="back-btn" @click="$router.push('/index')">
@@ -638,6 +642,58 @@
         </div>
       </section>
 
+      <section v-if="currentMenu === 'cache'" class="evaluation-dashboard cache-dashboard">
+        <div class="evaluation-hero cache-hero">
+          <div>
+            <p class="evaluation-eyebrow">CACHE OBSERVABILITY</p>
+            <h2>缓存与并发合并监控</h2>
+            <p>查看 Prompt、Embedding 和检索缓存的命中情况；只展示聚合指标，不保存问题、回答、向量或 API Key。</p>
+          </div>
+          <div class="evaluation-actions">
+            <span v-if="cacheLastUpdated" class="cache-updated-at">更新于 {{ cacheLastUpdated }}</span>
+            <button type="button" class="evaluation-export-btn" :disabled="cacheLoading" @click="loadCacheMetrics">
+              {{ cacheLoading ? '刷新中…' : '刷新指标' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="cacheError" class="evaluation-state error">{{ cacheError }}</div>
+        <div v-else-if="cacheLoading && !cacheMetricCards.length" class="evaluation-state">正在加载缓存指标…</div>
+        <template v-else>
+          <div class="cache-summary-grid">
+            <div class="cache-summary-card primary"><span>总命中</span><strong>{{ cacheTotals.hits }}</strong><small>无需重复执行的已缓存请求</small></div>
+            <div class="cache-summary-card"><span>实际加载</span><strong>{{ cacheTotals.misses }}</strong><small>缓存未命中后执行的请求</small></div>
+            <div class="cache-summary-card"><span>并发合并</span><strong>{{ cacheTotals.coalesced }}</strong><small>复用同一个进行中任务的请求</small></div>
+            <div class="cache-summary-card"><span>当前条目</span><strong>{{ cacheTotals.entries }}</strong><small>所有缓存当前保存的条目数</small></div>
+          </div>
+
+          <div v-if="cacheRagUnavailable" class="cache-service-warning">
+            <strong>RAG 服务暂不可用</strong>
+            <span>Java Prompt 与检索缓存仍可查看；启动 8090 端口的 rag-service 后即可显示 Embedding 和向量检索指标。</span>
+          </div>
+
+          <div class="cache-card-grid">
+            <article v-for="item in cacheMetricCards" :key="item.key" class="cache-metric-card">
+              <div class="cache-card-head">
+                <div><span>{{ item.eyebrow }}</span><h3>{{ item.title }}</h3></div>
+                <strong>{{ formatPercent(item.stats.hitRate || 0) }}</strong>
+              </div>
+              <div class="cache-hit-track"><div :style="{ width: Math.min(100, Number(item.stats.hitRate || 0) * 100) + '%' }"></div></div>
+              <div class="cache-stat-grid">
+                <div><span>命中 / 未命中</span><strong>{{ item.stats.hits || 0 }} / {{ item.stats.misses || 0 }}</strong></div>
+                <div><span>并发合并</span><strong>{{ item.stats.coalescedRequests || 0 }}</strong></div>
+                <div><span>缓存条目</span><strong>{{ item.stats.entries || 0 }} / {{ item.stats.maxEntries || '—' }}</strong></div>
+                <div><span>进行中</span><strong>{{ item.stats.inFlight || 0 }}</strong></div>
+                <div><span>平均加载</span><strong>{{ formatCacheLoad(item.stats.averageLoadMs) }}</strong></div>
+                <div><span>过期时间</span><strong>{{ formatCacheTtl(item.stats) }}</strong></div>
+              </div>
+              <p>{{ item.description }}</p>
+            </article>
+          </div>
+          <p class="prompt-decision-note">首次请求通常会显示为未命中；再次发送相同问题或同时发送多个相同请求后，命中数或并发合并数才会增加。音频索引重建以及 Prompt 发布、灰度调整、停用或回滚会主动清空相关缓存。</p>
+        </template>
+      </section>
+
       <div class="dialog-overlay" v-if="showLlmCostCaseDialog" @click.self="closeLlmCostCaseDialog">
         <div class="dialog-card evaluation-case-dialog">
           <div class="dialog-header"><div><span class="evaluation-dialog-kicker">LLM COST CASE</span><h3>{{ editingLlmCostCaseId ? `编辑成本题 ${editingLlmCostCaseId}` : '新增成本测试题' }}</h3></div><button class="dialog-close" @click="closeLlmCostCaseDialog">✕</button></div>
@@ -1034,7 +1090,8 @@ export default {
       promptFeedbackMetrics: { versions: [], minimumSampleSize: 5, reasonLabels: {} },
       promptFeedbackLoading: false, promptFeedbackError: '',
       promptCompareBase: null, promptCompareCandidate: null, promptCompareRealCall: false,
-      promptCompareRunning: false, promptCompareProgress: 0, promptCompareError: '', promptCompareResults: []
+      promptCompareRunning: false, promptCompareProgress: 0, promptCompareError: '', promptCompareResults: [],
+      cacheStats: {}, cacheLoading: false, cacheError: '', cacheLastUpdated: ''
     }
   },
   computed: {
@@ -1043,10 +1100,10 @@ export default {
       return selected ? selected.displayName : (this.llmModelName ? `${this.llmProviderName} / ${this.llmModelName}` : this.llmProviderName)
     },
     menuTitle() {
-      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录' }[this.currentMenu] || '管理后台'
+      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录', cache: '缓存监控' }[this.currentMenu] || '管理后台'
     },
     menuIcon() {
-      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠' }[this.currentMenu] || '🎵'
+      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠', cache: '⚡' }[this.currentMenu] || '🎵'
     },
     llmInvocationProviders() {
       return [...new Set(this.llmAdminModels.map(item => item.provider).filter(Boolean))]
@@ -1111,6 +1168,35 @@ export default {
       const baseline = `music_answer:v${this.promptRollout.baselineVersion}`
       const candidate = `music_answer:v${this.promptRollout.candidateVersion}`
       return [baseline, candidate].every(version => this.promptMetricRows.some(row => row.promptVersion === version && row.sampleSufficient))
+    },
+    cacheMetricCards() {
+      const prompt = this.cacheStats.prompt || {}
+      const retrieval = this.cacheStats.retrieval || {}
+      const rag = retrieval.ragService || {}
+      const cards = [
+        { key: 'activePrompt', eyebrow: 'PROMPT', title: '生产 Prompt', stats: prompt.activePrompt, description: '缓存当前发布版本和灰度候选，避免每次聊天重复查询数据库。' },
+        { key: 'evaluationPrompt', eyebrow: 'PROMPT', title: '评测 Prompt', stats: prompt.evaluationPrompt, description: '按版本缓存 Prompt 对比和成本评测所需的模板。' },
+        { key: 'springSearch', eyebrow: 'SPRING RETRIEVAL', title: 'Java 检索结果', stats: retrieval.springSearch, description: '在 Spring Boot 层缓存向量检索结果，减少重复 HTTP 调用。' }
+      ]
+      if (rag.available) {
+        cards.push(
+          { key: 'embedding', eyebrow: 'RAG SERVICE', title: 'Embedding', stats: rag.embedding, description: '复用相同文本的向量编码，降低 CPU/GPU 计算开销。' },
+          { key: 'ragSearch', eyebrow: `RAG INDEX · G${rag.indexGeneration || 0}`, title: '向量检索结果', stats: rag.search, description: '按查询、Top-K、候选范围和索引版本缓存 FAISS 检索结果。' }
+        )
+      }
+      return cards.filter(item => item.stats)
+    },
+    cacheTotals() {
+      return this.cacheMetricCards.reduce((total, item) => {
+        total.hits += Number(item.stats.hits || 0)
+        total.misses += Number(item.stats.misses || 0)
+        total.coalesced += Number(item.stats.coalescedRequests || 0)
+        total.entries += Number(item.stats.entries || 0)
+        return total
+      }, { hits: 0, misses: 0, coalesced: 0, entries: 0 })
+    },
+    cacheRagUnavailable() {
+      return this.cacheStats.retrieval && this.cacheStats.retrieval.ragService?.available === false
     }
   },
   mounted() {
@@ -1118,6 +1204,33 @@ export default {
     this.loadFullAudioList();
   },
   methods: {
+    async openCacheMetrics() {
+      this.currentMenu = 'cache'
+      await this.loadCacheMetrics()
+    },
+    async loadCacheMetrics() {
+      this.cacheLoading = true
+      this.cacheError = ''
+      try {
+        const res = await request.get('/admin/cache/stats')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '缓存指标加载失败')
+        this.cacheStats = res.data.data || {}
+        this.cacheLastUpdated = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      } catch (error) {
+        this.cacheError = error.response?.data?.msg || error.message || '缓存指标加载失败'
+      } finally {
+        this.cacheLoading = false
+      }
+    },
+    formatCacheLoad(value) {
+      const number = Number(value || 0)
+      return number < 1 && number > 0 ? `${number.toFixed(3)}ms` : `${number.toFixed(1)}ms`
+    },
+    formatCacheTtl(stats) {
+      const seconds = stats.ttlSeconds !== undefined ? Number(stats.ttlSeconds) : Number(stats.ttlMs || 0) / 1000
+      if (!seconds) return '—'
+      return seconds >= 60 ? `${Number((seconds / 60).toFixed(1))} 分钟` : `${Number(seconds.toFixed(1))} 秒`
+    },
     async openPromptVersions() {
       this.currentMenu = 'prompts'
       await Promise.all([this.loadPromptVersions(), this.loadPromptRollout(), this.loadPromptMetrics(), this.loadPromptFeedbackMetrics(), this.loadLlmCostCases(), this.loadLlmProviderStatus()])
@@ -2309,6 +2422,35 @@ export default {
 .sidebar-footer { padding: 16px; border-top: 1px solid rgba(255,255,255,0.06); }
 .sidebar-footer .back-btn { width: 100%; padding: 10px; border: 1px solid rgba(255,255,255,0.15); background: transparent; color: rgba(255,255,255,0.6); border-radius: 10px; font-size: 13px; cursor: pointer; transition: all 0.2s ease; }
 .sidebar-footer .back-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
+
+.cache-dashboard { gap: 20px; }
+.cache-hero { background: linear-gradient(125deg, #24204f, #7047c8 72%, #8750db); }
+.cache-updated-at { align-self: center; color: rgba(255,255,255,.72); font-size: 12px; white-space: nowrap; }
+.cache-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.cache-summary-card { padding: 19px 20px; border: 1px solid #e9e4f5; border-radius: 16px; background: #fff; box-shadow: 0 8px 24px rgba(54,39,103,.05); }
+.cache-summary-card.primary { border-color: #d9cdf9; background: linear-gradient(145deg, #faf8ff, #f0eaff); }
+.cache-summary-card span, .cache-summary-card small { display: block; color: #8e869e; font-size: 12px; }
+.cache-summary-card strong { display: block; margin: 7px 0 5px; color: #32275d; font-size: 29px; line-height: 1; }
+.cache-service-warning { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border: 1px solid #f1dbaf; border-radius: 13px; color: #8b641f; background: #fff9eb; font-size: 13px; }
+.cache-service-warning span { color: #a27c38; }
+.cache-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.cache-metric-card { padding: 22px; border: 1px solid #e8e3f2; border-radius: 17px; background: #fff; box-shadow: 0 8px 25px rgba(52,39,99,.05); }
+.cache-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
+.cache-card-head span { color: #957bd6; font-size: 10px; font-weight: 800; letter-spacing: 1.4px; }
+.cache-card-head h3 { margin: 5px 0 0; color: #292141; font-size: 18px; }
+.cache-card-head > strong { color: #704fc0; font-size: 24px; }
+.cache-hit-track { height: 7px; margin: 17px 0; overflow: hidden; border-radius: 99px; background: #eeeaf6; }
+.cache-hit-track > div { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #6b68dc, #9259d6); transition: width .25s ease; }
+.cache-stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.cache-stat-grid > div { padding: 10px; border-radius: 10px; background: #f8f7fb; }
+.cache-stat-grid span, .cache-stat-grid strong { display: block; }
+.cache-stat-grid span { color: #9991a7; font-size: 10px; }
+.cache-stat-grid strong { margin-top: 4px; color: #453963; font-size: 13px; }
+.cache-metric-card > p { margin: 15px 0 0; color: #928a9f; font-size: 12px; line-height: 1.65; }
+@media (max-width: 1100px) {
+  .cache-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cache-card-grid { grid-template-columns: 1fr; }
+}
 
 .main-content { flex: 1; padding: 24px; overflow-y: auto; }
 .content-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }

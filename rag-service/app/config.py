@@ -26,6 +26,10 @@ def get_data_dir() -> Path:
 
 
 MODEL_NAME = get_setting("RAG_MODEL_NAME", "intfloat/multilingual-e5-small")
+EMBEDDING_CACHE_TTL_SECONDS = float(get_setting("RAG_EMBEDDING_CACHE_TTL_SECONDS", "600"))
+EMBEDDING_CACHE_MAX_ENTRIES = int(get_setting("RAG_EMBEDDING_CACHE_MAX_ENTRIES", "512"))
+SEARCH_CACHE_TTL_SECONDS = float(get_setting("RAG_SEARCH_CACHE_TTL_SECONDS", "120"))
+SEARCH_CACHE_MAX_ENTRIES = int(get_setting("RAG_SEARCH_CACHE_MAX_ENTRIES", "256"))
 
 
 def get_model_path() -> str:

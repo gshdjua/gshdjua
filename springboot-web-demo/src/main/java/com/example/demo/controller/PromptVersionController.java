@@ -78,6 +78,11 @@ public class PromptVersionController {
         return run(() -> feedbackService.summary(days));
     }
 
+    @GetMapping("/cache-stats")
+    public Map<String, Object> cacheStats() {
+        return run(service::cacheStats);
+    }
+
     @PostMapping
     public Map<String, Object> createDraft(@RequestBody Map<String, Object> payload) {
         return run(() -> service.createDraft(text(payload.get("template"))));

@@ -42,6 +42,13 @@ def health() -> dict:
     return engine.health()
 
 
+@app.get("/cache/stats")
+def cache_stats() -> dict:
+    """Expose aggregate cache metrics only; no prompts, queries or vectors are returned."""
+
+    return engine.cache_stats()
+
+
 @app.post("/rebuild")
 def rebuild_index(payload: RebuildRequest) -> dict:
     """Rebuild local FAISS data from the MySQL audio metadata table."""
