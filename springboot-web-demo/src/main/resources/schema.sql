@@ -201,13 +201,40 @@ CREATE TABLE IF NOT EXISTS conversation_snapshot (
     FOREIGN KEY (source_conversation_id) REFERENCES assistant_conversation(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS conversation_replay_experiment (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    snapshot_id BIGINT NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    model_ids_json LONGTEXT NOT NULL,
+    prompt_versions_json LONGTEXT NOT NULL,
+    strategies_json LONGTEXT NOT NULL,
+    total_runs INT NOT NULL DEFAULT 0,
+    completed_runs INT NOT NULL DEFAULT 0,
+    failed_runs INT NOT NULL DEFAULT 0,
+    total_input_tokens INT NOT NULL DEFAULT 0,
+    total_output_tokens INT NOT NULL DEFAULT 0,
+    total_cost DECIMAL(16,8) NOT NULL DEFAULT 0,
+    average_latency_ms DECIMAL(12,2) NOT NULL DEFAULT 0,
+    error_message VARCHAR(500) NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    KEY idx_replay_experiment_snapshot (snapshot_id, created_at),
+    FOREIGN KEY (snapshot_id) REFERENCES conversation_snapshot(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS conversation_replay_run (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     snapshot_id BIGINT NOT NULL,
+    experiment_id BIGINT NULL,
     target_model_id VARCHAR(80) NOT NULL,
     provider VARCHAR(40) NOT NULL DEFAULT 'none',
     model_name VARCHAR(120) NOT NULL DEFAULT 'none',
     prompt_version VARCHAR(120) NOT NULL DEFAULT 'none',
+    requested_prompt_version INT NULL,
+    requested_strategy VARCHAR(20) NOT NULL DEFAULT 'auto',
+    selected_strategy VARCHAR(20) NOT NULL DEFAULT '',
+    strategy_reason VARCHAR(100) NOT NULL DEFAULT '',
     execution_path VARCHAR(30) NOT NULL DEFAULT 'local',
     status VARCHAR(20) NOT NULL,
     input_tokens INT NOT NULL DEFAULT 0,
@@ -221,6 +248,7 @@ CREATE TABLE IF NOT EXISTS conversation_replay_run (
     trace_id VARCHAR(100) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     KEY idx_conversation_replay_snapshot (snapshot_id, created_at),
+    KEY idx_conversation_replay_experiment (experiment_id, id),
     FOREIGN KEY (snapshot_id) REFERENCES conversation_snapshot(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

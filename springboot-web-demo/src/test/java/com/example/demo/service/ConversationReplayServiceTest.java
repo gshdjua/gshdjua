@@ -8,7 +8,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ConversationReplayServiceTest {
-    private final ConversationReplayService service = new ConversationReplayService(null, null, null, null, null, null);
+    private final ConversationReplayService service = new ConversationReplayService(
+            null, null, null, null, null, null, null);
 
     @Test
     void replaysTheLastQuestionWithOnlyItsPriorHistory() {

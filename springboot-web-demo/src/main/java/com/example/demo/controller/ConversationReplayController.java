@@ -14,6 +14,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -63,9 +65,56 @@ public class ConversationReplayController {
         return run(() -> service.listReplays(snapshotId, limit));
     }
 
+    @PostMapping("/snapshots/{snapshotId}/experiments")
+    public Map<String, Object> createExperiment(@PathVariable long snapshotId,
+                                                @RequestBody Map<String, Object> payload) {
+        return run(() -> service.createExperiment(snapshotId, text(payload.get("name")),
+                strings(payload.get("modelIds")), integers(payload.get("promptVersions")),
+                strings(payload.get("strategies"))));
+    }
+
+    @GetMapping("/snapshots/{snapshotId}/experiments")
+    public Map<String, Object> experiments(@PathVariable long snapshotId) {
+        return run(() -> service.listExperiments(snapshotId));
+    }
+
+    @GetMapping("/experiments/{experimentId}/runs")
+    public Map<String, Object> experimentRuns(@PathVariable long experimentId) {
+        return run(() -> service.listExperimentRuns(experimentId));
+    }
+
+    @GetMapping("/experiments/{experimentId}/export")
+    public ResponseEntity<byte[]> exportExperiment(@PathVariable long experimentId) {
+        byte[] content = service.exportExperiment(experimentId).getBytes(StandardCharsets.UTF_8);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=musichub-snapshot-comparison-" + experimentId + ".json")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(content);
+    }
+
     private long longValue(Object value) {
         try { return Long.parseLong(String.valueOf(value)); }
         catch (Exception exception) { throw new IllegalArgumentException("会话编号不正确"); }
+    }
+
+    private String text(Object value) { return value == null ? "" : String.valueOf(value); }
+
+    private List<String> strings(Object value) {
+        List<String> result = new ArrayList<>();
+        if (value instanceof Iterable) for (Object item : (Iterable<?>) value) result.add(text(item));
+        return result;
+    }
+
+    private List<Integer> integers(Object value) {
+        List<Integer> result = new ArrayList<>();
+        if (value instanceof Iterable) {
+            for (Object item : (Iterable<?>) value) {
+                try { result.add(Integer.parseInt(String.valueOf(item))); }
+                catch (Exception ignored) { /* Service validates the final selection. */ }
+            }
+        }
+        return result;
     }
 
     private Map<String, Object> run(Action action) {

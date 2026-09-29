@@ -804,7 +804,52 @@
         </div>
 
         <div v-if="replaySelectedSnapshotId" class="replay-panel">
-          <div class="replay-panel-head"><div><span>STEP 3</span><h3>快照 #{{ replaySelectedSnapshotId }} 的重放结果</h3></div><small>相似度仅用于快速观察文本变化，不代表回答质量。</small></div>
+          <div class="replay-panel-head"><div><span>STEP 3</span><h3>创建多版本对比评测</h3></div><small>对同一快照执行模型 × Prompt × 策略组合，单次最多 12 组。</small></div>
+          <div class="replay-comparison-form">
+            <label><span>评测名称</span><input v-model.trim="replayComparison.name" maxlength="100" placeholder="例如：音乐问答回归对比" /></label>
+            <fieldset><legend>模型</legend><label v-for="model in replayEnabledModels" :key="model.id"><input v-model="replayComparison.modelIds" type="checkbox" :value="model.id" /> {{ model.displayName }}</label></fieldset>
+            <fieldset><legend>Prompt 版本</legend><label v-for="version in promptVersions" :key="version.id"><input v-model="replayComparison.promptVersions" type="checkbox" :value="version.version" /> v{{ version.version }} · {{ promptStatusLabel(version.status) }}</label></fieldset>
+            <fieldset><legend>执行策略</legend><label v-for="strategy in ['auto', 'direct', 'react']" :key="strategy"><input v-model="replayComparison.strategies" type="checkbox" :value="strategy" /> {{ strategy }}</label></fieldset>
+            <div class="replay-comparison-submit"><span>将执行 {{ replayComparisonCount }} 个组合，并产生真实模型费用</span><button class="table-primary-btn" :disabled="replayComparisonRunning || replayComparisonCount < 2 || replayComparisonCount > 12" @click="startReplayComparison">{{ replayComparisonRunning ? '评测已启动…' : '开始对比评测' }}</button></div>
+          </div>
+          <div v-if="replayExperiments.length" class="replay-experiment-list">
+            <article v-for="item in replayExperiments" :key="item.id" :class="{ selected: replaySelectedExperimentId === item.id }" @click="selectReplayExperiment(item)">
+              <div><strong>{{ item.name }}</strong><small>#{{ item.id }} · {{ formatReplayTime(item.createdAt) }}</small></div>
+              <span :class="['replay-status', item.status]">{{ replayExperimentStatus(item.status) }}</span>
+              <div class="replay-experiment-progress"><i :style="{ width: `${Math.round(Number(item.completedRuns || 0) / Math.max(1, Number(item.totalRuns || 0)) * 100)}%` }"></i></div>
+              <strong>{{ item.completedRuns || 0 }} / {{ item.totalRuns || 0 }}</strong>
+              <button class="btn-edit" :disabled="item.status === 'running'" @click.stop="exportReplayExperiment(item)">导出报告</button>
+            </article>
+          </div>
+          <p v-else class="evaluation-empty">尚未创建多版本对比评测</p>
+        </div>
+
+        <div v-if="replaySelectedExperimentId" class="replay-panel">
+          <div class="replay-panel-head"><div><span>STEP 4</span><h3>评测 #{{ replaySelectedExperimentId }} 的组合结果</h3></div><small>相似度只反映文本变化，不代表回答质量；请结合答案进行人工判断。</small></div>
+          <div v-if="replaySelectedExperiment" class="replay-experiment-totals">
+            <div><span>进度</span><strong>{{ replaySelectedExperiment.completedRuns || 0 }} / {{ replaySelectedExperiment.totalRuns || 0 }}</strong></div>
+            <div><span>失败</span><strong>{{ replaySelectedExperiment.failedRuns || 0 }}</strong></div>
+            <div><span>Token</span><strong>{{ replaySelectedExperiment.totalInputTokens || 0 }} / {{ replaySelectedExperiment.totalOutputTokens || 0 }}</strong></div>
+            <div><span>平均耗时</span><strong>{{ Number(replaySelectedExperiment.averageLatencyMs || 0).toFixed(0) }}ms</strong></div>
+            <div><span>总费用</span><strong>{{ formatLlmCost(replaySelectedExperiment.totalCost) }}</strong></div>
+          </div>
+          <div v-if="!replayExperimentRuns.length" class="evaluation-empty">评测运行中，结果生成后会自动显示</div>
+          <article v-for="run in replayExperimentRuns" :key="run.id" class="replay-run-card">
+            <div class="replay-run-summary replay-comparison-summary">
+              <div><span :class="['replay-status', run.status]">{{ run.status === 'completed' ? '执行完成' : '执行失败' }}</span><strong>{{ run.provider }} / {{ run.model }}</strong><small>Prompt v{{ run.requestedPromptVersion || '—' }} · {{ formatReplayTime(run.createdAt) }}</small></div>
+              <div><span>策略</span><strong>{{ run.requestedStrategy }} → {{ run.selectedStrategy || '—' }}</strong><small>{{ run.strategyReason || '—' }}</small></div>
+              <div><span>相似度</span><strong>{{ formatPercent(run.similarityScore || 0) }}</strong></div>
+              <div><span>Token</span><strong>{{ run.inputTokens || 0 }} / {{ run.outputTokens || 0 }}</strong></div>
+              <div><span>耗时 / 费用</span><strong>{{ run.latencyMs || 0 }}ms</strong><small>{{ formatLlmCost(run.estimatedCost) }}</small></div>
+            </div>
+            <p v-if="run.errorMessage" class="replay-run-error">{{ run.errorMessage }}</p>
+            <details class="replay-answer-compare"><summary>查看原回答与本次回答</summary><div><section><h4>原回答</h4><pre>{{ run.originalReply || '（原会话没有对应回答）' }}</pre></section><section><h4>本次回答</h4><pre>{{ run.replayReply || '（调用失败，没有回答）' }}</pre></section></div></details>
+            <code class="replay-trace">{{ run.traceId }}</code>
+          </article>
+        </div>
+
+        <div v-if="replaySelectedSnapshotId" class="replay-panel">
+          <div class="replay-panel-head"><div><span>单次重放记录</span><h3>快照 #{{ replaySelectedSnapshotId }} 的全部重放</h3></div><small>包含单次重放和多版本评测产生的调用。</small></div>
           <div v-if="!replayRuns.length" class="evaluation-empty">该快照还没有重放记录</div>
           <article v-for="run in replayRuns" :key="run.id" class="replay-run-card">
             <div class="replay-run-summary">
@@ -1224,7 +1269,10 @@ export default {
       quotaLastUpdated: '', quotaSavingId: null,
       replayConversations: [], replaySnapshots: [], replayRuns: [],
       replaySelectedSnapshotId: null, replayLoading: false, replayError: '',
-      replayBusyKey: '', replayLastUpdated: ''
+      replayBusyKey: '', replayLastUpdated: '', replayExperiments: [],
+      replaySelectedExperimentId: null, replayExperimentRuns: [], replayComparisonRunning: false,
+      replayComparison: { name: '', modelIds: [], promptVersions: [], strategies: ['auto', 'direct'] },
+      replayPollTimer: null
     }
   },
   computed: {
@@ -1342,16 +1390,30 @@ export default {
     },
     replayEnabledModels() {
       return this.llmAdminModels.filter(item => item.enabled !== false)
+    },
+    replayComparisonCount() {
+      return this.replayComparison.modelIds.length * this.replayComparison.promptVersions.length * this.replayComparison.strategies.length
+    },
+    replaySelectedExperiment() {
+      return this.replayExperiments.find(item => item.id === this.replaySelectedExperimentId) || null
     }
   },
   mounted() {
     this.loadUsers();
     this.loadFullAudioList();
   },
+  beforeDestroy() {
+    if (this.replayPollTimer) clearTimeout(this.replayPollTimer)
+  },
   methods: {
     async openConversationReplay() {
       this.currentMenu = 'replay'
-      await this.loadAdminLlmModels()
+      await Promise.all([this.loadAdminLlmModels(), this.loadPromptVersions()])
+      if (!this.replayComparison.modelIds.length) this.replayComparison.modelIds = this.replayEnabledModels.slice(0, 2).map(item => item.id)
+      if (!this.replayComparison.promptVersions.length) {
+        const published = this.promptVersions.find(item => item.status === 'published') || this.promptVersions[0]
+        if (published) this.replayComparison.promptVersions = [published.version]
+      }
       await this.loadConversationReplay()
     },
     async loadConversationReplay() {
@@ -1375,7 +1437,7 @@ export default {
           this.replaySelectedSnapshotId = null
           this.replayRuns = []
         } else if (this.replaySelectedSnapshotId) {
-          await this.loadReplayRuns(this.replaySelectedSnapshotId)
+          await Promise.all([this.loadReplayRuns(this.replaySelectedSnapshotId), this.loadReplayExperiments(this.replaySelectedSnapshotId)])
         }
         this.replayLastUpdated = new Date().toLocaleTimeString('zh-CN', { hour12: false })
       } catch (error) {
@@ -1396,7 +1458,9 @@ export default {
     },
     async selectReplaySnapshot(snapshotId) {
       this.replaySelectedSnapshotId = snapshotId
-      await this.loadReplayRuns(snapshotId)
+      this.replaySelectedExperimentId = null
+      this.replayExperimentRuns = []
+      await Promise.all([this.loadReplayRuns(snapshotId), this.loadReplayExperiments(snapshotId)])
     },
     async loadReplayRuns(snapshotId) {
       try {
@@ -1438,6 +1502,70 @@ export default {
       } catch (error) {
         this.replayError = error.response?.data?.msg || error.message || '快照重放失败'
       } finally { this.replayBusyKey = '' }
+    },
+    async startReplayComparison() {
+      if (this.replayComparisonCount < 2 || this.replayComparisonCount > 12) {
+        this.replayError = '请选择 2 到 12 个模型 × Prompt × 策略组合'
+        return
+      }
+      this.replayComparisonRunning = true
+      this.replayError = ''
+      try {
+        const res = await request.post(`/admin/conversation-replays/snapshots/${this.replaySelectedSnapshotId}/experiments`, this.replayComparison)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '对比评测创建失败')
+        this.replaySelectedExperimentId = res.data.data.id
+        await this.loadReplayExperiments(this.replaySelectedSnapshotId)
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '对比评测创建失败'
+      } finally { this.replayComparisonRunning = false }
+    },
+    async loadReplayExperiments(snapshotId) {
+      if (!snapshotId) return
+      try {
+        const res = await request.get(`/admin/conversation-replays/snapshots/${snapshotId}/experiments`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '对比评测加载失败')
+        this.replayExperiments = res.data.data || []
+        if (!this.replaySelectedExperimentId && this.replayExperiments.length) this.replaySelectedExperimentId = this.replayExperiments[0].id
+        if (this.replaySelectedExperimentId) await this.loadReplayExperimentRuns(this.replaySelectedExperimentId)
+        this.scheduleReplayPoll()
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '对比评测加载失败'
+      }
+    },
+    async selectReplayExperiment(item) {
+      this.replaySelectedExperimentId = item.id
+      await this.loadReplayExperimentRuns(item.id)
+    },
+    async loadReplayExperimentRuns(experimentId) {
+      const res = await request.get(`/admin/conversation-replays/experiments/${experimentId}/runs`)
+      if (res.data.code !== 200) throw new Error(res.data.msg || '组合结果加载失败')
+      this.replayExperimentRuns = res.data.data || []
+    },
+    scheduleReplayPoll() {
+      if (this.replayPollTimer) clearTimeout(this.replayPollTimer)
+      if (this.currentMenu !== 'replay' || !this.replayExperiments.some(item => item.status === 'running')) return
+      this.replayPollTimer = setTimeout(async () => {
+        await Promise.all([this.loadReplayExperiments(this.replaySelectedSnapshotId), this.loadReplayRuns(this.replaySelectedSnapshotId)])
+      }, 1500)
+    },
+    async exportReplayExperiment(item) {
+      this.replayError = ''
+      try {
+        const res = await request.get(`/admin/conversation-replays/experiments/${item.id}/export`, { responseType: 'blob' })
+        const url = URL.createObjectURL(new Blob([res.data], { type: 'application/json;charset=utf-8' }))
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `musichub-snapshot-comparison-${item.id}.json`
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        URL.revokeObjectURL(url)
+      } catch (error) {
+        this.replayError = error.response?.data?.msg || error.message || '对比报告导出失败'
+      }
+    },
+    replayExperimentStatus(status) {
+      return { running: '评测中', completed: '已完成', failed: '失败', interrupted: '已中断' }[status] || status
     },
     formatReplayTime(value) {
       if (!value) return '—'
@@ -2749,9 +2877,34 @@ export default {
 .replay-answer-compare pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.65; color: #4e4661; }
 .replay-run-error { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; color: #b74660; background: #fff0f3; }
 .replay-trace { display: block; margin-top: 12px; color: #9990a8; font-size: 11px; overflow-wrap: anywhere; }
+.replay-comparison-form { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 14px; padding: 18px; border-radius: 15px; background: #f8f5fd; }
+.replay-comparison-form > label { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 7px; color: #5c5272; font-weight: 700; }
+.replay-comparison-form input[type="text"], .replay-comparison-form > label input { padding: 11px 12px; border: 1px solid #ddd4ef; border-radius: 10px; background: #fff; }
+.replay-comparison-form fieldset { min-width: 0; margin: 0; padding: 12px; border: 1px solid #e3dbf2; border-radius: 12px; background: #fff; }
+.replay-comparison-form legend { padding: 0 6px; color: #7250bd; font-weight: 800; }
+.replay-comparison-form fieldset label { display: block; margin: 7px 0; color: #574e69; overflow-wrap: anywhere; }
+.replay-comparison-submit { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 16px; color: #887e9b; }
+.replay-experiment-list { display: grid; gap: 9px; margin-top: 16px; }
+.replay-experiment-list article { display: grid; grid-template-columns: minmax(220px, 1.4fr) auto minmax(120px, 1fr) auto auto; align-items: center; gap: 14px; padding: 13px 15px; border: 1px solid #e7e0f2; border-radius: 12px; cursor: pointer; }
+.replay-experiment-list article.selected { border-color: #9d78df; background: #faf7ff; }
+.replay-experiment-list article > div:first-child { display: flex; flex-direction: column; gap: 4px; }
+.replay-experiment-list small { color: #958ba7; }
+.replay-experiment-progress { height: 7px; overflow: hidden; border-radius: 999px; background: #eee9f6; }
+.replay-experiment-progress i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #6f55d9, #a45be2); transition: width .25s ease; }
+.replay-experiment-totals { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 15px; }
+.replay-experiment-totals > div { display: flex; flex-direction: column; gap: 5px; padding: 13px; border-radius: 12px; background: #f7f4fb; }
+.replay-experiment-totals span { color: #91879f; font-size: 12px; }
+.replay-comparison-summary { grid-template-columns: minmax(220px, 1.5fr) minmax(170px, 1fr) repeat(3, minmax(105px, .7fr)); }
+.replay-status.running { color: #7050bd; background: #eee7fb; }
+.replay-status.interrupted { color: #956b20; background: #fff1d5; }
 @media (max-width: 1100px) {
   .replay-run-summary { grid-template-columns: 1fr 1fr; }
   .replay-answer-compare > div { grid-template-columns: 1fr; }
+  .replay-comparison-form { grid-template-columns: 1fr; }
+  .replay-comparison-form fieldset, .replay-comparison-submit { grid-column: 1; }
+  .replay-experiment-list article { grid-template-columns: 1fr auto; }
+  .replay-experiment-progress { grid-column: 1 / -1; }
+  .replay-experiment-totals { grid-template-columns: repeat(2, 1fr); }
 }
 .cache-hero { background: linear-gradient(125deg, #24204f, #7047c8 72%, #8750db); }
 .cache-updated-at { align-self: center; color: rgba(255,255,255,.72); font-size: 12px; white-space: nowrap; }

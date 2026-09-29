@@ -59,6 +59,13 @@ public class AgentServiceClient {
     public AgentResult chat(JSONArray messages, String provider, String model, double temperature, String userMessage,
                             Long conversationId, Integer userId, String requestId, String promptVersion,
                             Consumer<String> onDelta) {
+        return chat(messages, provider, model, temperature, userMessage, conversationId, userId,
+                requestId, promptVersion, onDelta, "auto");
+    }
+
+    public AgentResult chat(JSONArray messages, String provider, String model, double temperature, String userMessage,
+                            Long conversationId, Integer userId, String requestId, String promptVersion,
+                            Consumer<String> onDelta, String strategy) {
         lastFailureCode.remove();
         if (baseUrl == null || baseUrl.trim().isEmpty()) return null;
         try {
@@ -66,7 +73,7 @@ public class AgentServiceClient {
             options.put("provider", normalizeProvider(provider));
             options.put("model", model);
             options.put("temperature", temperature);
-            options.put("strategy", "auto");
+            options.put("strategy", normalizeStrategy(strategy));
             options.put("costBudget", "standard");
 
             JSONObject request = new JSONObject();

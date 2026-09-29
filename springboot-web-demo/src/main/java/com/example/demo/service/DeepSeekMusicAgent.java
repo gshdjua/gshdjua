@@ -53,6 +53,7 @@ public class DeepSeekMusicAgent {
     private final ThreadLocal<String> currentRequestId = new ThreadLocal<>();
     private final ThreadLocal<String> lastPromptVersion = new ThreadLocal<>();
     private final ThreadLocal<Integer> evaluationPromptVersion = new ThreadLocal<>();
+    private final ThreadLocal<String> evaluationStrategy = new ThreadLocal<>();
     private final ThreadLocal<ModelInvocationMetrics> currentModelMetrics = new ThreadLocal<>();
     private final ThreadLocal<String> currentProvider = new ThreadLocal<>();
     private final ThreadLocal<String> currentModel = new ThreadLocal<>();
@@ -186,6 +187,23 @@ public class DeepSeekMusicAgent {
         return replyWithResult(message, userId, history, conversationId, requestId, provider, model, null);
     }
 
+    /** Execute the normal production answer path with explicit evaluation-only Prompt and Agent strategy. */
+    public ReplyResult replyForEvaluation(String message, Integer userId, List<Map<String, String>> history,
+                                          String requestId, String provider, String model,
+                                          Integer promptVersion, String strategy) {
+        if (promptVersion == null || promptVersion < 1) {
+            throw new IllegalArgumentException("Prompt 版本号不合法");
+        }
+        evaluationPromptVersion.set(promptVersion);
+        evaluationStrategy.set(normalizeRequestedStrategy(strategy));
+        try {
+            return replyWithResult(message, userId, history, null, requestId, provider, model, null);
+        } finally {
+            evaluationPromptVersion.remove();
+            evaluationStrategy.remove();
+        }
+    }
+
     public ReplyResult replyWithResult(String message, Integer userId, List<Map<String, String>> history,
                                        Long conversationId, String requestId, String provider, String model,
                                        Consumer<String> onDelta) {
@@ -221,7 +239,11 @@ public class DeepSeekMusicAgent {
                     System.currentTimeMillis() - startedAt,
                     modelCalls > 0 && modelSuccess ? actualProvider : modelCalls > 0 ? "local" : "none",
                     modelCalls > 0 && modelSuccess ? actualModel : modelCalls > 0 ? "local" : "none",
-                    provider, model, executionPath, fallbackReason);
+                    provider, model, executionPath, fallbackReason,
+                    evaluationStrategy.get() == null ? "auto" : evaluationStrategy.get(),
+                    execution == null ? (modelCalls > 0 ? "direct" : "local") : execution.getStrategy(),
+                    execution == null ? (modelCalls > 0 ? "agent_unavailable" : "local_rule")
+                            : execution.getStrategyReason());
         } finally {
             currentConversationId.remove();
             currentUserId.remove();
@@ -556,7 +578,8 @@ public class DeepSeekMusicAgent {
         JSONArray messages = buildRequestMessages(message, evidenceContext, history);
         AgentServiceClient.AgentResult agentResult = agentServiceClient.chat(
                 messages, providerName, modelName, 0.4, message, currentConversationId.get(), currentUserId.get(),
-                currentRequestId.get(), lastPromptVersion.get(), currentStreamConsumer.get());
+                currentRequestId.get(), lastPromptVersion.get(), currentStreamConsumer.get(),
+                evaluationStrategy.get() == null ? "auto" : evaluationStrategy.get());
         if (agentResult != null) {
             if (metrics != null) metrics.modelCalls = Math.max(1, agentResult.getModelCalls());
             lastAgentResult.set(agentResult);
@@ -863,6 +886,11 @@ public class DeepSeekMusicAgent {
         return "direct".equals(normalized) || "react".equals(normalized) ? normalized : "direct";
     }
 
+    private String normalizeRequestedStrategy(String value) {
+        String normalized = value == null ? "auto" : value.trim().toLowerCase();
+        return "direct".equals(normalized) || "react".equals(normalized) ? normalized : "auto";
+    }
+
     private String normalizeEvaluationBudget(String value) {
         String normalized = value == null ? "standard" : value.trim().toLowerCase();
         return "low".equals(normalized) || "high".equals(normalized) ? normalized : "standard";
@@ -1075,6 +1103,9 @@ public class DeepSeekMusicAgent {
         private final String fallbackReason;
         private final int retryCount;
         private final int fallbackCount;
+        private final String requestedStrategy;
+        private final String selectedStrategy;
+        private final String strategyReason;
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome) {
             this(reply, recommendationOutcome, "none");
@@ -1103,13 +1134,35 @@ public class DeepSeekMusicAgent {
                            int inputTokens, int outputTokens, long latencyMs, String provider, String model,
                            String requestedProvider, String requestedModel, String executionPath, String fallbackReason) {
             this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
-                    latencyMs, provider, model, requestedProvider, requestedModel, executionPath, fallbackReason, 0, 0);
+                    latencyMs, provider, model, requestedProvider, requestedModel, executionPath, fallbackReason,
+                    "auto", modelCalls > 0 ? "direct" : "local", "", 0, 0);
         }
 
         public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
                            String promptVersion, int modelCalls, boolean success,
                            int inputTokens, int outputTokens, long latencyMs, String provider, String model,
                            String requestedProvider, String requestedModel, String executionPath, String fallbackReason,
+                           String requestedStrategy, String selectedStrategy, String strategyReason) {
+            this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
+                    latencyMs, provider, model, requestedProvider, requestedModel, executionPath, fallbackReason,
+                    requestedStrategy, selectedStrategy, strategyReason, 0, 0);
+        }
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
+                           String promptVersion, int modelCalls, boolean success,
+                           int inputTokens, int outputTokens, long latencyMs, String provider, String model,
+                           String requestedProvider, String requestedModel, String executionPath, String fallbackReason,
+                           int retryCount, int fallbackCount) {
+            this(reply, recommendationOutcome, promptVersion, modelCalls, success, inputTokens, outputTokens,
+                    latencyMs, provider, model, requestedProvider, requestedModel, executionPath, fallbackReason,
+                    "auto", modelCalls > 0 ? "direct" : "local", "", retryCount, fallbackCount);
+        }
+
+        public ReplyResult(String reply, MusicLibraryAgent.RecommendationOutcome recommendationOutcome,
+                           String promptVersion, int modelCalls, boolean success,
+                           int inputTokens, int outputTokens, long latencyMs, String provider, String model,
+                           String requestedProvider, String requestedModel, String executionPath, String fallbackReason,
+                           String requestedStrategy, String selectedStrategy, String strategyReason,
                            int retryCount, int fallbackCount) {
             this.reply = reply;
             this.recommendationOutcome = recommendationOutcome;
@@ -1127,6 +1180,9 @@ public class DeepSeekMusicAgent {
             this.fallbackReason = fallbackReason;
             this.retryCount = retryCount;
             this.fallbackCount = fallbackCount;
+            this.requestedStrategy = requestedStrategy;
+            this.selectedStrategy = selectedStrategy;
+            this.strategyReason = strategyReason;
         }
 
         public static ReplyResult afterFailover(ReplyResult requested, ReplyResult fallback) {
@@ -1146,6 +1202,9 @@ public class DeepSeekMusicAgent {
                     requested.requestedModel,
                     fallbackSucceeded ? "model_fallback" : "local_fallback",
                     nonEmpty(requested.fallbackReason, "MODEL_INVOCATION_FAILED"),
+                    requested.requestedStrategy,
+                    fallback.selectedStrategy,
+                    fallback.strategyReason,
                     0,
                     1);
         }
@@ -1166,6 +1225,9 @@ public class DeepSeekMusicAgent {
         public String getFallbackReason() { return fallbackReason; }
         public int getRetryCount() { return retryCount; }
         public int getFallbackCount() { return fallbackCount; }
+        public String getRequestedStrategy() { return requestedStrategy; }
+        public String getSelectedStrategy() { return selectedStrategy; }
+        public String getStrategyReason() { return strategyReason; }
 
         public List<Audio> getRecommendations() {
             return recommendationOutcome == null ? new ArrayList<>() : recommendationOutcome.getSongs();
