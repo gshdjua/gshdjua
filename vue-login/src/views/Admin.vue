@@ -22,6 +22,10 @@
           <span class="nav-icon">🧪</span>
           <span>检索评测</span>
         </div>
+        <div class="nav-item" :class="{active: currentMenu === 'regression'}" @click="openRegressionMonitoring">
+          <span class="nav-icon">🚨</span>
+          <span>回归监控</span>
+        </div>
         <div class="nav-item" :class="{active: currentMenu === 'llmCost'}" @click="openLlmCostEvaluation">
           <span class="nav-icon">🪙</span>
           <span>LLM 成本评测</span>
@@ -271,8 +275,8 @@
         </div>
       </section>
 
-      <section v-if="currentMenu==='evaluation'" class="evaluation-dashboard">
-        <div class="evaluation-hero">
+      <section v-if="currentMenu==='evaluation' || currentMenu==='regression'" class="evaluation-dashboard">
+        <div v-if="currentMenu==='evaluation'" class="evaluation-hero">
           <div>
             <p class="evaluation-eyebrow">RAG QUALITY LAB</p>
             <h2>检索效果评测</h2>
@@ -295,9 +299,76 @@
           </div>
         </div>
 
-        <div v-if="evaluationLoading" class="evaluation-state">正在加载测试集…</div>
-        <div v-else-if="evaluationError" class="evaluation-state error">{{ evaluationError }}</div>
-        <template v-else>
+        <div v-if="currentMenu==='regression'" class="regression-monitor-panel regression-monitor-standalone">
+          <div class="regression-monitor-head">
+            <div>
+              <p>AUTOMATED QUALITY GATE</p>
+              <h3>自动回归、索引更新与异常告警</h3>
+              <small>每天自动执行检索测试集；与上一轮基线比较，并监控向量索引状态。</small>
+            </div>
+            <div class="regression-monitor-actions">
+              <span class="regression-status" :class="regressionMonitoring.running ? 'running' : 'idle'">
+                {{ regressionMonitoring.running ? '评测运行中' : '监控正常' }}
+              </span>
+              <button :disabled="regressionAction || regressionMonitoring.running" @click="runAutomaticRegression">
+                {{ regressionAction === 'run' ? '启动中…' : '立即回归' }}
+              </button>
+              <button :disabled="regressionAction || regressionIndexBusy" @click="rebuildVectorIndex">
+                {{ regressionAction === 'index' ? '提交中…' : '重建索引' }}
+              </button>
+              <button :disabled="regressionLoading" @click="loadRegressionMonitoring">刷新</button>
+            </div>
+          </div>
+          <div v-if="regressionError" class="regression-monitor-error">{{ regressionError }}</div>
+          <div class="regression-index-strip">
+            <div><span>索引服务</span><strong :class="regressionIndex.available ? 'healthy' : 'danger'">{{ regressionIndex.available ? '可用' : '不可用' }}</strong></div>
+            <div><span>更新状态</span><strong>{{ regressionIndexStatusLabel(regressionIndex.state) }}</strong></div>
+            <div><span>索引代数</span><strong>G{{ regressionIndex.indexGeneration || regressionIndex.lastIndexGeneration || 0 }}</strong></div>
+            <div><span>更新原因</span><strong>{{ regressionIndex.reason || '尚未触发' }}</strong></div>
+            <div><span>更新时间</span><strong>{{ formatLlmInvocationTime(regressionIndex.completedAt || regressionIndex.requestedAt) }}</strong></div>
+          </div>
+          <div v-if="regressionIndex.error || regressionIndex.serviceError" class="regression-monitor-error">
+            {{ regressionIndex.error || regressionIndex.serviceError }}
+          </div>
+          <div class="regression-monitor-grid">
+            <div class="regression-monitor-section">
+              <div class="regression-section-title"><strong>最近运行</strong><span>{{ regressionRuns.length }} 条</span></div>
+              <div v-if="!regressionRuns.length" class="regression-empty">尚未执行自动回归评测</div>
+              <div v-else class="regression-table-wrap">
+                <table class="evaluation-table regression-table">
+                  <thead><tr><th>时间</th><th>触发</th><th>状态</th><th>准确率</th><th>Recall@K</th><th>MRR</th><th>平均延迟</th><th>变化</th></tr></thead>
+                  <tbody><tr v-for="run in regressionRuns" :key="run.id">
+                    <td>{{ formatLlmInvocationTime(run.startedAt) }}</td>
+                    <td>{{ run.triggerType === 'scheduled' ? '定时' : '手动' }}</td>
+                    <td><span class="regression-run-status" :class="run.status">{{ regressionRunStatusLabel(run.status) }}</span></td>
+                    <td>{{ formatPercent(run.overallAccuracy) }}</td>
+                    <td>{{ formatPercent(run.recallAtK) }}</td>
+                    <td>{{ formatDecimal(run.mrr) }}</td>
+                    <td>{{ Math.round(Number(run.averageLatencyMs || 0)) }}ms</td>
+                    <td><span :class="Number(run.accuracyDelta || 0) < 0 ? 'negative-delta' : 'positive-delta'">{{ formatRegressionDelta(run.accuracyDelta) }}</span></td>
+                  </tr></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="regression-monitor-section">
+              <div class="regression-section-title"><strong>异常告警</strong><span>{{ regressionOpenAlertCount }} 个待处理</span></div>
+              <div v-if="!regressionAlerts.length" class="regression-empty">当前没有异常告警</div>
+              <div v-else class="regression-alert-list">
+                <article v-for="alertItem in regressionAlerts" :key="alertItem.id" :class="[alertItem.severity, alertItem.status]">
+                  <div><span>{{ regressionAlertTypeLabel(alertItem.alertType) }}</span><small>{{ formatLlmInvocationTime(alertItem.createdAt) }}</small></div>
+                  <p>{{ alertItem.message }}</p>
+                  <button v-if="alertItem.status === 'open'" :disabled="regressionAction === `alert-${alertItem.id}`" @click="acknowledgeRegressionAlert(alertItem)">确认告警</button>
+                  <em v-else>已确认</em>
+                </article>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <template v-if="currentMenu==='evaluation'">
+          <div v-if="evaluationLoading" class="evaluation-state">正在加载测试集…</div>
+          <div v-else-if="evaluationError" class="evaluation-state error">{{ evaluationError }}</div>
+          <template v-else>
           <div class="evaluation-progress-card">
             <div class="evaluation-progress-head">
               <span>{{ evaluationRunning ? '正在评测' : evaluationSummary ? '评测完成' : '等待开始' }}</span>
@@ -364,6 +435,7 @@
               </div>
             </div>
           </div>
+          </template>
         </template>
       </section>
 
@@ -1238,6 +1310,11 @@ export default {
       evaluationRunning: false,
       evaluationLoading: false,
       evaluationError: '',
+      regressionMonitoring: { running: false, index: {}, runs: [], alerts: [], thresholds: {} },
+      regressionLoading: false,
+      regressionError: '',
+      regressionAction: '',
+      regressionPollTimer: null,
       showEvaluationDataset: false,
       showEvaluationCaseDialog: false,
       editingEvaluationCaseId: null,
@@ -1287,10 +1364,10 @@ export default {
       return selected ? selected.displayName : (this.llmModelName ? `${this.llmProviderName} / ${this.llmModelName}` : this.llmProviderName)
     },
     menuTitle() {
-      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录', cache: '缓存监控', quota: '费用保护', replay: '会话快照与重放' }[this.currentMenu] || '管理后台'
+      return { user: '用户管理', audio: '音频管理', statistics: '播放统计', evaluation: '检索评测', regression: '自动回归监控', llmCost: 'LLM 调用成本评测', prompts: 'Prompt 版本管理', models: '统一模型目录', cache: '缓存监控', quota: '费用保护', replay: '会话快照与重放' }[this.currentMenu] || '管理后台'
     },
     menuIcon() {
-      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', llmCost: '🪙', prompts: '📝', models: '🧠', cache: '⚡', quota: '🛡️', replay: '⏮️' }[this.currentMenu] || '🎵'
+      return { user: '👥', audio: '🎵', statistics: '📊', evaluation: '🧪', regression: '🚨', llmCost: '🪙', prompts: '📝', models: '🧠', cache: '⚡', quota: '🛡️', replay: '⏮️' }[this.currentMenu] || '🎵'
     },
     llmInvocationProviders() {
       return [...new Set(this.llmAdminModels.map(item => item.provider).filter(Boolean))]
@@ -1307,6 +1384,21 @@ export default {
     },
     evaluationFailures() {
       return this.evaluationResults.filter(item => item.scorable && !item.passed)
+    },
+    regressionIndex() {
+      return this.regressionMonitoring.index || {}
+    },
+    regressionRuns() {
+      return this.regressionMonitoring.runs || []
+    },
+    regressionAlerts() {
+      return this.regressionMonitoring.alerts || []
+    },
+    regressionOpenAlertCount() {
+      return this.regressionAlerts.filter(item => item.status === 'open').length
+    },
+    regressionIndexBusy() {
+      return ['queued', 'running'].includes(this.regressionIndex.state)
     },
     llmCostProgressPercent() {
       return this.llmCostSelectedCases.length ? Math.round(this.llmCostProgress / this.llmCostSelectedCases.length * 100) : 0
@@ -1410,6 +1502,7 @@ export default {
   },
   beforeDestroy() {
     if (this.replayPollTimer) clearTimeout(this.replayPollTimer)
+    if (this.regressionPollTimer) clearTimeout(this.regressionPollTimer)
   },
   methods: {
     async openConversationReplay() {
@@ -2251,6 +2344,85 @@ export default {
       this.currentMenu = 'evaluation'
       if (!this.evaluationCases.length) await this.loadEvaluationCases()
     },
+    async openRegressionMonitoring() {
+      this.currentMenu = 'regression'
+      await this.loadRegressionMonitoring()
+    },
+    async loadRegressionMonitoring() {
+      this.regressionLoading = true
+      this.regressionError = ''
+      try {
+        const res = await request.get('/admin/regression-monitoring')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '自动回归状态加载失败')
+        this.regressionMonitoring = res.data.data || { running: false, index: {}, runs: [], alerts: [], thresholds: {} }
+      } catch (error) {
+        this.regressionError = error.response?.data?.msg || error.message || '自动回归状态加载失败'
+      } finally {
+        this.regressionLoading = false
+        this.scheduleRegressionPoll()
+      }
+    },
+    scheduleRegressionPoll() {
+      if (this.regressionPollTimer) clearTimeout(this.regressionPollTimer)
+      this.regressionPollTimer = null
+      if (this.currentMenu !== 'regression' || (!this.regressionMonitoring.running && !this.regressionIndexBusy)) return
+      this.regressionPollTimer = setTimeout(() => this.loadRegressionMonitoring(), 1500)
+    },
+    async runAutomaticRegression() {
+      if (this.regressionAction || this.regressionMonitoring.running) return
+      this.regressionAction = 'run'
+      this.regressionError = ''
+      try {
+        const res = await request.post('/admin/regression-monitoring/runs', { topK: this.evaluationTopK })
+        if (![200, 202].includes(res.data.code)) throw new Error(res.data.msg || '回归评测启动失败')
+        await this.loadRegressionMonitoring()
+      } catch (error) {
+        this.regressionError = error.response?.data?.msg || error.message || '回归评测启动失败'
+      } finally {
+        this.regressionAction = ''
+      }
+    },
+    async rebuildVectorIndex() {
+      if (this.regressionAction || this.regressionIndexBusy) return
+      this.regressionAction = 'index'
+      this.regressionError = ''
+      try {
+        const res = await request.post('/admin/regression-monitoring/index/rebuild', { reason: 'manual-admin' })
+        if (![200, 202].includes(res.data.code)) throw new Error(res.data.msg || '索引重建提交失败')
+        await this.loadRegressionMonitoring()
+      } catch (error) {
+        this.regressionError = error.response?.data?.msg || error.message || '索引重建提交失败'
+      } finally {
+        this.regressionAction = ''
+      }
+    },
+    async acknowledgeRegressionAlert(alertItem) {
+      if (!alertItem || this.regressionAction) return
+      this.regressionAction = `alert-${alertItem.id}`
+      this.regressionError = ''
+      try {
+        const res = await request.put(`/admin/regression-monitoring/alerts/${alertItem.id}/acknowledge`)
+        if (res.data.code !== 200) throw new Error(res.data.msg || '告警确认失败')
+        await this.loadRegressionMonitoring()
+      } catch (error) {
+        this.regressionError = error.response?.data?.msg || error.message || '告警确认失败'
+      } finally {
+        this.regressionAction = ''
+      }
+    },
+    regressionIndexStatusLabel(status) {
+      return { idle: '待命', queued: '排队中', running: '重建中', completed: '已完成', failed: '失败' }[status] || '待命'
+    },
+    regressionRunStatusLabel(status) {
+      return { running: '运行中', completed: '已完成', failed: '失败' }[status] || status || '未知'
+    },
+    regressionAlertTypeLabel(type) {
+      return { INDEX_UNAVAILABLE: '索引不可用', ACCURACY_REGRESSION: '准确率下降', RECALL_REGRESSION: '召回率下降', LATENCY_REGRESSION: '延迟上升', RUN_FAILED: '评测失败' }[type] || type
+    },
+    formatRegressionDelta(value) {
+      const delta = Number(value || 0)
+      return `${delta > 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`
+    },
     async loadEvaluationCases() {
       this.evaluationLoading = true
       this.evaluationError = ''
@@ -3064,6 +3236,7 @@ export default {
 .evaluation-eyebrow, .evaluation-panel-head p { margin: 0 0 7px; color: #bcb2ff; font-size: 10px; font-weight: 800; letter-spacing: 2px; }.evaluation-hero h2 { margin: 0; font-size: 27px; }.evaluation-hero p:not(.evaluation-eyebrow) { margin: 8px 0 0; color: #d8d2ec; font-size: 13px; }
 .evaluation-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }.evaluation-actions label { display: flex; align-items: center; gap: 8px; color: #ddd7f2; font-size: 12px; }.evaluation-actions select { padding: 9px 28px 9px 10px; border: 1px solid rgba(255,255,255,.22); border-radius: 9px; color: #fff; background: rgba(20,15,55,.36); outline: 0; }.evaluation-actions select option { color: #222; }
 .evaluation-run-btn, .evaluation-export-btn, .evaluation-add-btn { padding: 10px 16px; border-radius: 10px; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.evaluation-run-btn { border: 0; color: #5635a0; background: #fff; box-shadow: 0 6px 18px rgba(20,10,50,.2); }.evaluation-run-btn:disabled, .evaluation-export-btn:disabled, .evaluation-add-btn:disabled { cursor: not-allowed; opacity: .55; }.evaluation-export-btn { color: #fff; border: 1px solid rgba(255,255,255,.38); background: transparent; }.evaluation-add-btn { border: 1px solid rgba(255,255,255,.7); color: #fff; background: rgba(255,255,255,.14); }
+.regression-monitor-panel { margin-bottom: 18px; overflow: hidden; border: 1px solid #e5def3; border-radius: 16px; background: #fff; box-shadow: 0 10px 30px rgba(66,50,112,.06); }.regression-monitor-head { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 20px; border-bottom: 1px solid #efebf6; }.regression-monitor-head p { margin: 0 0 5px; color: #8161c5; font-size: 9px; font-weight: 800; letter-spacing: 1.8px; }.regression-monitor-head h3 { margin: 0; color: #392d64; font-size: 17px; }.regression-monitor-head small { display: block; margin-top: 6px; color: #8e849f; font-size: 11px; }.regression-monitor-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }.regression-monitor-actions button { padding: 8px 11px; border: 1px solid #bca9e3; border-radius: 8px; color: #6744ad; background: #fff; font: inherit; font-size: 11px; cursor: pointer; }.regression-monitor-actions button:disabled { cursor: not-allowed; opacity: .5; }.regression-status, .regression-run-status { display: inline-block; padding: 4px 9px; border-radius: 99px; color: #237b59; background: #def5e9; font-size: 10px; white-space: nowrap; }.regression-status.running, .regression-run-status.running { color: #8b651f; background: #fff0d1; }.regression-run-status.failed { color: #bd4f64; background: #fde8ec; }.regression-index-strip { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; padding: 14px 20px; background: #faf8ff; }.regression-index-strip div { min-width: 0; }.regression-index-strip span, .regression-index-strip strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.regression-index-strip span { margin-bottom: 4px; color: #958ba4; font-size: 9px; }.regression-index-strip strong { color: #4c3d6c; font-size: 12px; }.regression-index-strip strong.healthy { color: #237b59; }.regression-index-strip strong.danger { color: #bd4f64; }.regression-monitor-error { padding: 9px 20px; color: #b94b5f; background: #fff4f6; font-size: 11px; }.regression-monitor-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(300px,.65fr); }.regression-monitor-section + .regression-monitor-section { border-left: 1px solid #efebf6; }.regression-section-title { display: flex; align-items: center; justify-content: space-between; padding: 13px 18px; border-bottom: 1px solid #f1edf7; color: #47385f; font-size: 12px; }.regression-section-title span { color: #8b76b9; font-size: 10px; }.regression-table-wrap { overflow: auto; max-height: 270px; }.regression-table { min-width: 760px; }.regression-table th, .regression-table td { padding: 9px 10px; font-size: 10px; }.negative-delta { color: #c1485c; }.positive-delta { color: #277a58; }.regression-alert-list { overflow-y: auto; max-height: 270px; padding: 10px; }.regression-alert-list article { margin-bottom: 8px; padding: 10px; border: 1px solid #ecdcae; border-radius: 10px; background: #fffaf0; }.regression-alert-list article.critical { border-color: #efc2ca; background: #fff5f7; }.regression-alert-list article.acknowledged { opacity: .6; }.regression-alert-list article div { display: flex; justify-content: space-between; gap: 8px; }.regression-alert-list article span { color: #855f1c; font-size: 10px; font-weight: 700; }.regression-alert-list article.critical span { color: #b64257; }.regression-alert-list article small { color: #9a91a5; font-size: 9px; }.regression-alert-list article p { margin: 7px 0; color: #62576c; font-size: 11px; line-height: 1.45; }.regression-alert-list article button { padding: 4px 8px; border: 1px solid #d2b875; border-radius: 6px; color: #7f5b17; background: #fff; font: inherit; font-size: 9px; cursor: pointer; }.regression-alert-list article em { color: #8f869d; font-size: 9px; font-style: normal; }.regression-empty { display: grid; min-height: 100px; place-items: center; color: #9a91a5; font-size: 11px; }
 .evaluation-state { padding: 50px; border: 1px dashed #d8d2ec; border-radius: 16px; color: #807793; text-align: center; }.evaluation-state.error { color: #c3455a; border-color: #efc5cd; background: #fff7f8; }
 .evaluation-progress-card { margin-bottom: 18px; padding: 17px 20px; border: 1px solid #ebe7f5; border-radius: 14px; background: #fff; }.evaluation-progress-head { display: flex; justify-content: space-between; margin-bottom: 10px; color: #716984; font-size: 13px; }.evaluation-progress-head strong { color: #6947b6; font-variant-numeric: tabular-nums; }.evaluation-progress-track { overflow: hidden; height: 8px; border-radius: 99px; background: #efecf6; }.evaluation-progress-track div { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #667eea, #9a59d4); box-shadow: 0 0 12px rgba(118,87,197,.4); transition: width .25s ease; }.evaluation-progress-card small { display: block; overflow: hidden; margin-top: 9px; color: #9a93a8; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .evaluation-dataset-panel { overflow: hidden; margin-bottom: 18px; border: 1px solid #e4ddf5; border-radius: 15px; background: #fff; box-shadow: 0 10px 30px rgba(66,50,112,.06); }.evaluation-dataset-table-wrap { overflow: auto; max-height: 360px; }.evaluation-dataset-table th { z-index: 2; }.evaluation-dataset-table td:first-child strong { color: #6f4ab9; }.evaluation-question-cell { overflow: hidden; max-width: 430px; text-overflow: ellipsis; white-space: nowrap; }.evaluation-category-chip { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #7557b5; background: #f0ebfb; font-size: 10px; white-space: nowrap; }.evaluation-row-actions { display: flex; gap: 7px; }.evaluation-row-actions button { padding: 5px 10px; border: 1px solid #b8a6e4; border-radius: 7px; color: #6847ac; background: #fff; cursor: pointer; }.evaluation-row-actions button.danger { color: #c64f62; border-color: #e9a8b2; }
@@ -3079,7 +3252,7 @@ export default {
 .llm-model-catalog { margin-top: 18px; }.llm-model-form { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 14px; padding: 20px; border-bottom: 1px solid #efecf6; }.llm-model-form label { display: grid; gap: 7px; min-width: 0; color: #625978; font-size: 11px; font-weight: 600; }.llm-model-form label > input:not([type=checkbox]) { box-sizing: border-box; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid #ded7ec; border-radius: 9px; color: #3d3550; background: #fff; font: inherit; font-weight: 400; }.llm-model-form label > input:not([type=checkbox]):focus { border-color: #8b6bca; outline: 0; box-shadow: 0 0 0 3px rgba(117,80,194,.1); }.llm-model-form .llm-model-toggle { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 10px 13px; border: 1px solid #e1d9f0; border-radius: 10px; background: #faf8ff; cursor: pointer; }.llm-model-form .llm-model-toggle input { flex: 0 0 auto; width: 18px; height: 18px; margin: 0; accent-color: #7550c2; }.llm-model-toggle span, .llm-model-toggle strong, .llm-model-toggle small { display: block; }.llm-model-toggle strong { color: #45365f; font-size: 12px; }.llm-model-toggle small { margin-top: 3px; color: #8d849d; font-size: 10px; font-weight: 400; line-height: 1.4; }.llm-model-form button { align-self: stretch; min-height: 58px; border: 0; border-radius: 10px; color: #fff; background: #7454b4; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.llm-model-form button:disabled { cursor: not-allowed; opacity: .5; }.llm-model-catalog .evaluation-table button.danger { color: #bd4f64; border-color: #efbec6; }.llm-health-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #765f8e; background: #f0ecf7; font-size: 10px; white-space: nowrap; }.llm-health-status.available { color: #1e7956; background: #def5e9; }.llm-health-status.unavailable, .llm-health-status.unconfigured { color: #bd4f64; background: #fde8ec; }.llm-health-time { display: block; margin-top: 4px; color: #978ca8; font-size: 9px; white-space: nowrap; }
 .llm-invocation-panel { margin-top: 18px; }.llm-invocation-filters { display: flex; gap: 9px; flex-wrap: wrap; padding: 15px 18px; border-bottom: 1px solid #efecf6; }.llm-invocation-filters select, .llm-invocation-filters button { padding: 8px 10px; border: 1px solid #d4c7ea; border-radius: 8px; color: #5f4695; background: #fff; font: inherit; font-size: 11px; }.llm-invocation-filters button { cursor: pointer; }.llm-invocation-filters button.danger { margin-left: auto; color: #bd4f64; border-color: #efbec6; }.llm-invocation-filters button:disabled { cursor: not-allowed; opacity: .5; }.llm-invocation-summary { grid-template-columns: repeat(6,minmax(0,1fr)); margin: 0; padding: 15px 18px; border-bottom: 1px solid #efecf6; }.llm-invocation-summary .evaluation-metric { padding: 13px; }.llm-invocation-summary .evaluation-metric strong { font-size: 20px; }.llm-invocation-table { max-height: 520px; }.llm-invocation-table table { min-width: 1760px; }.llm-invocation-table small { display: block; color: #8f869e; }.llm-invocation-table small em { display: inline-block; margin-left: 5px; padding: 1px 5px; border-radius: 8px; color: #8b5d19; background: #fff0d1; font-size: 9px; font-style: normal; }.llm-invocation-status, .llm-stream-status { display: inline-block; padding: 3px 8px; border-radius: 99px; color: #1e7956; background: #def5e9; font-size: 10px; white-space: nowrap; }.llm-invocation-status.model_fallback { color: #8b5d19; background: #fff0d1; }.llm-invocation-status.local_fallback, .llm-invocation-status.cancelled, .llm-invocation-status.stream_error, .llm-stream-status.cancelled, .llm-stream-status.error { color: #bd4f64; background: #fde8ec; }.llm-stream-status.not_streamed { color: #756a86; background: #f0ecf7; }.llm-agent-steps { min-width: 185px; }.llm-agent-steps > span { display: inline-block; margin: 2px; padding: 3px 7px; border-radius: 999px; color: #237b59; background: #def5e9; font-size: 9px; }.llm-agent-steps > span.failed { color: #bd4f64; background: #fde8ec; }.llm-agent-steps > span.skipped { color: #8b651f; background: #fff0d1; }.llm-trace-cell code { display: block; overflow: hidden; max-width: 210px; color: #756a86; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 800px) { .statistics-dashboard { padding: 18px; }.stats-toolbar { align-items: flex-start; flex-direction: column; }.stats-kpis { grid-template-columns: 1fr; }.song-bar-chart { overflow-x: auto; }.song-bar-chart .bar-column { min-width: 84px; }.daily-chart-wrap { overflow-x: auto; }.daily-bar-chart { min-width: 600px; } }
-@media (max-width: 1100px) { .evaluation-grid { grid-template-columns: 1fr; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }.llm-invocation-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+@media (max-width: 1100px) { .evaluation-grid, .regression-monitor-grid { grid-template-columns: 1fr; }.regression-monitor-section + .regression-monitor-section { border-left: 0; border-top: 1px solid #efebf6; }.evaluation-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); }.llm-invocation-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media (max-width: 1100px) { .prompt-layout { grid-template-columns: 1fr; } }
-@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero { align-items: flex-start; flex-direction: column; }.evaluation-actions, .llm-cost-actions { align-items: flex-start; justify-content: flex-start; }.llm-cost-controls, .llm-cost-action-buttons { justify-content: flex-start; }.llm-cost-model-picker { align-items: flex-start; flex-direction: column; width: 100%; box-sizing: border-box; }.llm-cost-model-picker select { width: 100%; min-width: 0; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; }.prompt-version-heading { flex-direction: column; }.prompt-editor-body textarea { min-height: 280px; }.llm-model-form { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .evaluation-dashboard { padding: 15px; }.evaluation-hero, .regression-monitor-head { align-items: flex-start; flex-direction: column; }.regression-index-strip { grid-template-columns: repeat(2,minmax(0,1fr)); }.regression-monitor-actions { justify-content: flex-start; }.evaluation-actions, .llm-cost-actions { align-items: flex-start; justify-content: flex-start; }.llm-cost-controls, .llm-cost-action-buttons { justify-content: flex-start; }.llm-cost-model-picker { align-items: flex-start; flex-direction: column; width: 100%; box-sizing: border-box; }.llm-cost-model-picker select { width: 100%; min-width: 0; }.evaluation-metrics { grid-template-columns: 1fr; }.evaluation-form-grid { grid-template-columns: 1fr; }.llm-cost-settings { align-items: stretch; flex-direction: column; }.llm-cost-settings input { width: 100%; }.prompt-version-heading { flex-direction: column; }.prompt-editor-body textarea { min-height: 280px; }.llm-model-form { grid-template-columns: 1fr; } }
 </style>

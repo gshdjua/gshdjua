@@ -20,6 +20,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -55,6 +56,12 @@ public class VectorRagClient {
         thread.setDaemon(true);
         return thread;
     });
+    private volatile String rebuildState = "idle";
+    private volatile String rebuildReason = "";
+    private volatile String rebuildRequestedAt = "";
+    private volatile String rebuildCompletedAt = "";
+    private volatile String rebuildError = "";
+    private volatile Integer lastIndexGeneration = null;
 
     public List<Audio> search(String question, int limit) {
         List<RetrievalResult> retrievalResults = searchResults(question, limit);
@@ -144,16 +151,42 @@ public class VectorRagClient {
 
     public void rebuildAsync(String reason) {
         searchCache.clear();
+        rebuildState = "queued";
+        rebuildReason = reason == null ? "audio-updated" : reason;
+        rebuildRequestedAt = LocalDateTime.now().toString();
+        rebuildError = "";
         rebuildExecutor.submit(() -> {
             try {
+                rebuildState = "running";
                 JSONObject request = new JSONObject();
-                request.put("reason", reason == null ? "audio-updated" : reason);
-                post("/rebuild", request);
+                request.put("reason", rebuildReason);
+                JSONObject response = post("/rebuild", request);
+                lastIndexGeneration = response.getInteger("indexGeneration");
                 searchCache.clear();
+                rebuildState = "completed";
+                rebuildCompletedAt = LocalDateTime.now().toString();
             } catch (Exception exception) {
+                rebuildState = "failed";
+                rebuildError = exception.getMessage() == null ? "索引重建失败" : exception.getMessage();
+                rebuildCompletedAt = LocalDateTime.now().toString();
                 LOGGER.log(Level.FINE, "Local vector index rebuild skipped because the service is unavailable.", exception);
             }
         });
+    }
+
+    public Map<String, Object> indexStatus() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("state", rebuildState);
+        result.put("reason", rebuildReason);
+        result.put("requestedAt", rebuildRequestedAt);
+        result.put("completedAt", rebuildCompletedAt);
+        result.put("error", rebuildError);
+        result.put("lastIndexGeneration", lastIndexGeneration);
+        Map<String, Object> remote = remoteCacheStats();
+        result.put("available", remote.get("available"));
+        if (remote.get("indexGeneration") != null) result.put("indexGeneration", remote.get("indexGeneration"));
+        if (remote.get("error") != null) result.put("serviceError", remote.get("error"));
+        return result;
     }
 
     private JSONObject post(String path, JSONObject requestBody) throws Exception {

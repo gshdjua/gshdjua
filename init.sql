@@ -143,6 +143,42 @@ CREATE TABLE IF NOT EXISTS assistant_message_recommendation (
     FOREIGN KEY (audio_id) REFERENCES audio(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS retrieval_regression_run (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    trigger_type VARCHAR(24) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    top_k INT NOT NULL,
+    total_cases INT NOT NULL DEFAULT 0,
+    passed_cases INT NOT NULL DEFAULT 0,
+    failure_count INT NOT NULL DEFAULT 0,
+    overall_accuracy DECIMAL(10,6) NOT NULL DEFAULT 0,
+    recall_at_k DECIMAL(10,6) NOT NULL DEFAULT 0,
+    mrr DECIMAL(10,6) NOT NULL DEFAULT 0,
+    average_latency_ms DECIMAL(14,3) NOT NULL DEFAULT 0,
+    baseline_run_id BIGINT NULL,
+    accuracy_delta DECIMAL(10,6) NOT NULL DEFAULT 0,
+    recall_delta DECIMAL(10,6) NOT NULL DEFAULT 0,
+    index_generation INT NULL,
+    details_json LONGTEXT NULL,
+    error_message VARCHAR(500) NOT NULL DEFAULT '',
+    started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    KEY idx_regression_run_status_time (status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS retrieval_regression_alert (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id BIGINT NULL,
+    alert_type VARCHAR(40) NOT NULL,
+    severity VARCHAR(16) NOT NULL,
+    message VARCHAR(500) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'open',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    acknowledged_at TIMESTAMP NULL,
+    KEY idx_regression_alert_status_time (status, created_at),
+    FOREIGN KEY (run_id) REFERENCES retrieval_regression_run(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS prompt_version (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
