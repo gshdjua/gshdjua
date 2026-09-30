@@ -133,6 +133,9 @@ public class MusicLibraryAgent {
         List<Audio> selected = new ArrayList<>(allCandidates.subList(0,
                 Math.min(safeRequestedCount, allCandidates.size())));
         List<String> requestedGenres = queryUnderstandingService.requestedGenres(message);
+        int catalogMatchCount = requestedGenres.isEmpty() ? -1 : (int) audioMapper.selectAll().stream()
+                .filter(song -> matchesExplicitRecommendationConstraints(song, message, requestedGenres))
+                .count();
         int favoriteExcludedCount = 0;
         if (userId != null && !requestedGenres.isEmpty()) {
             for (Audio favorite : audioMapper.selectUserCollects(userId)) {
@@ -141,7 +144,8 @@ public class MusicLibraryAgent {
         }
         String shortfallReason = selected.size() >= safeRequestedCount ? ""
                 : favoriteExcludedCount > 0 ? "FAVORITES_EXCLUDED" : "INSUFFICIENT_MATCHES";
-        return new RecommendationOutcome(safeRequestedCount, allCandidates.size(), favoriteExcludedCount,
+        return new RecommendationOutcome(safeRequestedCount, allCandidates.size(), catalogMatchCount,
+                favoriteExcludedCount,
                 shortfallReason, selected);
     }
 
@@ -186,14 +190,22 @@ public class MusicLibraryAgent {
     public static class RecommendationOutcome {
         private final int requestedCount;
         private final int availableCount;
+        private final int catalogMatchCount;
         private final int favoriteExcludedCount;
         private final String shortfallReason;
         private final List<Audio> songs;
 
         public RecommendationOutcome(int requestedCount, int availableCount, int favoriteExcludedCount,
                                      String shortfallReason, List<Audio> songs) {
+            this(requestedCount, availableCount, availableCount + Math.max(0, favoriteExcludedCount),
+                    favoriteExcludedCount, shortfallReason, songs);
+        }
+
+        public RecommendationOutcome(int requestedCount, int availableCount, int catalogMatchCount,
+                                     int favoriteExcludedCount, String shortfallReason, List<Audio> songs) {
             this.requestedCount = requestedCount;
             this.availableCount = availableCount;
+            this.catalogMatchCount = catalogMatchCount;
             this.favoriteExcludedCount = favoriteExcludedCount;
             this.shortfallReason = shortfallReason;
             this.songs = songs == null ? Collections.emptyList() : new ArrayList<>(songs);
@@ -201,6 +213,7 @@ public class MusicLibraryAgent {
 
         public int getRequestedCount() { return requestedCount; }
         public int getAvailableCount() { return availableCount; }
+        public int getCatalogMatchCount() { return catalogMatchCount; }
         public int getFavoriteExcludedCount() { return favoriteExcludedCount; }
         public String getShortfallReason() { return shortfallReason; }
         public List<Audio> getSongs() { return new ArrayList<>(songs); }
@@ -211,6 +224,7 @@ public class MusicLibraryAgent {
             result.put("requestedCount", requestedCount);
             result.put("returnedCount", songs.size());
             result.put("availableCount", availableCount);
+            result.put("catalogMatchCount", catalogMatchCount);
             result.put("favoriteExcludedCount", favoriteExcludedCount);
             result.put("shortfallReason", shortfallReason);
             return result;

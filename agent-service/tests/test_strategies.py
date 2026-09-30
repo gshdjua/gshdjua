@@ -1,10 +1,11 @@
 import unittest
+import threading
 from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.contracts import AgentOptions
-from app.graph import agent_graph, call_model, execute_tools, prepare_strategy
+from app.graph import agent_graph, call_model, execute_tools, prepare_strategy, review_and_answer
 from app.strategies import DirectStrategy, StrategyRouter
 from app.main import strategy_preview
 from app.contracts import StrategyPreviewRequest
@@ -399,6 +400,106 @@ class StrategyGraphTest(unittest.TestCase):
         self.assertEqual("tool_call_limit", update["budget_stop_reason"])
         self.assertIn("BUDGET_EXCEEDED", update["messages"][1].content)
         invoke.assert_called_once()
+
+    def test_tool_branches_execute_in_parallel_and_keep_model_call_order(self):
+        response = AIMessage(content="", tool_calls=[
+            {"name": "song_search", "args": {"query": "动漫"}, "id": "parallel-1", "type": "tool_call"},
+            {"name": "vector_search", "args": {"query": "雨夜"}, "id": "parallel-2", "type": "tool_call"},
+        ])
+        state = {
+            "response": response, "request_id": "parallel-request", "trace_id": "parallel-trace",
+            "user_id": "7", "tool_rounds": 0, "tool_calls": 0, "max_tool_calls": 4,
+            "max_execution_ms": 25000, "execution_started_at": 0,
+            "orchestration_mode": "multi", "agent_steps": [],
+        }
+        both_started = threading.Event()
+        lock = threading.Lock()
+        started = []
+
+        def invoke(name, arguments, context):
+            with lock:
+                started.append(name)
+                if len(started) == 2:
+                    both_started.set()
+            self.assertTrue(both_started.wait(0.5), "tool calls were not scheduled concurrently")
+            return ToolExecutionResult(
+                requestId=context.request_id, traceId=context.trace_id, tool=name,
+                success=True, readOnly=True, data={"items": []}, attempts=1, durationMs=20,
+            )
+
+        with patch("app.graph.elapsed_ms", return_value=0), \
+                patch("app.graph.tool_parallel_max_workers", return_value=2), \
+                patch("app.graph.tool_registry.invoke", side_effect=invoke):
+            update = execute_tools(state)
+
+        self.assertTrue(both_started.is_set())
+        self.assertEqual(["parallel-1", "parallel-2"], [item.tool_call_id for item in update["messages"]])
+        self.assertEqual(2, update["tool_calls"])
+        self.assertEqual(
+            ["retrieval_agent", "tool_agent:song_search", "tool_agent:vector_search"],
+            [item["agent"] for item in update["agent_steps"]],
+        )
+        self.assertIn("parallel=2", update["agent_steps"][0]["summary"])
+
+    def test_partial_tool_failure_is_isolated_and_records_recovery(self):
+        response = AIMessage(content="", tool_calls=[
+            {"name": "song_search", "args": {"query": "动漫"}, "id": "partial-1", "type": "tool_call"},
+            {"name": "vector_search", "args": {"query": "雨夜"}, "id": "partial-2", "type": "tool_call"},
+        ])
+        state = {
+            "response": response, "request_id": "partial-request", "trace_id": "partial-trace",
+            "user_id": "7", "tool_rounds": 0, "tool_calls": 0, "max_tool_calls": 4,
+            "max_execution_ms": 25000, "execution_started_at": 0,
+            "orchestration_mode": "multi", "agent_steps": [],
+        }
+
+        def invoke(name, arguments, context):
+            if name == "vector_search":
+                from app.tools.models import ToolError
+                return ToolExecutionResult(
+                    requestId=context.request_id, traceId=context.trace_id, tool=name,
+                    success=False, readOnly=True, attempts=2, durationMs=15,
+                    error=ToolError(code="TOOL_TIMEOUT", message="timeout", retryable=True),
+                )
+            return ToolExecutionResult(
+                requestId=context.request_id, traceId=context.trace_id, tool=name,
+                success=True, readOnly=True, data={"items": []}, attempts=1, durationMs=10,
+            )
+
+        with patch("app.graph.elapsed_ms", return_value=0), \
+                patch("app.graph.tool_registry.invoke", side_effect=invoke):
+            update = execute_tools(state)
+
+        self.assertEqual([True, False], [item["success"] for item in update["tool_executions"]])
+        self.assertEqual("completed", update["agent_steps"][0]["status"])
+        recovery = update["agent_steps"][-1]
+        self.assertEqual("recovery_agent", recovery["agent"])
+        self.assertEqual("partial_results_used", recovery["summary"])
+        self.assertFalse(update["budget_exhausted"])
+
+    def test_review_failure_preserves_candidate_answer(self):
+        class FailingReviewModel:
+            def invoke(self, messages):
+                raise TimeoutError("review unavailable")
+
+        draft = AIMessage(content="保留这个候选回答")
+        state = {
+            "messages": [HumanMessage(content="问题"), draft], "draft_response": draft,
+            "response": draft, "provider": "deepseek", "model": "deepseek-chat",
+            "trace_id": "review-recovery", "model_calls": 1, "max_model_calls": 2,
+            "max_execution_ms": 25000, "budget_exhausted": False,
+        }
+        with patch("app.graph.elapsed_ms", return_value=0), \
+                patch("app.graph.llm_provider_registry.create_chat_model", return_value=FailingReviewModel()):
+            update = review_and_answer(state)
+
+        self.assertEqual("保留这个候选回答", update["response"].content)
+        self.assertEqual(2, update["model_calls"])
+        self.assertEqual(
+            ["fact_check_agent", "recovery_agent", "answer_agent"],
+            [item["agent"] for item in update["agent_steps"]],
+        )
+        self.assertEqual("failed", update["agent_steps"][0]["status"])
 
     def test_time_budget_stops_before_another_model_call(self):
         state = {

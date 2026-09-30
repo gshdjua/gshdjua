@@ -89,6 +89,10 @@ def tool_max_attempts() -> int:
     return max(1, int(first_config("AGENT_TOOL_MAX_ATTEMPTS", default="2")))
 
 
+def tool_parallel_max_workers() -> int:
+    return max(1, min(8, int(first_config("AGENT_TOOL_PARALLEL_MAX_WORKERS", default="4"))))
+
+
 def tool_retry_backoff_seconds() -> float:
     return max(0.0, float(first_config("AGENT_TOOL_RETRY_BACKOFF_SECONDS", default="0.1")))
 

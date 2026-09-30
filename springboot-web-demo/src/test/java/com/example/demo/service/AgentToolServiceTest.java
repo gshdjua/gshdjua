@@ -80,6 +80,8 @@ class AgentToolServiceTest {
 
         assertEquals(1, items.size());
         assertEquals(3, items.get(0).get("id"));
+        assertEquals(1, result.get("returnedCount"));
+        assertEquals(1, result.get("catalogMatchCount"));
         verify(musicLibraryAgent).getRecommendationOutcome("轻快动漫歌曲", 7, 3, excluded);
     }
 

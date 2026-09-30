@@ -196,10 +196,43 @@ class RecommendationFavoriteExclusionTest {
 
         assertEquals(5, outcome.getRequestedCount());
         assertEquals(4, outcome.getSongs().size());
+        assertEquals(7, outcome.getCatalogMatchCount());
         assertEquals(3, outcome.getFavoriteExcludedCount());
         assertEquals("FAVORITES_EXCLUDED", outcome.getShortfallReason());
         assertTrue(reply.contains("3 首已在你的收藏中"));
         assertTrue(reply.contains("目前只有 4 首可推荐"));
+    }
+
+    @Test
+    void compositeAnimeRecommendationKeepsCatalogTotalSeparateFromThreeReturnedCandidates() {
+        AudioMapper audioMapper = mock(AudioMapper.class);
+        AssistantQueryUnderstandingService understanding = new AssistantQueryUnderstandingService();
+        VectorRagClient vectorRagClient = mock(VectorRagClient.class);
+        MusicRagRetriever keywordRetriever = mock(MusicRagRetriever.class);
+        MusicLibraryAgent agent = new MusicLibraryAgent();
+        ReflectionTestUtils.setField(agent, "audioMapper", audioMapper);
+        ReflectionTestUtils.setField(agent, "queryUnderstandingService", understanding);
+        ReflectionTestUtils.setField(agent, "vectorRagClient", vectorRagClient);
+        ReflectionTestUtils.setField(agent, "musicRagRetriever", keywordRetriever);
+
+        List<Audio> animeSongs = new java.util.ArrayList<>();
+        for (int index = 1; index <= 7; index++) {
+            animeSongs.add(audio(index, "动漫歌曲" + index, "歌手" + index, "动漫"));
+        }
+        String question = "根据我的收藏和本地歌库，同时搜索适合雨夜的动漫歌曲，推荐三首并比较类型和出处";
+        when(audioMapper.selectAll()).thenReturn(animeSongs);
+        when(audioMapper.selectUserCollects(10)).thenReturn(animeSongs.subList(0, 4));
+        when(vectorRagClient.search(understanding.normalize(question), 20)).thenReturn(Collections.emptyList());
+        when(keywordRetriever.retrieve(question, null, 20)).thenReturn(Collections.emptyList());
+
+        MusicLibraryAgent.RecommendationOutcome outcome = agent.getRecommendationOutcome(
+                question, 10, 3, Collections.emptySet());
+        String reply = agent.formatRecommendationReply(question, outcome);
+
+        assertEquals(7, outcome.getCatalogMatchCount());
+        assertEquals(3, outcome.getAvailableCount());
+        assertEquals(3, outcome.getSongs().size());
+        assertFalse(reply.contains("歌库只有 3 首"));
     }
 
     @Test

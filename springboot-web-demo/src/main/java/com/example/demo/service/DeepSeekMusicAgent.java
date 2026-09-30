@@ -272,20 +272,42 @@ public class DeepSeekMusicAgent {
             if (modelJudgesMood) currentRecommendationOutcome.remove();
             return localAnswer;
         }
-        EvidenceContext evidenceContext = buildSongEvidenceContext(
-                retrievalMethod, songs, outcome.getRequestedCount());
+        EvidenceContext evidenceContext = buildRecommendationEvidenceContext(retrievalMethod, outcome);
+        Consumer<String> finalStream = currentStreamConsumer.get();
+        if (finalStream != null) {
+            // Recommendation answers are still subject to Java-side candidate validation.
+            // Consume the upstream SSE without exposing an answer that may be replaced.
+            currentStreamConsumer.set(ignored -> { });
+        }
+        String finalAnswer;
         try {
             String answer = requestDeepSeek(message, evidenceContext, history);
             if (answer.isEmpty() || (!modelJudgesMood && !mentionsEverySong(answer, songs))
                     || mentionsUnselectedSong(answer, songs)) {
                 if (modelJudgesMood) currentRecommendationOutcome.remove();
-                return localAnswer;
+                finalAnswer = localAnswer;
+            } else {
+                if (modelJudgesMood) currentRecommendationOutcome.set(recommendationsMentionedInAnswer(outcome, answer));
+                finalAnswer = answer;
             }
-            if (modelJudgesMood) currentRecommendationOutcome.set(recommendationsMentionedInAnswer(outcome, answer));
-            return answer;
         } catch (Exception exception) {
             if (modelJudgesMood) currentRecommendationOutcome.remove();
-            return quotaAwareFallback(exception, localAnswer);
+            finalAnswer = quotaAwareFallback(exception, localAnswer);
+        } finally {
+            if (finalStream != null) currentStreamConsumer.set(finalStream);
+        }
+        emitValidatedAnswer(finalStream, finalAnswer);
+        return finalAnswer;
+    }
+
+    void emitValidatedAnswer(Consumer<String> stream, String answer) {
+        if (stream == null || answer == null || answer.isEmpty()) return;
+        int offset = 0;
+        while (offset < answer.length()) {
+            int remainingCodePoints = answer.codePointCount(offset, answer.length());
+            int end = answer.offsetByCodePoints(offset, Math.min(16, remainingCodePoints));
+            stream.accept(answer.substring(offset, end));
+            offset = end;
         }
     }
 
@@ -306,7 +328,7 @@ public class DeepSeekMusicAgent {
                         && normalized.contains(song.getSongName().toLowerCase(Locale.ROOT)))
                 .collect(Collectors.toList());
         return new MusicLibraryAgent.RecommendationOutcome(candidates.getRequestedCount(),
-                mentioned.size(), candidates.getFavoriteExcludedCount(),
+                candidates.getAvailableCount(), candidates.getCatalogMatchCount(), candidates.getFavoriteExcludedCount(),
                 mentioned.size() < candidates.getRequestedCount() ? "INSUFFICIENT_MATCHES" : "", mentioned);
     }
 
@@ -328,7 +350,24 @@ public class DeepSeekMusicAgent {
         for (Audio song : audioMapper.selectAll()) {
             String songName = song.getSongName();
             if (!selectedIds.contains(song.getId()) && songName != null && songName.length() >= 3
-                    && normalizedAnswer.contains(songName.toLowerCase(Locale.ROOT))) return true;
+                    && hasPositiveSongMention(normalizedAnswer, songName.toLowerCase(Locale.ROOT))) return true;
+        }
+        return false;
+    }
+
+    private boolean hasPositiveSongMention(String answer, String songName) {
+        int fromIndex = 0;
+        while (fromIndex < answer.length()) {
+            int index = answer.indexOf(songName, fromIndex);
+            if (index < 0) return false;
+            int contextStart = Math.max(0, index - 36);
+            int contextEnd = Math.min(answer.length(), index + songName.length() + 48);
+            String context = answer.substring(contextStart, contextEnd);
+            boolean correctionOnly = containsAny(context,
+                    "不在本次", "不属于本次", "不应作为", "未列入推荐", "没有列入推荐",
+                    "并非推荐", "不是推荐", "不推荐", "错误提到", "误提", "更正说明");
+            if (!correctionOnly) return true;
+            fromIndex = index + songName.length();
         }
         return false;
     }
@@ -539,6 +578,25 @@ public class DeepSeekMusicAgent {
         return new EvidenceContext(context.toString(), references);
     }
 
+    private EvidenceContext buildRecommendationEvidenceContext(
+            String retrievalMethod, MusicLibraryAgent.RecommendationOutcome outcome) {
+        EvidenceContext songs = buildSongEvidenceContext(
+                retrievalMethod, outcome.getSongs(), outcome.getRequestedCount());
+        StringBuilder statistics = new StringBuilder("推荐范围统计：");
+        if (outcome.getCatalogMatchCount() >= 0) {
+            statistics.append("歌库中满足明确类型条件的歌曲总数=")
+                    .append(outcome.getCatalogMatchCount()).append("；");
+        } else {
+            statistics.append("歌库范围总数=未统计；");
+        }
+        statistics.append("排除收藏或显式排除项后可推荐数量=")
+                .append(outcome.getAvailableCount())
+                .append("；本次请求数量=").append(outcome.getRequestedCount())
+                .append("；本次返回候选数量=").append(outcome.getSongs().size())
+                .append("。本次返回数量只是候选截断数量，绝不能表述为歌库该类型歌曲总数。\n");
+        return new EvidenceContext(statistics + songs.getPrompt(), songs.getReferences());
+    }
+
     int evidenceLimitForIntent(AssistantIntent intent, String message) {
         if (intent == AssistantIntent.SONG_METADATA) return 1;
         if (intent == AssistantIntent.SOURCE_QUERY || intent == AssistantIntent.GENRE_QUERY) return 5;
@@ -675,7 +733,7 @@ public class DeepSeekMusicAgent {
                 : promptVersionService.forEvaluation(requestedVersion);
         lastPromptVersion.set(prompt.getVersion());
         messages.add(message("system", prompt.getTemplate()));
-        messages.add(message("system", "推荐规则：用户同时要求动漫出处与轻松听感时，只从本地提供的动漫候选中判断听感；轻松不是数据库必填标签，应依据候选简介谨慎判断。不要为凑够数量纳入不合适的歌曲；不足时说明只能确认几首。不要在最终回答中点名未推荐的候选歌曲。"));
+        messages.add(message("system", "推荐规则：用户同时要求动漫出处与轻松听感时，只从本地提供的动漫候选中判断听感；轻松不是数据库必填标签，应依据候选简介谨慎判断。不要为凑够数量纳入不合适的歌曲；不足时说明只能确认几首。不要在最终回答中点名未推荐的候选歌曲。数量上必须严格区分歌库类型总数、筛选后可推荐数量和本次返回候选数量：本次返回 3 首只表示按用户要求选出了 3 首，不能据此声称歌库只有 3 首；只有证据中的 catalogMatchCount 或“满足明确类型条件的歌曲总数”可以用于陈述总数。"));
     }
 
     public Map<String, Object> evaluateLlmCost(String message, Integer userId, List<Map<String, String>> history,
@@ -868,6 +926,7 @@ public class DeepSeekMusicAgent {
         result.put("toolCalls", executed ? execution.getToolCalls() : 0);
         result.put("toolRounds", executed ? execution.getToolRounds() : 0);
         result.put("toolExecutions", executed ? execution.getToolExecutions() : Collections.emptyList());
+        result.put("agentSteps", executed ? execution.getAgentSteps() : Collections.emptyList());
         result.put("plannedTool", plannedTool);
         result.put("budgetExceeded", executed && execution.isBudgetExceeded());
         result.put("stopReason", executed ? execution.getStopReason() : "");

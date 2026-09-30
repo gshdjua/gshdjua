@@ -311,8 +311,21 @@ class ToolRegistryTest(unittest.TestCase):
         )]
         direct = [AgentMessage(role="user", content="推荐动漫歌曲")]
 
-        self.assertFalse(should_enable_tools(prepared))
+        self.assertFalse(should_enable_tools(prepared, "推荐动漫歌曲"))
         self.assertTrue(should_enable_tools(direct))
+
+    def test_prepared_java_evidence_allows_tools_for_composite_request(self):
+        question = "根据我的收藏和本地歌库，同时搜索适合雨夜的动漫歌曲，推荐三首并比较类型和出处"
+        prepared = [AgentMessage(
+            role="user",
+            content=(
+                "用户问题：" + question
+                + "\n\n本地歌库提供的最小歌曲元数据：\n本地歌曲证据"
+            ),
+        )]
+
+        self.assertTrue(should_enable_tools(prepared, question))
+        self.assertFalse(should_enable_tools(prepared, question, requested_strategy="direct"))
 
 
 if __name__ == "__main__":

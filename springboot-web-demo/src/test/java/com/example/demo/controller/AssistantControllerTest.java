@@ -2,6 +2,7 @@ package com.example.demo.controller;
 
 import com.example.demo.entity.AssistantConversation;
 import com.example.demo.entity.AssistantMessage;
+import com.example.demo.entity.Audio;
 import com.example.demo.entity.User;
 import com.example.demo.mapper.AssistantConversationMapper;
 import com.example.demo.mapper.AudioMapper;
@@ -21,6 +22,7 @@ import org.springframework.transaction.TransactionStatus;
 
 import javax.servlet.http.HttpServletRequest;
 import java.util.Collections;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -37,6 +39,65 @@ import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.eq;
 
 class AssistantControllerTest {
+
+    @Test
+    void restoresPersistedRecommendationsWithConversationMessages() {
+        AssistantConversationMapper conversationMapper = mock(AssistantConversationMapper.class);
+        UserMapper userMapper = mock(UserMapper.class);
+        HttpServletRequest request = mock(HttpServletRequest.class);
+        AssistantController controller = new AssistantController();
+        ReflectionTestUtils.setField(controller, "assistantConversationMapper", conversationMapper);
+        ReflectionTestUtils.setField(controller, "userMapper", userMapper);
+
+        User user = new User();
+        user.setId(7);
+        AssistantConversation conversation = new AssistantConversation();
+        conversation.setId(11L);
+        AssistantMessage userMessage = new AssistantMessage();
+        userMessage.setId(40L);
+        userMessage.setRole("user");
+        AssistantMessage assistantMessage = new AssistantMessage();
+        assistantMessage.setId(41L);
+        assistantMessage.setRole("assistant");
+        Audio recommendation = new Audio();
+        recommendation.setId(5);
+        recommendation.setSongName("前前前世");
+
+        when(request.getHeader("Authorization")).thenReturn(JwtUtil.generateToken("tester"));
+        when(userMapper.selectByUsername("tester")).thenReturn(user);
+        when(conversationMapper.selectByIdAndUserId(11L, 7)).thenReturn(conversation);
+        when(conversationMapper.selectMessagesByConversationId(11L))
+                .thenReturn(Arrays.asList(userMessage, assistantMessage));
+        when(conversationMapper.selectRecommendationsByMessageId(41L))
+                .thenReturn(Collections.singletonList(recommendation));
+
+        Map<String, Object> response = controller.conversation(11L, request);
+        AssistantConversation restored = (AssistantConversation) response.get("data");
+
+        assertEquals(200, response.get("code"));
+        assertEquals(1, restored.getMessages().get(1).getRecommendations().size());
+        assertEquals("前前前世", restored.getMessages().get(1).getRecommendations().get(0).getSongName());
+        verify(conversationMapper).selectRecommendationsByMessageId(41L);
+    }
+
+    @Test
+    void persistsRecommendationOrderWithoutDuplicateSongs() {
+        AssistantConversationMapper conversationMapper = mock(AssistantConversationMapper.class);
+        AssistantController controller = new AssistantController();
+        ReflectionTestUtils.setField(controller, "assistantConversationMapper", conversationMapper);
+        AssistantMessage assistantMessage = new AssistantMessage();
+        assistantMessage.setId(41L);
+        Audio first = new Audio();
+        first.setId(5);
+        Audio second = new Audio();
+        second.setId(9);
+
+        ReflectionTestUtils.invokeMethod(controller, "persistRecommendations", assistantMessage,
+                Arrays.asList(first, second, first));
+
+        verify(conversationMapper).insertMessageRecommendation(41L, 5, 0);
+        verify(conversationMapper).insertMessageRecommendation(41L, 9, 1);
+    }
 
     @Test
     void persistsQuestionAndPartialAnswerWhenStreamingIsCancelled() {

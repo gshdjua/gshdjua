@@ -2,6 +2,7 @@ package com.example.demo.mapper;
 
 import com.example.demo.entity.AssistantConversation;
 import com.example.demo.entity.AssistantMessage;
+import com.example.demo.entity.Audio;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Options;
@@ -57,4 +58,15 @@ public interface AssistantConversationMapper {
     @Insert("INSERT INTO assistant_message(conversation_id, role, content) VALUES(#{conversationId}, #{role}, #{content})")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insertMessage(AssistantMessage message);
+
+    @Insert("INSERT INTO assistant_message_recommendation(message_id, audio_id, sort_order) " +
+            "VALUES(#{messageId}, #{audioId}, #{sortOrder})")
+    void insertMessageRecommendation(@Param("messageId") Long messageId,
+                                     @Param("audioId") Integer audioId,
+                                     @Param("sortOrder") int sortOrder);
+
+    @Select("SELECT a.* FROM assistant_message_recommendation amr " +
+            "JOIN audio a ON a.id = amr.audio_id " +
+            "WHERE amr.message_id = #{messageId} ORDER BY amr.sort_order ASC")
+    List<Audio> selectRecommendationsByMessageId(Long messageId);
 }

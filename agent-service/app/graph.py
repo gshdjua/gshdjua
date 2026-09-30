@@ -1,6 +1,7 @@
 import logging
 import operator
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar, Token
 from typing import Annotated, Any, Callable, Dict, List, Optional, TypedDict
 
@@ -8,6 +9,7 @@ from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolM
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from .config import tool_parallel_max_workers
 from .providers import LlmModelRequest, llm_provider_registry
 from .strategies import strategy_router
 from .tools import ToolContext, tool_registry
@@ -272,26 +274,65 @@ def execute_tools(state: AgentState) -> Dict[str, Any]:
             execution_started_at + state.get("max_execution_ms", 25000) / 1000.0
         ),
     )
-    messages = []
-    tool_executions = []
+    round_started = time.monotonic()
+    calls = list(state["response"].tool_calls)
+    results: List[Optional[ToolExecutionResult]] = [None] * len(calls)
+    scheduled = []
     tool_calls = state.get("tool_calls", 0)
     budget_exhausted = state.get("budget_exhausted", False)
     stop_reason = state.get("budget_stop_reason", "")
-    for call in state["response"].tool_calls:
+    for index, call in enumerate(calls):
         if tool_calls >= state.get("max_tool_calls", 4):
             stop_reason = "tool_call_limit"
             budget_exhausted = True
-            result = budget_error(call, state, stop_reason)
+            results[index] = budget_error(call, state, stop_reason)
         elif elapsed_ms(state) >= state.get("max_execution_ms", 25000):
             stop_reason = "time_limit"
             budget_exhausted = True
-            result = budget_error(call, state, stop_reason)
+            results[index] = budget_error(call, state, stop_reason)
         else:
-            result = tool_registry.invoke(call["name"], call.get("args") or {}, context)
+            scheduled.append((index, call))
             tool_calls += 1
-            if elapsed_ms(state) >= state.get("max_execution_ms", 25000):
-                stop_reason = "time_limit"
-                budget_exhausted = True
+
+    if scheduled:
+        workers = min(tool_parallel_max_workers(), len(scheduled))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="agent-branch") as executor:
+            futures = {
+                executor.submit(
+                    tool_registry.invoke, call["name"], call.get("args") or {}, context
+                ): (index, call)
+                for index, call in scheduled
+            }
+            for future in as_completed(futures):
+                index, call = futures[future]
+                try:
+                    results[index] = future.result()
+                except Exception as error:
+                    LOGGER.warning(
+                        "Parallel agent branch failed: tool=%s errorType=%s traceId=%s",
+                        call["name"], type(error).__name__, state["trace_id"],
+                    )
+                    results[index] = ToolExecutionResult(
+                        requestId=state["request_id"],
+                        traceId=state["trace_id"],
+                        tool=call["name"],
+                        success=False,
+                        readOnly=tool_registry.is_read_only(call["name"]),
+                        attempts=1,
+                        durationMs=max(0, round((time.monotonic() - round_started) * 1000)),
+                        error=ToolError(
+                            code="TOOL_FAILED", message="工具分支执行失败", retryable=False
+                        ),
+                    )
+
+    if scheduled and elapsed_ms(state) >= state.get("max_execution_ms", 25000):
+        stop_reason = "time_limit"
+        budget_exhausted = True
+
+    messages = []
+    tool_executions = []
+    for call, result in zip(calls, results):
+        assert result is not None
         messages.append(
             ToolMessage(
                 content=result.model_dump_json(exclude_none=True),
@@ -316,13 +357,38 @@ def execute_tools(state: AgentState) -> Dict[str, Any]:
     }
     if state.get("orchestration_mode", "single") == "multi":
         failed = [item for item in tool_executions if not item["success"]]
-        update["agent_steps"] = [{
+        succeeded = [item for item in tool_executions if item["success"]]
+        round_duration = max(0, round((time.monotonic() - round_started) * 1000))
+        steps = [{
             "agent": "retrieval_agent",
-            "status": "failed" if failed and len(failed) == len(tool_executions) else "completed",
-            "durationMs": sum(int(item.get("durationMs", 0) or 0) for item in tool_executions),
-            "summary": ",".join(item["tool"] for item in tool_executions) or "no_tool_result",
+            "status": "failed" if failed and not succeeded else "completed",
+            "durationMs": round_duration,
+            "summary": f"parallel={len(scheduled)};success={len(succeeded)};failed={len(failed)}",
             "errorCode": failed[0].get("errorCode", "") if failed else "",
         }]
+        steps.extend({
+            "agent": "tool_agent:" + item["tool"],
+            "status": "completed" if item["success"] else "failed",
+            "durationMs": item["durationMs"],
+            "summary": f"attempts={item['attempts']}",
+            "errorCode": item["errorCode"],
+        } for item in tool_executions)
+        retried = [item for item in tool_executions if item["success"] and item["attempts"] > 1]
+        if failed or retried:
+            if failed and succeeded:
+                recovery_summary = "partial_results_used"
+            elif failed:
+                recovery_summary = "all_tools_failed_safe_continuation"
+            else:
+                recovery_summary = "tool_retry_succeeded"
+            steps.append({
+                "agent": "recovery_agent",
+                "status": "completed",
+                "durationMs": 0,
+                "summary": recovery_summary,
+                "errorCode": failed[0].get("errorCode", "") if failed else "",
+            })
+        update["agent_steps"] = steps
     return update
 
 
@@ -347,32 +413,59 @@ def review_and_answer(state: AgentState) -> Dict[str, Any]:
         }
     started = time.monotonic()
     remaining_ms = state.get("max_execution_ms", 25000) - elapsed_ms(state)
-    model = llm_provider_registry.create_chat_model(
-        state["provider"],
-        LlmModelRequest(
-            model=state.get("model"),
-            temperature=0.1,
-            timeout_seconds=max(0.25, remaining_ms / 1000.0),
-        ),
-    )
-    review_instruction = SystemMessage(content=(
-        "你现在同时承担事实校验 Agent 和最终回答 Agent。先在内部逐项核对候选回答："
-        "所有关于本地歌库、歌曲、歌手、类型、出处、收藏和推荐的事实必须能由当前对话中的"
-        "结构化工具结果或‘本地歌库提供的最小歌曲元数据’支持。删除或改正无证据、矛盾、"
-        "重复和越权内容；证据不足必须明确说明。最后只输出修正后的自然中文回答，"
-        "不要输出校验过程、评分、JSON、思维链或‘候选回答’字样。"
-    ))
-    review_messages = [review_instruction] + list(state["messages"])
-    stream_sink = MODEL_STREAM_SINK.get()
-    if stream_sink is None:
-        response = model.invoke(review_messages)
-    else:
-        aggregate = None
-        for chunk in model.stream(review_messages):
-            aggregate = chunk if aggregate is None else aggregate + chunk
-            if isinstance(chunk.content, str) and chunk.content:
-                stream_sink(chunk.content)
-        response = AIMessage(content="") if aggregate is None else message_chunk_to_message(aggregate)
+    try:
+        model = llm_provider_registry.create_chat_model(
+            state["provider"],
+            LlmModelRequest(
+                model=state.get("model"),
+                temperature=0.1,
+                timeout_seconds=max(0.25, remaining_ms / 1000.0),
+            ),
+        )
+        review_instruction = SystemMessage(content=(
+            "你现在同时承担事实校验 Agent 和最终回答 Agent。先在内部逐项核对候选回答："
+            "所有关于本地歌库、歌曲、歌手、类型、出处、收藏和推荐的事实必须能由当前对话中的"
+            "结构化工具结果或‘本地歌库提供的最小歌曲元数据’支持。删除或改正无证据、矛盾、"
+            "重复和越权内容；证据不足必须明确说明。校验数量时，count/returnedCount 仅代表本次返回条数，"
+            "availableCount 代表筛选后可推荐数，只有 catalogMatchCount 才代表明确类型范围的歌库总数；"
+            "不得把候选条数表述为歌库总数。最后只输出修正后的自然中文回答，"
+            "不要输出校验过程、评分、JSON、思维链或‘候选回答’字样。"
+        ))
+        review_messages = [review_instruction] + list(state["messages"])
+        stream_sink = MODEL_STREAM_SINK.get()
+        if stream_sink is None:
+            response = model.invoke(review_messages)
+        else:
+            aggregate = None
+            for chunk in model.stream(review_messages):
+                aggregate = chunk if aggregate is None else aggregate + chunk
+                if isinstance(chunk.content, str) and chunk.content:
+                    stream_sink(chunk.content)
+            response = AIMessage(content="") if aggregate is None else message_chunk_to_message(aggregate)
+    except Exception as error:
+        duration = max(0, round((time.monotonic() - started) * 1000))
+        LOGGER.warning(
+            "Fact-check agent failed; preserving candidate: errorType=%s traceId=%s",
+            type(error).__name__, state["trace_id"],
+        )
+        return {
+            "response": draft,
+            "model_calls": state.get("model_calls", 0) + 1,
+            "agent_steps": [
+                {
+                    "agent": "fact_check_agent", "status": "failed", "durationMs": duration,
+                    "summary": "candidate_preserved", "errorCode": "REVIEW_FAILED",
+                },
+                {
+                    "agent": "recovery_agent", "status": "completed", "durationMs": 0,
+                    "summary": "candidate_used_after_review_failure",
+                },
+                {
+                    "agent": "answer_agent", "status": "completed", "durationMs": 0,
+                    "summary": "candidate_used_as_final",
+                },
+            ],
+        }
     usage = message_usage(response)
     review_status = "completed"
     review_error = ""
@@ -394,19 +487,23 @@ def review_and_answer(state: AgentState) -> Dict[str, Any]:
         "total_tokens": total_tokens,
         "budget_exhausted": bool(stop_reason),
         "budget_stop_reason": stop_reason,
-        "agent_steps": [
+        "agent_steps": ([
             {
                 "agent": "fact_check_agent", "status": review_status, "durationMs": duration,
                 "inputTokens": usage["input_tokens"], "outputTokens": 0,
                 "summary": "evidence_checked" if not review_error else "candidate_preserved",
                 "errorCode": review_error,
             },
+        ] + ([{
+                "agent": "recovery_agent", "status": "completed", "durationMs": 0,
+                "summary": "candidate_used_after_empty_review",
+            }] if review_error else []) + [
             {
                 "agent": "answer_agent", "status": "completed", "durationMs": duration,
                 "inputTokens": 0, "outputTokens": usage["output_tokens"],
                 "summary": "final_answer_created" if not review_error else "candidate_used_as_final",
             },
-        ],
+        ]),
     }
 
 

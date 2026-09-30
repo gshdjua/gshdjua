@@ -394,6 +394,7 @@ public class AssistantController {
         }
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
+        persistRecommendations(assistantMessage, replyResult.getRecommendations());
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
         assistantMessage.setPromptVersion(replyResult.getPromptVersion());
         if ("新对话".equals(conversation.getTitle())) {
@@ -627,8 +628,25 @@ public class AssistantController {
     public Map<String, Object> conversation(@PathVariable Long conversationId, HttpServletRequest request) {
         AssistantConversation conversation = assistantConversationMapper.selectByIdAndUserId(conversationId, getUserId(request));
         if (conversation == null) return result(500, "Conversation not found", null);
-        conversation.setMessages(assistantConversationMapper.selectMessagesByConversationId(conversationId));
+        List<AssistantMessage> messages = assistantConversationMapper.selectMessagesByConversationId(conversationId);
+        for (AssistantMessage item : messages) {
+            if (item.getId() != null && "assistant".equals(item.getRole())) {
+                item.setRecommendations(assistantConversationMapper.selectRecommendationsByMessageId(item.getId()));
+            }
+        }
+        conversation.setMessages(messages);
         return result(200, "success", conversation);
+    }
+
+    private void persistRecommendations(AssistantMessage message, List<Audio> recommendations) {
+        if (message == null || message.getId() == null || recommendations == null || recommendations.isEmpty()) return;
+        java.util.LinkedHashSet<Integer> savedAudioIds = new java.util.LinkedHashSet<>();
+        int sortOrder = 0;
+        for (Audio audio : recommendations) {
+            if (audio == null || audio.getId() == null || !savedAudioIds.add(audio.getId())) continue;
+            assistantConversationMapper.insertMessageRecommendation(message.getId(), audio.getId(), sortOrder++);
+        }
+        message.setRecommendations(recommendations);
     }
 
     @DeleteMapping("/conversations/{conversationId}")

@@ -64,6 +64,16 @@ CREATE TABLE IF NOT EXISTS assistant_message (
     FOREIGN KEY (conversation_id) REFERENCES assistant_conversation(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS assistant_message_recommendation (
+    message_id BIGINT NOT NULL,
+    audio_id INT NOT NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (message_id, audio_id),
+    KEY idx_assistant_message_recommendation_order (message_id, sort_order),
+    FOREIGN KEY (message_id) REFERENCES assistant_message(id) ON DELETE CASCADE,
+    FOREIGN KEY (audio_id) REFERENCES audio(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS prompt_version (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,

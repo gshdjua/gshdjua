@@ -9,7 +9,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Collections;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Arrays;
 import java.util.Set;
@@ -99,6 +101,20 @@ class DeepSeekMusicAgentTest {
 
         assertTrue(agent.mentionsUnselectedSong("推荐轻快动画歌曲和 Flower Dance", Collections.singletonList(verified)));
         assertFalse(agent.mentionsUnselectedSong("推荐轻快动画歌曲", Collections.singletonList(verified)));
+        assertFalse(agent.mentionsUnselectedSong(
+                "更正说明：《Flower Dance》不在本次本地证据中，不应作为推荐。以下只介绍轻快动画歌曲。",
+                Collections.singletonList(verified)));
+    }
+
+    @Test
+    void validatedRecommendationStreamExactlyMatchesFinalAnswer() {
+        List<String> chunks = new ArrayList<>();
+        String answer = "歌库共有7首动漫歌曲，本次选出3首候选，不把候选数当作总数。";
+
+        agent.emitValidatedAnswer(chunks::add, answer);
+
+        assertTrue(chunks.size() > 1);
+        assertEquals(answer, String.join("", chunks));
     }
 
     @Test

@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .audit import audit_repository
-from .config import default_provider
+from .config import default_provider, tool_parallel_max_workers
 from .contracts import (
     AgentChatRequest,
     AgentChatResponse,
@@ -59,8 +59,32 @@ def answer_chunks(answer: str, size: int = 24) -> Iterator[str]:
         yield answer[offset:offset + safe_size]
 
 
-def should_enable_tools(messages: List[AgentMessage]) -> bool:
-    return not any("本地歌库提供的最小歌曲元数据：" in message.content for message in messages)
+def has_prepared_evidence(messages: List[AgentMessage]) -> bool:
+    return any("本地歌库提供的最小歌曲元数据：" in message.content for message in messages)
+
+
+def should_enable_tools(
+    messages: List[AgentMessage],
+    user_message: str = "",
+    requested_strategy: str = "auto",
+    cost_budget: str = "standard",
+) -> bool:
+    """Keep simple prepared-evidence requests fast, but supplement complex ones.
+
+    Java-side evidence is intentionally sufficient for a single-step lookup.  It
+    is only a starting point for a composite request (for example favourites +
+    mood + recommendation + comparison), where the strategy router should still
+    be allowed to invoke the missing read-only tools.
+    """
+    if not has_prepared_evidence(messages):
+        return True
+    decision = strategy_router.select(
+        requested_strategy,
+        user_message,
+        tools_enabled=True,
+        cost_budget=cost_budget,
+    )
+    return decision.selected == "react"
 
 
 def to_langchain_message(role: str, content: str):
@@ -122,7 +146,8 @@ def health() -> dict:
         "defaultCostBudget": "standard",
         "orchestrationModes": ["single", "multi"],
         "defaultOrchestration": "multi",
-        "multiAgentRoles": ["retrieval_agent", "candidate_agent", "fact_check_agent", "answer_agent"],
+        "multiAgentRoles": ["retrieval_agent", "tool_agent", "candidate_agent", "fact_check_agent", "recovery_agent", "answer_agent"],
+        "parallelToolWorkers": tool_parallel_max_workers(),
     }
 
 
@@ -189,6 +214,12 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             memory_notes.append("此前对话摘要：" + memory.summary)
         if memory.long_term_memories:
             memory_notes.append("用户长期偏好：" + "；".join(memory.long_term_memories))
+        tools_enabled = should_enable_tools(
+            payload.messages,
+            raw_user_message,
+            payload.options.strategy,
+            payload.options.costBudget,
+        )
         effective_messages = list(system_messages)
         effective_messages.append(AgentMessage(
             role="system",
@@ -198,8 +229,20 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "只有模糊听感需要补充语义候选时才使用 vector_search。"
                 "这些工具返回的是只读结构化数据；只能把工具实际返回的歌曲说成本地已收录。"
                 "工具失败或没有结果时，应明确说明本地歌库未找到，不得编造。"
+                "数量字段必须严格区分：count/returnedCount 是本次返回条数，availableCount 是筛选后可推荐数，"
+                "catalogMatchCount 才是歌库中满足明确类型条件的总数；绝不能把本次返回条数说成歌库总数。"
             ),
         ))
+        if tools_enabled and has_prepared_evidence(payload.messages):
+            effective_messages.append(AgentMessage(
+                role="system",
+                content=(
+                    "当前请求中的本地歌曲元数据只是 Java 端提供的初始候选，并不代表复合检索已经完成。"
+                    "请先识别用户尚未满足的条件，并仅调用需要补充的只读工具；涉及用户收藏、模糊场景、"
+                    "候选推荐和事实比较时，可分别使用 favorite_search、vector_search、recommend_songs 和 song_detail。"
+                    "合并已有证据与工具结果后再回答，不要因为初始候选存在就跳过缺失条件。"
+                ),
+            ))
         if memory_notes:
             effective_messages.append(AgentMessage(role="system", content="\n".join(memory_notes)))
         effective_messages.extend(memory.recent_messages or incoming_history[-6:])
@@ -225,7 +268,7 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
                 "execution_started_at": time.monotonic(),
                 "budget_exhausted": False,
                 "budget_stop_reason": "",
-                "tools_enabled": should_enable_tools(payload.messages),
+                "tools_enabled": tools_enabled,
                 "orchestration_mode": payload.options.orchestration,
                 "agent_steps": [],
             }
