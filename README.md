@@ -26,6 +26,8 @@ Copy-Item .env.docker.example .env
 
 3. 编辑 `.env`，设置数据库密码，并选择一个模型 Provider。
 
+同时请将 `MUSICHUB_JWT_SECRET` 设置为至少 32 位的随机字符串。不要把本地 `.env` 提交到 Git。
+
 千问示例：
 
 ```dotenv
@@ -79,5 +81,25 @@ start.bat
 | --- | --- | --- |
 | 管理员 | `admin` | `123456` |
 | 普通用户 | `user` | `123456` |
+
+以上账号仅用于本地演示。首次登录后请修改密码，不要直接用于公网环境。
+
+## 发布检查
+
+安装开发依赖后，可运行统一发布检查：
+
+```powershell
+agent-service\.venv\Scripts\python.exe -m pip install -r agent-service\requirements-dev.txt
+rag-service\.venv\Scripts\python.exe -m pip install -r rag-service\requirements-dev.txt
+.\release-check.ps1
+```
+
+启动 Docker Desktop 后，运行完整容器冒烟测试：
+
+```powershell
+.\release-check.ps1 -DockerSmoke
+```
+
+完整发布清单见 [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)。
 
 

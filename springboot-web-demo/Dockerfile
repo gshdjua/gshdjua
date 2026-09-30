@@ -4,7 +4,7 @@ WORKDIR /workspace
 COPY pom.xml ./
 RUN mvn -B -DskipTests dependency:go-offline
 COPY src ./src
-RUN mvn -B -DskipTests package
+RUN mvn -B -DskipTests -Dmaven.wagon.http.retryHandler.count=5 package
 
 FROM eclipse-temurin:8-jre-jammy
 
