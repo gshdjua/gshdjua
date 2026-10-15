@@ -13,7 +13,9 @@ public class AssistantMessage {
     private String promptVersion;
     private String feedbackRating;
     private String feedbackReason;
+    private String feedbackDetail;
     private List<Audio> recommendations = new ArrayList<>();
+    private AgentTaskPlan taskPlan;
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -31,8 +33,12 @@ public class AssistantMessage {
     public void setFeedbackRating(String feedbackRating) { this.feedbackRating = feedbackRating; }
     public String getFeedbackReason() { return feedbackReason; }
     public void setFeedbackReason(String feedbackReason) { this.feedbackReason = feedbackReason; }
+    public String getFeedbackDetail() { return feedbackDetail; }
+    public void setFeedbackDetail(String feedbackDetail) { this.feedbackDetail = feedbackDetail; }
     public List<Audio> getRecommendations() { return recommendations; }
     public void setRecommendations(List<Audio> recommendations) {
         this.recommendations = recommendations == null ? new ArrayList<>() : new ArrayList<>(recommendations);
     }
+    public AgentTaskPlan getTaskPlan() { return taskPlan; }
+    public void setTaskPlan(AgentTaskPlan taskPlan) { this.taskPlan = taskPlan; }
 }

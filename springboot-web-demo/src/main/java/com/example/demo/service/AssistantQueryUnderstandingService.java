@@ -65,6 +65,11 @@ public class AssistantQueryUnderstandingService {
         if (containsAny(normalized, "你是什么", "什么模型", "调用什么模型", "who are you", "what model")) {
             return AssistantIntent.ASSISTANT_INFO;
         }
+        // A playlist creation command may also mention "我的收藏" as preference context.
+        // Treat the write intent as a recommendation/planning request before the read-only favorites query.
+        if (isPlaylistCreationRequest(normalized)) {
+            return AssistantIntent.RECOMMENDATION;
+        }
         if (!requestedGenres.isEmpty() && containsAny(normalized, "推荐", "安利", "听什么", "听啥", "来几首", "给我几首")) {
             return AssistantIntent.RECOMMENDATION;
         }
@@ -116,6 +121,11 @@ public class AssistantQueryUnderstandingService {
         if (containsAny(normalized, "我的收藏", "我收藏", "收藏夹", "favorite")) return true;
         return normalized.contains("收藏") && !containsAny(normalized,
                 "收藏量", "收藏数", "收藏次数", "收藏最多", "收藏最高", "高收藏");
+    }
+
+    private boolean isPlaylistCreationRequest(String normalized) {
+        return normalized.contains("歌单") && containsAny(normalized,
+                "创建", "新建", "生成", "建一个", "建个");
     }
 
     public List<String> requestedGenres(String message) {

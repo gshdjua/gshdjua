@@ -35,18 +35,20 @@ public class PromptFeedbackService {
     }
 
     @Transactional
-    public Map<String, Object> save(long messageId, int userId, String rating, String reason) {
+    public Map<String, Object> save(long messageId, int userId, String rating, String reason, String detail) {
         String safeRating = rating == null ? "" : rating.trim().toLowerCase();
         if (!RATINGS.contains(safeRating)) {
             throw new IllegalArgumentException("评价只能是 helpful 或 not_helpful");
         }
         String safeReason = normalizeReason(safeRating, reason);
+        String safeDetail = normalizeDetail(safeRating, safeReason, detail);
         String promptVersion = eligiblePromptVersion(messageId, userId);
-        jdbc.update("INSERT INTO prompt_answer_feedback(assistant_message_id,prompt_version,rating,reason) "
-                        + "VALUES(?,?,?,?) ON DUPLICATE KEY UPDATE prompt_version=VALUES(prompt_version),"
-                        + "rating=VALUES(rating),reason=VALUES(reason),updated_at=CURRENT_TIMESTAMP",
-                messageId, promptVersion, safeRating, safeReason);
-        return feedback(messageId, promptVersion, safeRating, safeReason);
+        jdbc.update("INSERT INTO prompt_answer_feedback(assistant_message_id,prompt_version,rating,reason,feedback_detail) "
+                        + "VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE prompt_version=VALUES(prompt_version),"
+                        + "rating=VALUES(rating),reason=VALUES(reason),feedback_detail=VALUES(feedback_detail),"
+                        + "updated_at=CURRENT_TIMESTAMP",
+                messageId, promptVersion, safeRating, safeReason, safeDetail);
+        return feedback(messageId, promptVersion, safeRating, safeReason, safeDetail);
     }
 
     @Transactional
@@ -103,12 +105,21 @@ public class PromptFeedbackService {
         return safeReason;
     }
 
-    private Map<String, Object> feedback(long messageId, String version, String rating, String reason) {
+    private String normalizeDetail(String rating, String reason, String detail) {
+        if (!NOT_HELPFUL.equals(rating) || !"other".equals(reason)) return null;
+        String safeDetail = detail == null ? "" : detail.trim();
+        if (safeDetail.isEmpty()) throw new IllegalArgumentException("请选择其他原因后填写具体问题");
+        if (safeDetail.length() > 300) throw new IllegalArgumentException("反馈内容不能超过300个字符");
+        return safeDetail;
+    }
+
+    private Map<String, Object> feedback(long messageId, String version, String rating, String reason, String detail) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("assistantMessageId", messageId);
         result.put("promptVersion", version);
         result.put("rating", rating);
         result.put("reason", reason);
+        result.put("detail", detail);
         return result;
     }
 
