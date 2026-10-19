@@ -13,8 +13,9 @@ import java.util.List;
 public interface AgentTaskMapper {
 
     @Insert("INSERT INTO agent_task_plan(user_id, conversation_id, assistant_message_id, action_type, title, " +
-            "playlist_name, confirmation_token, status, expires_at) VALUES(#{userId}, #{conversationId}, " +
-            "#{assistantMessageId}, #{actionType}, #{title}, #{playlistName}, #{confirmationToken}, #{status}, #{expiresAt})")
+            "playlist_name, target_playlist_id, confirmation_token, status, expires_at) " +
+            "VALUES(#{userId}, #{conversationId}, #{assistantMessageId}, #{actionType}, #{title}, " +
+            "#{playlistName}, #{targetPlaylistId}, #{confirmationToken}, #{status}, #{expiresAt})")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insert(AgentTaskPlan plan);
 
@@ -24,16 +25,16 @@ public interface AgentTaskMapper {
 
     @Select("SELECT id, user_id AS userId, conversation_id AS conversationId, " +
             "assistant_message_id AS assistantMessageId, action_type AS actionType, title, " +
-            "playlist_name AS playlistName, confirmation_token AS confirmationToken, status, " +
-            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, error_message AS errorMessage, " +
+            "playlist_name AS playlistName, target_playlist_id AS targetPlaylistId, confirmation_token AS confirmationToken, status, " +
+            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, result_message AS resultMessage, error_message AS errorMessage, " +
             "created_at AS createdAt, updated_at AS updatedAt, executed_at AS executedAt " +
             "FROM agent_task_plan WHERE id=#{taskId} AND user_id=#{userId}")
     AgentTaskPlan selectOwned(@Param("taskId") Long taskId, @Param("userId") Integer userId);
 
     @Select("SELECT id, user_id AS userId, conversation_id AS conversationId, " +
             "assistant_message_id AS assistantMessageId, action_type AS actionType, title, " +
-            "playlist_name AS playlistName, confirmation_token AS confirmationToken, status, " +
-            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, error_message AS errorMessage, " +
+            "playlist_name AS playlistName, target_playlist_id AS targetPlaylistId, confirmation_token AS confirmationToken, status, " +
+            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, result_message AS resultMessage, error_message AS errorMessage, " +
             "created_at AS createdAt, updated_at AS updatedAt, executed_at AS executedAt " +
             "FROM agent_task_plan WHERE assistant_message_id=#{messageId} AND user_id=#{userId} " +
             "ORDER BY id DESC LIMIT 1")
@@ -49,11 +50,11 @@ public interface AgentTaskMapper {
     int claim(@Param("taskId") Long taskId, @Param("userId") Integer userId,
               @Param("token") String token);
 
-    @Update("UPDATE agent_task_plan SET status='succeeded', result_playlist_id=#{playlistId}, " +
+    @Update("UPDATE agent_task_plan SET status='succeeded', result_playlist_id=#{playlistId}, result_message=#{resultMessage}, " +
             "confirmation_token=NULL, error_message='', executed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP " +
             "WHERE id=#{taskId} AND user_id=#{userId} AND status='executing'")
     int markSucceeded(@Param("taskId") Long taskId, @Param("userId") Integer userId,
-                      @Param("playlistId") Integer playlistId);
+                      @Param("playlistId") Integer playlistId, @Param("resultMessage") String resultMessage);
 
     @Update("UPDATE agent_task_plan SET status='cancelled', confirmation_token=NULL, " +
             "updated_at=CURRENT_TIMESTAMP WHERE id=#{taskId} AND user_id=#{userId} AND status='pending'")

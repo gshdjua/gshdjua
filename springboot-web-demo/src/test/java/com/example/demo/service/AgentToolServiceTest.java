@@ -1,7 +1,9 @@
 package com.example.demo.service;
 
 import com.example.demo.entity.Audio;
+import com.example.demo.entity.UserPlaylist;
 import com.example.demo.mapper.AudioMapper;
+import com.example.demo.mapper.PlaylistMapper;
 import com.example.demo.service.retrieval.RetrievalResult;
 import com.example.demo.service.retrieval.RetrievalSource;
 import org.junit.jupiter.api.Test;
@@ -59,6 +61,31 @@ class AgentToolServiceTest {
         assertEquals("Flower Dance", items.get(0).get("songName"));
         assertFalse(items.get(0).containsKey("savePath"));
         verify(audioMapper).selectUserCollects(7);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void playlistSearchReturnsOnlyOwnedPlaylistSummary() {
+        PlaylistMapper playlistMapper = mock(PlaylistMapper.class);
+        AgentToolService service = new AgentToolService();
+        ReflectionTestUtils.setField(service, "playlistMapper", playlistMapper);
+        UserPlaylist rain = new UserPlaylist();
+        rain.setId(3);
+        rain.setName("雨夜动漫");
+        rain.setSongCount(4);
+        UserPlaylist study = new UserPlaylist();
+        study.setId(4);
+        study.setName("学习歌单");
+        study.setSongCount(2);
+        when(playlistMapper.selectByUserId(7)).thenReturn(Arrays.asList(study, rain));
+
+        Map<String, Object> result = service.searchPlaylists(7, "雨夜", 10);
+        List<Map<String, Object>> items = (List<Map<String, Object>>) result.get("items");
+
+        assertEquals(1, items.size());
+        assertEquals("雨夜动漫", items.get(0).get("name"));
+        assertEquals(4, items.get(0).get("songCount"));
+        verify(playlistMapper).selectByUserId(7);
     }
 
     @Test

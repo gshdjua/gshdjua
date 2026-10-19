@@ -101,6 +101,18 @@ class DirectStrategyTest(unittest.TestCase):
         self.assertEqual("favorite_search", counted.tool)
         self.assertEqual("动漫", counted.arguments["query"])
 
+    def test_favorite_writes_search_target_instead_of_listing_favorites(self):
+        favorite = self.strategy.plan("帮我收藏一下Good knows")
+        natural = self.strategy.plan("把Good knows收藏起来")
+        unfavorite = self.strategy.plan("取消收藏《Good knows》")
+        contextual = self.strategy.plan("收藏这首歌")
+
+        self.assertEqual("song_search", favorite.tool)
+        self.assertEqual("帮我收藏一下Good knows", favorite.arguments["query"])
+        self.assertEqual("song_search", natural.tool)
+        self.assertEqual("song_search", unfavorite.tool)
+        self.assertIsNone(contextual)
+
     def test_direct_uses_vector_for_single_mood_search(self):
         plan = self.strategy.plan("歌库里有没有适合雨夜听的歌曲")
 

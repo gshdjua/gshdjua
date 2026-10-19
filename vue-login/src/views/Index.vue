@@ -297,24 +297,26 @@
                     <span>{{ agentTaskStatusLabel(message.taskPlan.status) }}</span>
                   </header>
                   <ol class="agent-task-steps">
-                    <li class="done">已理解任务并完成候选检索</li>
-                    <li class="done">已校验 {{ (message.taskPlan.songs || []).length }} 首本地歌曲</li>
+                    <li class="done">{{ agentTaskPreparationLabel(message.taskPlan) }}</li>
+                    <li v-if="message.taskPlan.songs && message.taskPlan.songs.length" class="done">已校验 {{ message.taskPlan.songs.length }} 首本地歌曲</li>
                     <li :class="{ done: message.taskPlan.status === 'succeeded', active: message.taskPlan.status === 'pending' }">
-                      {{ agentTaskFinalStep(message.taskPlan.status) }}
+                      {{ agentTaskFinalStep(message.taskPlan) }}
                     </li>
                   </ol>
-                  <div class="agent-task-songs">
+                  <div v-if="message.taskPlan.songs && message.taskPlan.songs.length" class="agent-task-songs">
                     <span v-for="song in message.taskPlan.songs || []" :key="song.id">《{{ song.songName }}》</span>
                   </div>
                   <p v-if="message.taskPlan.status === 'pending'" class="agent-task-notice">
-                    确认后将创建“{{ message.taskPlan.playlistName }}”歌单。此操作只执行一次，有效期至 {{ formatAgentTaskExpiry(message.taskPlan.expiresAt) }}。
+                    {{ agentTaskPendingNotice(message.taskPlan) }} 此操作只执行一次，有效期至 {{ formatAgentTaskExpiry(message.taskPlan.expiresAt) }}。
                   </p>
-                  <p v-else-if="message.taskPlan.status === 'cancelled'" class="agent-task-notice">该任务已取消，没有修改你的歌单。</p>
-                  <p v-else-if="message.taskPlan.status === 'expired'" class="agent-task-notice">确认已过期，请重新向助手发起创建歌单请求。</p>
+                  <p v-else-if="message.taskPlan.status === 'succeeded'" class="agent-task-notice">{{ message.taskPlan.resultMessage || '任务已执行完成。' }}</p>
+                  <p v-else-if="message.taskPlan.status === 'cancelled'" class="agent-task-notice">该任务已取消，没有修改你的收藏或歌单。</p>
+                  <p v-else-if="message.taskPlan.status === 'expired'" class="agent-task-notice">确认已过期，请重新向助手发起操作请求。</p>
+                  <p v-if="message.taskPlan.uiError" class="agent-task-error">{{ message.taskPlan.uiError }}</p>
                   <div class="agent-task-actions">
                     <template v-if="message.taskPlan.status === 'pending'">
-                      <button class="task-confirm" :disabled="message.taskPlan.saving" @click="confirmAgentTask(message)">{{ message.taskPlan.saving ? '执行中…' : '确认执行' }}</button>
-                      <button class="task-cancel" :disabled="message.taskPlan.saving" @click="cancelAgentTask(message)">取消</button>
+                      <button type="button" class="task-confirm" :disabled="message.taskPlan.saving" @click.stop="confirmAgentTask(message)">{{ message.taskPlan.saving ? '执行中…' : '确认执行' }}</button>
+                      <button type="button" class="task-cancel" :disabled="message.taskPlan.saving" @click.prevent.stop="cancelAgentTask(message)">{{ message.taskPlan.saving ? '取消中…' : '取消' }}</button>
                     </template>
                     <button v-else-if="message.taskPlan.status === 'succeeded' && message.taskPlan.resultPlaylistId" class="task-open" @click="openAgentTaskPlaylist(message.taskPlan)">打开歌单</button>
                   </div>
@@ -1096,13 +1098,31 @@ export default {
         failed: '执行失败'
       }[status] || status
     },
-    agentTaskFinalStep(status) {
-      if (status === 'succeeded') return '歌单已创建并加入歌曲'
+    agentTaskPreparationLabel(plan) {
+      if (['rename_playlist', 'delete_playlist'].includes(plan.actionType)) return '已确认目标歌单及当前用户权限'
+      if (['favorite_songs', 'unfavorite_songs'].includes(plan.actionType)) return '已识别收藏操作并锁定目标歌曲'
+      return '已理解任务并完成歌曲与歌单匹配'
+    },
+    agentTaskFinalStep(plan) {
+      const status = plan.status
+      if (status === 'succeeded') return plan.resultMessage || '写操作已完成'
       if (status === 'cancelled') return '任务已取消，未执行写操作'
       if (status === 'expired') return '确认已过期，未执行写操作'
-      if (status === 'executing') return '正在创建歌单并加入歌曲'
-      if (status === 'failed') return '执行失败，未产生不完整歌单'
-      return '等待用户确认后创建歌单'
+      if (status === 'executing') return '正在执行已确认的操作'
+      if (status === 'failed') return '执行失败，事务已回滚'
+      return '等待用户确认后执行写操作'
+    },
+    agentTaskPendingNotice(plan) {
+      const labels = {
+        create_playlist: `确认后将创建“${plan.playlistName}”歌单并加入所列歌曲。`,
+        favorite_songs: '确认后将收藏所列歌曲。',
+        unfavorite_songs: '确认后将取消收藏所列歌曲。',
+        add_to_playlist: `确认后将把所列歌曲加入“${plan.playlistName}”歌单。`,
+        remove_from_playlist: `确认后将从“${plan.playlistName}”歌单移除所列歌曲。`,
+        rename_playlist: `确认后将目标歌单重命名为“${plan.playlistName}”。`,
+        delete_playlist: `确认后将删除“${plan.playlistName}”歌单。`
+      }
+      return labels[plan.actionType] || '确认后将执行该操作。'
     },
     formatAgentTaskExpiry(value) {
       const date = new Date(value)
@@ -1116,7 +1136,7 @@ export default {
         const res = await request.post(`/assistant/tasks/${plan.id}/confirm`, { confirmationToken: plan.confirmationToken })
         if (res.data.code !== 200) throw new Error(res.data.msg || '任务执行失败')
         this.$set(message, 'taskPlan', res.data.data)
-        await Promise.all([this.refreshConversationSummary(), this.loadPlaylists()])
+        await Promise.all([this.refreshConversationSummary(), this.loadPlaylists(), this.loadFavorites()])
       } catch (err) {
         alert(err.response?.data?.msg || err.message || '任务执行失败，请稍后重试')
         await this.selectConversation(this.activeConversationId, true).catch(() => {})
@@ -1127,13 +1147,27 @@ export default {
     async cancelAgentTask(message) {
       const plan = message && message.taskPlan
       if (!plan || plan.status !== 'pending' || plan.saving) return
+      this.$set(plan, 'uiError', '')
       this.$set(plan, 'saving', true)
       try {
         const res = await request.post(`/assistant/tasks/${plan.id}/cancel`)
         if (res.data.code !== 200) throw new Error(res.data.msg || '任务取消失败')
-        this.$set(message, 'taskPlan', res.data.data)
+        const cancelledPlan = res.data.data
+        if (!cancelledPlan || cancelledPlan.status !== 'cancelled') throw new Error('服务器未返回已取消状态')
+        // 原地更新当前卡片，避免替换嵌套对象后 Vue 2 未及时重绘。
+        Object.keys(cancelledPlan).forEach(key => this.$set(plan, key, cancelledPlan[key]))
+        this.$set(plan, 'status', 'cancelled')
+        this.$set(plan, 'saving', false)
+        this.$set(plan, 'uiError', '')
+        await this.$nextTick()
+        // 再从服务端同步一次，使当前界面与数据库状态保持一致，无需用户刷新页面。
+        await this.selectConversation(this.activeConversationId, true)
       } catch (err) {
-        alert(err.response?.data?.msg || err.message || '任务取消失败，请稍后重试')
+        const detail = err.response?.data?.msg || err.message || '未知错误'
+        const messageText = detail === 'Network Error'
+          ? '任务取消失败：无法连接后端服务，请重新启动项目后重试。'
+          : `任务取消失败：${detail}`
+        this.$set(plan, 'uiError', messageText)
       } finally {
         if (message.taskPlan) this.$set(message.taskPlan, 'saving', false)
       }
@@ -1523,7 +1557,7 @@ export default {
 .chat-history-toolbar { display: flex; align-items: center; gap: 12px; margin: -4px 0 18px; padding-bottom: 15px; border-bottom: 1px solid #efedf8; }.new-conversation-btn { flex: 0 0 auto; padding: 9px 13px; border: 0; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #6d73e8, #8051ba); font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }.conversation-list { display: flex; flex: 1; gap: 8px; overflow-x: auto; padding: 2px; }.conversation-item { position: relative; display: flex; align-items: center; gap: 7px; min-width: 150px; max-width: 220px; padding: 8px 28px 8px 11px; border: 1px solid #e5e1f7; border-radius: 10px; color: #736c8d; background: #faf9ff; cursor: pointer; transition: .2s ease; }.conversation-item:hover { border-color: #b4a6e9; }.conversation-item.active { border-color: #765ad0; color: #49357d; background: #f0edff; box-shadow: 0 4px 12px rgba(106,82,186,.12); }.conversation-title { overflow: hidden; flex: 1; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.conversation-count { flex: 0 0 auto; color: #a49cb7; font-size: 11px; }.conversation-delete { position: absolute; right: 7px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; color: #948aa9; background: transparent; font-size: 17px; cursor: pointer; }.conversation-delete:hover { color: #fff; background: #e26b82; }
 .assistant-settings-wrap { position: relative; flex: 0 0 auto; }.assistant-settings-btn { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid #e1ddef; border-radius: 10px; color: #756b8c; background: #faf9fd; font-size: 17px; cursor: pointer; transition: .2s ease; }.assistant-settings-btn:hover { border-color: #9d8bd7; color: #664caf; background: #f2effd; }.assistant-settings-menu { position: absolute; top: 45px; right: 0; z-index: 12; width: 225px; padding: 7px; border: 1px solid #e7e2f3; border-radius: 13px; background: #fff; box-shadow: 0 14px 35px rgba(44,35,82,.18); }.assistant-settings-menu > button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; border: 0; border-radius: 9px; color: #4c4264; background: transparent; font: inherit; text-align: left; cursor: pointer; }.assistant-settings-menu > button:hover { background: #f4f1fd; }.assistant-settings-menu > button > span { display: grid; place-items: center; width: 28px; height: 28px; margin: 0; border-radius: 9px; color: #7256be; background: #ece7fb; font-size: 16px; }.assistant-settings-menu strong, .assistant-settings-menu small { display: block; }.assistant-settings-menu strong { font-size: 13px; }.assistant-settings-menu small { margin-top: 3px; color: #91899f; font-size: 11px; }
 .chat-content { min-width: 0; flex: 1; }.chat-row.has-recommendations, .chat-row.has-task-plan { max-width: 92%; }.recommendation-picker { display: grid; grid-template-columns: repeat(3, minmax(170px, 1fr)); gap: 12px; margin-top: 12px; }.recommendation-card { display: grid; grid-template-columns: 46px minmax(0, 1fr); align-items: center; gap: 10px; padding: 9px; text-align: left; border: 1px solid #e4e0fb; border-radius: 13px; background: #fbfaff; cursor: pointer; transition: .2s ease; }.recommendation-card:hover { border-color: #8061d7; transform: translateY(-2px); box-shadow: 0 8px 18px rgba(99,77,180,.15); }.recommendation-card img, .recommendation-cover { width: 46px; height: 46px; border-radius: 10px; object-fit: cover; }.recommendation-cover { display: grid; place-items: center; background: linear-gradient(135deg, #7177e9, #8c50bc); color: #fff; font-size: 21px; }.recommendation-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }.recommendation-info strong, .recommendation-info small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recommendation-info strong { color: #322b58; font-size: 13px; }.recommendation-info small, .recommendation-info em { color: #807896; font-size: 11px; font-style: normal; }.recommendation-play { grid-column: 1 / -1; padding: 5px 8px; border-radius: 7px; background: #eeeafd; color: #6f56bd; font-size: 11px; font-weight: 700; text-align: center; }
-.agent-task-card { margin-top: 12px; overflow: hidden; border: 1px solid #dcd4f7; border-radius: 16px; background: linear-gradient(145deg, #fcfbff, #f5f2ff); box-shadow: 0 8px 22px rgba(83,61,153,.09); }.agent-task-card header { display: flex; align-items: center; gap: 11px; padding: 14px 15px; border-bottom: 1px solid #e9e4f8; }.agent-task-card header > div:nth-child(2) { min-width: 0; flex: 1; }.agent-task-card header small, .agent-task-card header strong { display: block; }.agent-task-card header small { margin-bottom: 3px; color: #9179d7; font-size: 9px; font-weight: 800; letter-spacing: 1.4px; }.agent-task-card header strong { color: #302650; font-size: 14px; }.agent-task-card header > span { padding: 5px 9px; border-radius: 999px; color: #7c5dc6; background: #ece6ff; font-size: 10px; font-weight: 800; }.agent-task-icon { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #6f77e7, #8b54be); font-weight: 800; }.agent-task-steps { display: grid; gap: 8px; margin: 0; padding: 14px 18px 6px 37px; color: #817991; font-size: 12px; }.agent-task-steps li::marker { color: #c2b7df; }.agent-task-steps li.done { color: #397c63; }.agent-task-steps li.done::marker { color: #52aa86; }.agent-task-steps li.active { color: #7954be; font-weight: 700; }.agent-task-steps li.active::marker { color: #8a65d0; }.agent-task-songs { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 15px 10px; }.agent-task-songs span { padding: 5px 8px; border: 1px solid #e3dcf5; border-radius: 8px; color: #62577a; background: rgba(255,255,255,.75); font-size: 11px; }.agent-task-notice { margin: 0; padding: 0 15px 12px; color: #8a8299; font-size: 11px; line-height: 1.55; }.agent-task-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 15px; border-top: 1px solid #e9e4f8; background: rgba(255,255,255,.58); }.agent-task-actions button { padding: 8px 14px; border-radius: 9px; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }.agent-task-actions button:disabled { cursor: wait; opacity: .55; }.task-confirm, .task-open { border: 0; color: #fff; background: linear-gradient(135deg, #6f76e6, #8152bb); }.task-cancel { border: 1px solid #ddd7e9; color: #796f8d; background: #fff; }.agent-task-card.task-succeeded { border-color: #cceadc; background: linear-gradient(145deg, #fbfffd, #f0fbf6); }.agent-task-card.task-succeeded header > span { color: #327a5d; background: #def4e9; }.agent-task-card.task-cancelled, .agent-task-card.task-expired { filter: saturate(.72); opacity: .86; }
+.agent-task-card { margin-top: 12px; overflow: hidden; border: 1px solid #dcd4f7; border-radius: 16px; background: linear-gradient(145deg, #fcfbff, #f5f2ff); box-shadow: 0 8px 22px rgba(83,61,153,.09); }.agent-task-card header { display: flex; align-items: center; gap: 11px; padding: 14px 15px; border-bottom: 1px solid #e9e4f8; }.agent-task-card header > div:nth-child(2) { min-width: 0; flex: 1; }.agent-task-card header small, .agent-task-card header strong { display: block; }.agent-task-card header small { margin-bottom: 3px; color: #9179d7; font-size: 9px; font-weight: 800; letter-spacing: 1.4px; }.agent-task-card header strong { color: #302650; font-size: 14px; }.agent-task-card header > span { padding: 5px 9px; border-radius: 999px; color: #7c5dc6; background: #ece6ff; font-size: 10px; font-weight: 800; }.agent-task-icon { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; border-radius: 10px; color: #fff; background: linear-gradient(135deg, #6f77e7, #8b54be); font-weight: 800; }.agent-task-steps { display: grid; gap: 8px; margin: 0; padding: 14px 18px 6px 37px; color: #817991; font-size: 12px; }.agent-task-steps li::marker { color: #c2b7df; }.agent-task-steps li.done { color: #397c63; }.agent-task-steps li.done::marker { color: #52aa86; }.agent-task-steps li.active { color: #7954be; font-weight: 700; }.agent-task-steps li.active::marker { color: #8a65d0; }.agent-task-songs { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 15px 10px; }.agent-task-songs span { padding: 5px 8px; border: 1px solid #e3dcf5; border-radius: 8px; color: #62577a; background: rgba(255,255,255,.75); font-size: 11px; }.agent-task-notice { margin: 0; padding: 0 15px 12px; color: #8a8299; font-size: 11px; line-height: 1.55; }.agent-task-error { margin: 0 15px 12px; padding: 8px 10px; border: 1px solid #f2caca; border-radius: 8px; color: #a33d49; background: #fff4f5; font-size: 11px; line-height: 1.5; }.agent-task-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 15px; border-top: 1px solid #e9e4f8; background: rgba(255,255,255,.58); }.agent-task-actions button { padding: 8px 14px; border-radius: 9px; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }.agent-task-actions button:disabled { cursor: wait; opacity: .55; }.task-confirm, .task-open { border: 0; color: #fff; background: linear-gradient(135deg, #6f76e6, #8152bb); }.task-cancel { border: 1px solid #ddd7e9; color: #796f8d; background: #fff; }.agent-task-card.task-succeeded { border-color: #cceadc; background: linear-gradient(145deg, #fbfffd, #f0fbf6); }.agent-task-card.task-succeeded header > span { color: #327a5d; background: #def4e9; }.agent-task-card.task-cancelled, .agent-task-card.task-expired { filter: saturate(.72); opacity: .86; }
 .assistant-feedback { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 7px; color: #938ca4; font-size: 11px; }.assistant-feedback > button, .feedback-reasons > button { padding: 3px 8px; border: 1px solid #e3def2; border-radius: 999px; background: transparent; color: #756b8c; font: inherit; cursor: pointer; }.assistant-feedback button:hover:not(:disabled), .assistant-feedback button.active { border-color: #9b82dc; background: #f1edff; color: #674bb4; }.assistant-feedback button:disabled { cursor: wait; opacity: .55; }.assistant-feedback .feedback-undo { border-color: transparent; color: #a29bad; }.feedback-reasons { flex-basis: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding-top: 2px; }.feedback-reasons > small { margin-right: 2px; color: #aaa3b6; }.feedback-detail-editor { flex-basis: 100%; margin-top: 5px; padding: 10px; border: 1px solid #e5dff4; border-radius: 12px; background: #faf9ff; }.feedback-detail-editor textarea { display: block; width: 100%; min-height: 70px; box-sizing: border-box; resize: vertical; padding: 9px 10px; border: 1px solid #ded7ef; border-radius: 9px; outline: none; color: #403650; background: #fff; font: inherit; line-height: 1.5; }.feedback-detail-editor textarea:focus { border-color: #957bd8; box-shadow: 0 0 0 3px rgba(149,123,216,.1); }.feedback-detail-editor > div { display: flex; align-items: center; justify-content: space-between; margin-top: 7px; }.feedback-detail-editor > div small { color: #aaa3b6; }.feedback-detail-editor > div button { padding: 6px 11px; border: 0; border-radius: 8px; color: #fff; background: #7658c4; font: inherit; font-weight: 700; cursor: pointer; }
 .quick-questions { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }.quick-questions button { padding: 7px 11px; border: 1px solid #ddd9f7; border-radius: 20px; color: #705bb8; background: #faf9ff; font-size: 12px; cursor: pointer; }.quick-questions button:hover { border-color: #8e75dc; background: #f0edff; }.chat-input-row { display: flex; gap: 10px; }.chat-input-row input { flex: 1; min-width: 0; padding: 13px 15px; border: 1px solid #e2e0ed; border-radius: 12px; outline: none; font: inherit; }.chat-input-row input:focus { border-color: #7961c9; box-shadow: 0 0 0 3px rgba(121,97,201,.1); }.chat-input-row button { padding: 0 21px; border: 0; border-radius: 12px; background: linear-gradient(135deg, #6c73e9, #8051ba); color: #fff; font-weight: 600; cursor: pointer; }.chat-input-row button:disabled { cursor: not-allowed; opacity: .55; }.chat-input-row .stop-generation-btn { background: linear-gradient(135deg, #6f687c, #4f485e); }
 @media (max-width: 640px) { .main-area { padding: 16px; }.daily-recommendation-header { align-items: flex-start; flex-direction: column; }.refresh-recommendations { width: 100%; justify-content: center; }.assistant-page { margin: 0; }.assistant-intro { padding: 22px; }.assistant-intro h2 { font-size: 24px; }.chat-panel { min-height: 500px; padding: 16px; }.chat-history-toolbar { align-items: flex-start; flex-direction: column; gap: 9px; }.new-conversation-btn { width: 100%; }.conversation-list { width: 100%; }.conversation-item { min-width: 138px; }.chat-messages { min-height: 330px; }.chat-row { max-width: 92%; }.recommendation-picker { grid-template-columns: 1fr; }.quick-questions { overflow-x: auto; flex-wrap: nowrap; }.quick-questions button { white-space: nowrap; } }

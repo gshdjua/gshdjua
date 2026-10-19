@@ -12,10 +12,12 @@ public class AgentTaskPlan {
     private String actionType;
     private String title;
     private String playlistName;
+    private Integer targetPlaylistId;
     private String confirmationToken;
     private String status;
     private Date expiresAt;
     private Integer resultPlaylistId;
+    private String resultMessage;
     private String errorMessage;
     private Date createdAt;
     private Date updatedAt;
@@ -36,6 +38,8 @@ public class AgentTaskPlan {
     public void setTitle(String title) { this.title = title; }
     public String getPlaylistName() { return playlistName; }
     public void setPlaylistName(String playlistName) { this.playlistName = playlistName; }
+    public Integer getTargetPlaylistId() { return targetPlaylistId; }
+    public void setTargetPlaylistId(Integer targetPlaylistId) { this.targetPlaylistId = targetPlaylistId; }
     public String getConfirmationToken() { return confirmationToken; }
     public void setConfirmationToken(String confirmationToken) { this.confirmationToken = confirmationToken; }
     public String getStatus() { return status; }
@@ -44,6 +48,8 @@ public class AgentTaskPlan {
     public void setExpiresAt(Date expiresAt) { this.expiresAt = expiresAt; }
     public Integer getResultPlaylistId() { return resultPlaylistId; }
     public void setResultPlaylistId(Integer resultPlaylistId) { this.resultPlaylistId = resultPlaylistId; }
+    public String getResultMessage() { return resultMessage; }
+    public void setResultMessage(String resultMessage) { this.resultMessage = resultMessage; }
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
     public Date getCreatedAt() { return createdAt; }

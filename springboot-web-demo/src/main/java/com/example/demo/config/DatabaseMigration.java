@@ -28,6 +28,8 @@ public class DatabaseMigration {
             ensureColumn(connection, "audio", "source", "VARCHAR(255) DEFAULT ''");
             ensureColumn(connection, "audio", "introduction", "TEXT");
             ensureColumn(connection, "prompt_answer_feedback", "feedback_detail", "VARCHAR(300) NULL");
+            ensureColumn(connection, "agent_task_plan", "target_playlist_id", "INT NULL");
+            ensureColumn(connection, "agent_task_plan", "result_message", "VARCHAR(500) NOT NULL DEFAULT ''");
         }
     }
 

@@ -2,6 +2,8 @@ package com.example.demo.service;
 
 import com.example.demo.entity.Audio;
 import com.example.demo.mapper.AudioMapper;
+import com.example.demo.mapper.PlaylistMapper;
+import com.example.demo.entity.UserPlaylist;
 import com.example.demo.service.retrieval.RetrievalResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -26,6 +28,9 @@ public class AgentToolService {
 
     @Autowired
     private VectorRagClient vectorRagClient;
+
+    @Autowired
+    private PlaylistMapper playlistMapper;
 
     public Map<String, Object> searchSongs(String query, int limit) {
         String normalizedQuery = normalize(query);
@@ -57,6 +62,22 @@ public class AgentToolService {
         for (Audio audio : audioMapper.selectUserCollects(userId)) {
             if (!normalizedQuery.isEmpty() && score(audio, normalizedQuery) <= 0) continue;
             items.add(safeAudio(audio));
+            if (items.size() >= limit) break;
+        }
+        return listResult(query, items);
+    }
+
+    public Map<String, Object> searchPlaylists(Integer userId, String query, int limit) {
+        requireUser(userId);
+        String normalizedQuery = normalize(query);
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (UserPlaylist playlist : playlistMapper.selectByUserId(userId)) {
+            if (!normalizedQuery.isEmpty() && !normalize(playlist.getName()).contains(normalizedQuery)) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", playlist.getId());
+            item.put("name", playlist.getName());
+            item.put("songCount", playlist.getSongCount() == null ? 0 : playlist.getSongCount());
+            items.add(item);
             if (items.size() >= limit) break;
         }
         return listResult(query, items);

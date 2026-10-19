@@ -53,6 +53,11 @@ public class AgentToolController {
                 String query = optionalText(arguments.get("query"), 200);
                 int limit = boundedLimit(arguments.get("limit"), 10);
                 data = agentToolService.searchFavorites(userId, query, limit);
+            } else if ("playlist_search".equals(tool)) {
+                Integer userId = requiredUserId(request);
+                String query = optionalText(arguments.get("query"), 200);
+                int limit = boundedLimit(arguments.get("limit"), 10);
+                data = agentToolService.searchPlaylists(userId, query, limit);
             } else if ("recommend_songs".equals(tool)) {
                 Integer userId = requiredUserId(request);
                 String query = requiredText(arguments.get("query"), 500);
@@ -80,6 +85,7 @@ public class AgentToolController {
 
     private boolean isKnownTool(String tool) {
         return "song_search".equals(tool) || "favorite_search".equals(tool)
+                || "playlist_search".equals(tool)
                 || "recommend_songs".equals(tool) || "vector_search".equals(tool)
                 || "song_detail".equals(tool);
     }

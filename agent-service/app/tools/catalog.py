@@ -8,6 +8,7 @@ from .executor import CircuitBreaker, ToolExecutor
 from .java_client import java_tool_client
 from .models import (
     FavoriteSearchArgs,
+    PlaylistSearchArgs,
     RecommendSongsArgs,
     SongDetailArgs,
     SongSearchArgs,
@@ -23,6 +24,10 @@ def search_songs(arguments: SongSearchArgs, context: ToolContext):
 
 def search_favorites(arguments: FavoriteSearchArgs, context: ToolContext):
     return java_tool_client.execute("favorite_search", arguments.model_dump(exclude_none=True), context)
+
+
+def search_playlists(arguments: PlaylistSearchArgs, context: ToolContext):
+    return java_tool_client.execute("playlist_search", arguments.model_dump(exclude_none=True), context)
 
 
 def recommend_songs(arguments: RecommendSongsArgs, context: ToolContext):
@@ -60,6 +65,20 @@ tool_registry.register(
         handler=search_songs,
         read_only=True,
         timeout_seconds=4.0,
+    )
+)
+tool_registry.register(
+    ToolDefinition(
+        name="playlist_search",
+        description=(
+            "查询当前登录用户自己的 MusicHub 歌单名称、ID 和歌曲数量。"
+            "当用户询问已有歌单或要求管理某个歌单时，先用它确认目标歌单；此工具只读，不会直接修改数据。"
+        ),
+        args_model=PlaylistSearchArgs,
+        handler=search_playlists,
+        read_only=True,
+        timeout_seconds=4.0,
+        requires_user=True,
     )
 )
 tool_registry.register(
