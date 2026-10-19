@@ -9,6 +9,8 @@ import com.example.demo.mapper.PlaylistMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.ArrayList;
 import java.util.Date;
@@ -36,6 +38,9 @@ public class AgentTaskService {
 
     @Autowired
     private AudioMapper audioMapper;
+
+    @Autowired(required = false)
+    private PlatformTransactionManager transactionManager;
 
     @Transactional
     public AgentTaskPlan createPlan(Integer userId, Long conversationId, Long assistantMessageId,
@@ -99,7 +104,6 @@ public class AgentTaskService {
         return hydrateAndExpire(agentTaskMapper.selectByMessage(messageId, userId), userId);
     }
 
-    @Transactional
     public AgentTaskPlan confirm(Long taskId, Integer userId, String token) {
         if (token == null || token.trim().isEmpty()) throw new IllegalArgumentException("缺少确认令牌");
         if (agentTaskMapper.claim(taskId, userId, token.trim()) != 1) {
@@ -109,6 +113,55 @@ public class AgentTaskService {
             throw new IllegalStateException(statusMessage(current.getStatus()));
         }
 
+        return executeClaimedTaskWithFailureCapture(taskId, userId);
+    }
+
+    public AgentTaskPlan retry(Long taskId, Integer userId) {
+        if (agentTaskMapper.claimRetry(taskId, userId) != 1) {
+            AgentTaskPlan current = hydrateAndExpire(agentTaskMapper.selectOwned(taskId, userId), userId);
+            if (current == null) throw new IllegalArgumentException("任务不存在或无权重试");
+            throw new IllegalStateException(statusMessage(current.getStatus()));
+        }
+        return executeClaimedTaskWithFailureCapture(taskId, userId);
+    }
+
+    public AgentTaskPlan findOwned(Long taskId, Integer userId) {
+        AgentTaskPlan plan = hydrateAndExpire(agentTaskMapper.selectOwned(taskId, userId), userId);
+        if (plan == null) throw new IllegalArgumentException("任务不存在或无权查看");
+        return plan;
+    }
+
+    public List<AgentTaskPlan> list(Integer userId, String status) {
+        String normalizedStatus = status == null ? "" : status.trim().toLowerCase(Locale.ROOT);
+        List<AgentTaskPlan> result = new ArrayList<>();
+        List<AgentTaskPlan> plans = agentTaskMapper.selectByUserId(userId);
+        if (plans == null) return result;
+        for (AgentTaskPlan item : plans) {
+            AgentTaskPlan plan = hydrateAndExpire(item, userId);
+            if (plan != null && (normalizedStatus.isEmpty() || normalizedStatus.equals(plan.getStatus()))) {
+                result.add(plan);
+            }
+        }
+        return result;
+    }
+
+    private AgentTaskPlan executeClaimedTaskWithFailureCapture(Long taskId, Integer userId) {
+        try {
+            if (transactionManager == null) return executeClaimedTask(taskId, userId);
+            AgentTaskPlan result = new TransactionTemplate(transactionManager)
+                    .execute(status -> executeClaimedTask(taskId, userId));
+            if (result == null) throw new IllegalStateException("任务执行没有返回结果");
+            return result;
+        } catch (RuntimeException exception) {
+            String errorMessage = userFacingError(exception);
+            agentTaskMapper.markFailed(taskId, userId, errorCode(errorMessage), errorMessage);
+            AgentTaskPlan failed = hydrateAndExpire(agentTaskMapper.selectOwned(taskId, userId), userId);
+            if (failed == null) throw exception;
+            return failed;
+        }
+    }
+
+    private AgentTaskPlan executeClaimedTask(Long taskId, Integer userId) {
         AgentTaskPlan plan = agentTaskMapper.selectOwned(taskId, userId);
         if (plan == null) throw new IllegalArgumentException("任务不存在或无权执行");
         List<Audio> songs = agentTaskMapper.selectSongs(taskId);
@@ -161,6 +214,34 @@ public class AgentTaskService {
             throw new IllegalStateException("任务状态发生变化，请刷新后查看");
         }
         return hydrateAndExpire(agentTaskMapper.selectOwned(taskId, userId), userId);
+    }
+
+    private String userFacingError(RuntimeException exception) {
+        Throwable current = exception;
+        while (current != null) {
+            String type = current.getClass().getSimpleName();
+            if (type.contains("DuplicateKey") || type.contains("SQLIntegrityConstraintViolation")) {
+                return "已经存在相同的数据，请刷新后重试";
+            }
+            current = current.getCause();
+        }
+        String message = exception.getMessage() == null ? "" : exception.getMessage().trim();
+        if (message.isEmpty()) return "任务执行失败，请稍后重试";
+        if (containsAny(message, "SQL", "SQLException", "jdbc", "Exception", " at ", "org.", "java.")) {
+            return "数据保存失败，请稍后重试";
+        }
+        if (containsAny(message, "歌曲", "收藏", "歌单", "任务", "操作", "服务")) {
+            return message.length() > 200 ? message.substring(0, 200) : message;
+        }
+        return "任务执行失败，请稍后重试";
+    }
+
+    private String errorCode(String message) {
+        if (message.contains("歌单") && message.contains("不存在")) return "PLAYLIST_NOT_FOUND";
+        if (message.contains("歌曲") && message.contains("不存在")) return "AUDIO_NOT_FOUND";
+        if (message.contains("已经存在") || message.contains("重复")) return "ALREADY_EXISTS";
+        if (message.contains("服务") && message.contains("不可用")) return "SERVICE_UNAVAILABLE";
+        return "TASK_EXECUTION_FAILED";
     }
 
     @Transactional
@@ -375,6 +456,7 @@ public class AgentTaskService {
         if ("expired".equals(status)) return "确认已过期，请重新生成任务";
         if ("cancelled".equals(status)) return "任务已经取消";
         if ("executing".equals(status)) return "任务正在执行，请勿重复提交";
+        if ("failed".equals(status)) return "任务执行失败，可以在任务记录中重试";
         if ("succeeded".equals(status)) return "任务已经执行完成";
         return "任务当前不可执行";
     }

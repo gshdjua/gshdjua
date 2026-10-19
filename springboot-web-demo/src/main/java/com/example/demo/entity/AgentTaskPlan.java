@@ -18,7 +18,10 @@ public class AgentTaskPlan {
     private Date expiresAt;
     private Integer resultPlaylistId;
     private String resultMessage;
+    private String errorCode;
     private String errorMessage;
+    private Integer retryCount;
+    private Date lastRetryAt;
     private Date createdAt;
     private Date updatedAt;
     private Date executedAt;
@@ -50,8 +53,14 @@ public class AgentTaskPlan {
     public void setResultPlaylistId(Integer resultPlaylistId) { this.resultPlaylistId = resultPlaylistId; }
     public String getResultMessage() { return resultMessage; }
     public void setResultMessage(String resultMessage) { this.resultMessage = resultMessage; }
+    public String getErrorCode() { return errorCode; }
+    public void setErrorCode(String errorCode) { this.errorCode = errorCode; }
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+    public Integer getRetryCount() { return retryCount; }
+    public void setRetryCount(Integer retryCount) { this.retryCount = retryCount; }
+    public Date getLastRetryAt() { return lastRetryAt; }
+    public void setLastRetryAt(Date lastRetryAt) { this.lastRetryAt = lastRetryAt; }
     public Date getCreatedAt() { return createdAt; }
     public void setCreatedAt(Date createdAt) { this.createdAt = createdAt; }
     public Date getUpdatedAt() { return updatedAt; }

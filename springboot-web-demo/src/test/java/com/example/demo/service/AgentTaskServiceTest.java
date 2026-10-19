@@ -13,6 +13,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -20,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -205,6 +207,61 @@ class AgentTaskServiceTest {
 
         assertEquals("cancelled", result.getStatus());
         verify(taskMapper).cancel(41L, 7);
+    }
+
+    @Test
+    void recordsFriendlyFailureAndAllowsRetry() {
+        AgentTaskPlan executing = plan("executing");
+        AgentTaskPlan failed = plan("failed");
+        failed.setErrorCode("TASK_EXECUTION_FAILED");
+        failed.setErrorMessage("任务中没有可加入歌单的歌曲");
+        when(taskMapper.claim(41L, 7, "confirm")).thenReturn(1);
+        when(taskMapper.selectOwned(41L, 7)).thenReturn(executing, failed);
+        when(taskMapper.selectSongs(41L)).thenReturn(Collections.emptyList());
+        when(taskMapper.markFailed(eq(41L), eq(7), anyString(), anyString())).thenReturn(1);
+
+        AgentTaskPlan result = service.confirm(41L, 7, "confirm");
+
+        assertEquals("failed", result.getStatus());
+        assertEquals("任务中没有可加入歌单的歌曲", result.getErrorMessage());
+        verify(taskMapper).markFailed(41L, 7, "TASK_EXECUTION_FAILED", "任务中没有可加入歌单的歌曲");
+    }
+
+    @Test
+    void retriesOnlyFailedTaskAndReturnsSucceededState() {
+        Audio song = audio(5, "前前前世");
+        AgentTaskPlan executing = plan("executing");
+        executing.setActionType("favorite_songs");
+        AgentTaskPlan succeeded = plan("succeeded");
+        succeeded.setActionType("favorite_songs");
+        succeeded.setRetryCount(1);
+        when(taskMapper.claimRetry(41L, 7)).thenReturn(1);
+        when(taskMapper.selectOwned(41L, 7)).thenReturn(executing, succeeded);
+        when(taskMapper.selectSongs(41L)).thenReturn(Collections.singletonList(song));
+        when(audioMapper.selectById(5)).thenReturn(song);
+        when(audioMapper.isCollected(7, 5)).thenReturn(0);
+        when(taskMapper.markSucceeded(eq(41L), eq(7), isNull(), anyString())).thenReturn(1);
+
+        AgentTaskPlan result = service.retry(41L, 7);
+
+        assertEquals("succeeded", result.getStatus());
+        assertEquals(1, result.getRetryCount());
+        verify(taskMapper).claimRetry(41L, 7);
+        verify(audioMapper).addCollect(7, 5);
+    }
+
+    @Test
+    void listsOnlyRequestedTaskStatus() {
+        AgentTaskPlan failed = plan("failed");
+        AgentTaskPlan succeeded = plan("succeeded");
+        succeeded.setId(42L);
+        when(taskMapper.selectByUserId(7)).thenReturn(Arrays.asList(failed, succeeded));
+        when(taskMapper.selectSongs(anyLong())).thenReturn(Collections.emptyList());
+
+        List<AgentTaskPlan> result = service.list(7, "failed");
+
+        assertEquals(1, result.size());
+        assertEquals("failed", result.get(0).getStatus());
     }
 
     private AgentTaskPlan plan(String status) {
