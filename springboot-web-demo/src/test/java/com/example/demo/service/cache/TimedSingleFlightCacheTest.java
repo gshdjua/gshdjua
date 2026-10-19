@@ -8,6 +8,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -36,14 +37,20 @@ class TimedSingleFlightCacheTest {
                 })));
             }
             started.await();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (((Number) cache.stats().get("coalescedRequests")).longValue() < 5L
+                    && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assertEquals(5L, cache.stats().get("coalescedRequests"));
             release.countDown();
             for (Future<String> future : futures) assertEquals("value", future.get());
             assertEquals("value", cache.get("same", () -> "unexpected"));
             assertEquals(1, loads.get());
             assertEquals(1L, cache.stats().get("misses"));
-            assertEquals(5L, cache.stats().get("coalescedRequests"));
             assertEquals(1L, cache.stats().get("hits"));
         } finally {
+            release.countDown();
             pool.shutdownNow();
         }
     }
