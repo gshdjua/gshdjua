@@ -192,7 +192,7 @@ public class LlmCostEvaluationDatasetService {
         List<String> result = new ArrayList<>();
         if (!(value instanceof List)) return result;
         List<String> allowed = Arrays.asList(
-                "song_search", "favorite_search", "recommend_songs", "vector_search", "song_detail");
+                "song_search", "favorite_search", "playlist_search", "recommend_songs", "vector_search", "song_detail");
         for (Object item : (List<?>) value) {
             String tool = text(item);
             if (tool.isEmpty() || result.contains(tool)) continue;

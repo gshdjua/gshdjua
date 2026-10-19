@@ -25,12 +25,23 @@ public interface PlaylistMapper {
             "GROUP BY p.id, p.user_id, p.name, p.create_time, p.update_time")
     UserPlaylist selectByIdAndUserId(@Param("playlistId") Integer playlistId, @Param("userId") Integer userId);
 
+    @Select("SELECT p.id, p.user_id AS userId, p.name, p.create_time AS createTime, p.update_time AS updateTime, " +
+            "COUNT(ps.id) AS songCount FROM user_playlist p LEFT JOIN playlist_song ps ON ps.playlist_id = p.id " +
+            "WHERE p.user_id = #{userId} AND LOWER(p.name) = LOWER(#{name}) " +
+            "GROUP BY p.id, p.user_id, p.name, p.create_time, p.update_time ORDER BY p.id DESC LIMIT 1")
+    UserPlaylist selectByNameAndUserId(@Param("name") String name, @Param("userId") Integer userId);
+
     @Insert("INSERT INTO user_playlist(user_id, name) VALUES(#{userId}, #{name})")
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insert(UserPlaylist playlist);
 
     @Delete("DELETE FROM user_playlist WHERE id = #{playlistId} AND user_id = #{userId}")
     int deleteByIdAndUserId(@Param("playlistId") Integer playlistId, @Param("userId") Integer userId);
+
+    @Update("UPDATE user_playlist SET name=#{name}, update_time=CURRENT_TIMESTAMP " +
+            "WHERE id=#{playlistId} AND user_id=#{userId}")
+    int renameByIdAndUserId(@Param("playlistId") Integer playlistId, @Param("userId") Integer userId,
+                            @Param("name") String name);
 
     @Select("SELECT a.* FROM playlist_song ps JOIN audio a ON a.id = ps.audio_id " +
             "WHERE ps.playlist_id = #{playlistId} ORDER BY ps.sort_order ASC, ps.id ASC")

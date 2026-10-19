@@ -58,6 +58,7 @@ class AgentToolControllerTest {
         ReflectionTestUtils.setField(controller, "agentToolService", service);
         ReflectionTestUtils.setField(controller, "apiKey", "tool-secret");
         when(service.searchFavorites(7, "动漫", 3)).thenReturn(Collections.emptyMap());
+        when(service.searchPlaylists(7, "雨夜", 10)).thenReturn(Collections.emptyMap());
         when(service.recommendSongs(7, "轻快动漫歌曲", 3, Collections.singletonList(1)))
                 .thenReturn(Collections.emptyMap());
         when(service.vectorSearch("适合雨夜", 3, Arrays.asList(2, 3))).thenReturn(Collections.emptyMap());
@@ -69,6 +70,10 @@ class AgentToolControllerTest {
         Map<String, Object> favoriteRequest = request("favorite_search", favoriteArgs);
         favoriteRequest.put("userId", "7");
         assertEquals(true, controller.execute(favoriteRequest, "tool-secret").get("success"));
+
+        Map<String, Object> playlistRequest = request("playlist_search", Collections.singletonMap("query", "雨夜"));
+        playlistRequest.put("userId", "7");
+        assertEquals(true, controller.execute(playlistRequest, "tool-secret").get("success"));
 
         Map<String, Object> recommendArgs = new HashMap<>();
         recommendArgs.put("query", "轻快动漫歌曲");
@@ -88,6 +93,7 @@ class AgentToolControllerTest {
         assertEquals(true, controller.execute(request("song_detail", detailArgs), "tool-secret").get("success"));
 
         verify(service).searchFavorites(7, "动漫", 3);
+        verify(service).searchPlaylists(7, "雨夜", 10);
         verify(service).recommendSongs(7, "轻快动漫歌曲", 3, Collections.singletonList(1));
         verify(service).vectorSearch("适合雨夜", 3, Arrays.asList(2, 3));
         verify(service).songDetail(2, "");

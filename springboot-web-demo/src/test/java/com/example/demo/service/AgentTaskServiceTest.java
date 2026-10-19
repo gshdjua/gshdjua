@@ -20,6 +20,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -85,7 +88,7 @@ class AgentTaskServiceTest {
             ((UserPlaylist) invocation.getArgument(0)).setId(88);
             return null;
         }).when(playlistMapper).insert(any(UserPlaylist.class));
-        when(taskMapper.markSucceeded(41L, 7, 88)).thenReturn(1);
+        when(taskMapper.markSucceeded(eq(41L), eq(7), eq(88), anyString())).thenReturn(1);
 
         AgentTaskPlan result = service.confirm(41L, 7, "once");
 
@@ -99,11 +102,109 @@ class AgentTaskServiceTest {
     }
 
     @Test
+    void createsAndExecutesFavoritePlan() {
+        Audio song = audio(5, "前前前世");
+        when(audioMapper.selectAll()).thenReturn(Collections.singletonList(song));
+        doAnswer(invocation -> {
+            ((AgentTaskPlan) invocation.getArgument(0)).setId(51L);
+            return null;
+        }).when(taskMapper).insert(any(AgentTaskPlan.class));
+
+        AgentTaskPlan pending = service.createPlan(7, 9L, 12L,
+                "帮我收藏《前前前世》", Collections.emptyList(), null);
+
+        assertNotNull(pending);
+        assertEquals("favorite_songs", pending.getActionType());
+        assertEquals(1, pending.getSongs().size());
+
+        AgentTaskPlan executing = plan("executing");
+        executing.setActionType("favorite_songs");
+        AgentTaskPlan succeeded = plan("succeeded");
+        succeeded.setActionType("favorite_songs");
+        succeeded.setResultMessage("已收藏 1 首歌曲");
+        when(taskMapper.claim(51L, 7, "confirm")).thenReturn(1);
+        when(taskMapper.selectOwned(51L, 7)).thenReturn(executing, succeeded);
+        when(taskMapper.selectSongs(51L)).thenReturn(Collections.singletonList(song));
+        when(audioMapper.selectById(5)).thenReturn(song);
+        when(audioMapper.isCollected(7, 5)).thenReturn(0);
+        when(taskMapper.markSucceeded(eq(51L), eq(7), isNull(), anyString())).thenReturn(1);
+
+        AgentTaskPlan result = service.confirm(51L, 7, "confirm");
+
+        assertEquals("succeeded", result.getStatus());
+        verify(audioMapper).addCollect(7, 5);
+        verify(audioMapper).incrementCollect(5);
+    }
+
+    @Test
+    void createsPlanForOwnedPlaylistAndAddsSongAfterConfirmation() {
+        Audio song = audio(5, "前前前世");
+        UserPlaylist playlist = new UserPlaylist();
+        playlist.setId(18);
+        playlist.setUserId(7);
+        playlist.setName("雨夜动漫");
+        when(playlistMapper.selectByUserId(7)).thenReturn(Collections.singletonList(playlist));
+        when(audioMapper.selectAll()).thenReturn(Collections.singletonList(song));
+        doAnswer(invocation -> {
+            ((AgentTaskPlan) invocation.getArgument(0)).setId(52L);
+            return null;
+        }).when(taskMapper).insert(any(AgentTaskPlan.class));
+
+        AgentTaskPlan pending = service.createPlan(7, 9L, 13L,
+                "把《前前前世》加入“雨夜动漫”歌单", Collections.emptyList(), null);
+
+        assertNotNull(pending);
+        assertEquals("add_to_playlist", pending.getActionType());
+        assertEquals(18, pending.getTargetPlaylistId());
+
+        AgentTaskPlan executing = plan("executing");
+        executing.setActionType("add_to_playlist");
+        executing.setTargetPlaylistId(18);
+        AgentTaskPlan succeeded = plan("succeeded");
+        succeeded.setActionType("add_to_playlist");
+        succeeded.setTargetPlaylistId(18);
+        succeeded.setResultPlaylistId(18);
+        when(taskMapper.claim(52L, 7, "confirm")).thenReturn(1);
+        when(taskMapper.selectOwned(52L, 7)).thenReturn(executing, succeeded);
+        when(taskMapper.selectSongs(52L)).thenReturn(Collections.singletonList(song));
+        when(audioMapper.selectById(5)).thenReturn(song);
+        when(playlistMapper.selectByIdAndUserId(18, 7)).thenReturn(playlist);
+        when(playlistMapper.countSong(18, 5)).thenReturn(0);
+        when(playlistMapper.selectMaxSortOrder(18)).thenReturn(2);
+        when(taskMapper.markSucceeded(eq(52L), eq(7), eq(18), anyString())).thenReturn(1);
+
+        service.confirm(52L, 7, "confirm");
+
+        verify(playlistMapper).insertSong(18, 5, 3);
+        verify(playlistMapper).touch(18);
+    }
+
+    @Test
     void recognizesOnlyExplicitWriteIntent() {
         assertTrue(AgentTaskService.isPlaylistCreationRequest("新建一个动漫歌单"));
         assertFalse(AgentTaskService.isPlaylistCreationRequest("推荐动漫歌曲"));
         assertEquals("夜晚", AgentTaskService.playlistName("创建一个“夜晚”的歌单"));
         assertEquals(3, AgentTaskService.requestedSongCount("加入3首", 8));
+        assertTrue(AgentTaskService.isFavoriteRequest("收藏前前前世"));
+        assertTrue(AgentTaskService.isUnfavoriteRequest("取消收藏前前前世"));
+        assertFalse(AgentTaskService.isFavoriteRequest("我的收藏里有什么"));
+        assertEquals("夜雨", AgentTaskService.renamedPlaylistName("把“夜晚”歌单重命名为“夜雨”"));
+        assertTrue(AgentTaskService.isDeletePlaylistRequest("删除雨夜动漫歌单"));
+        assertTrue(AgentTaskService.isRemoveFromPlaylistRequest("把前前前世移出雨夜动漫歌单"));
+        assertFalse(AgentTaskService.isDeletePlaylistRequest("从雨夜动漫歌单删除前前前世"));
+    }
+
+    @Test
+    void cancelsPendingPlanAndReturnsCancelledState() {
+        AgentTaskPlan cancelled = plan("cancelled");
+        when(taskMapper.cancel(41L, 7)).thenReturn(1);
+        when(taskMapper.selectOwned(41L, 7)).thenReturn(cancelled);
+        when(taskMapper.selectSongs(41L)).thenReturn(Collections.emptyList());
+
+        AgentTaskPlan result = service.cancel(41L, 7);
+
+        assertEquals("cancelled", result.getStatus());
+        verify(taskMapper).cancel(41L, 7);
     }
 
     private AgentTaskPlan plan(String status) {
@@ -111,6 +212,7 @@ class AgentTaskServiceTest {
         plan.setId(41L);
         plan.setUserId(7);
         plan.setPlaylistName("雨夜动漫");
+        plan.setActionType("create_playlist");
         plan.setStatus(status);
         return plan;
     }

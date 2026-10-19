@@ -60,6 +60,9 @@ public interface AssistantConversationMapper {
     @Options(useGeneratedKeys = true, keyProperty = "id")
     void insertMessage(AssistantMessage message);
 
+    @Update("UPDATE assistant_message SET content = #{content} WHERE id = #{messageId}")
+    int updateMessageContent(@Param("messageId") Long messageId, @Param("content") String content);
+
     @Insert("INSERT INTO assistant_message_recommendation(message_id, audio_id, sort_order) " +
             "VALUES(#{messageId}, #{audioId}, #{sortOrder})")
     void insertMessageRecommendation(@Param("messageId") Long messageId,

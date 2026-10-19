@@ -28,18 +28,18 @@ class ToolRegistryTest(unittest.TestCase):
         descriptors = tool_registry.descriptors()
 
         self.assertEqual(
-            ["song_search", "favorite_search", "recommend_songs", "vector_search", "song_detail"],
+            ["song_search", "playlist_search", "favorite_search", "recommend_songs", "vector_search", "song_detail"],
             [item.name for item in descriptors],
         )
         self.assertTrue(all(item.readOnly for item in descriptors))
         self.assertEqual(
-            [False, True, True, False, False],
+            [False, True, True, True, False, False],
             [item.requiresAuthentication for item in descriptors],
         )
         self.assertTrue(all("userId" not in item.parameters["properties"] for item in descriptors))
-        self.assertIn("exclude_audio_ids", descriptors[2].parameters["properties"])
-        self.assertIn("audio_ids", descriptors[3].parameters["properties"])
-        self.assertIn("audio_id", descriptors[4].parameters["properties"])
+        self.assertIn("exclude_audio_ids", descriptors[3].parameters["properties"])
+        self.assertIn("audio_ids", descriptors[4].parameters["properties"])
+        self.assertIn("audio_id", descriptors[5].parameters["properties"])
 
     def test_invocation_validates_arguments_and_returns_standard_result(self):
         registry = ToolRegistry()

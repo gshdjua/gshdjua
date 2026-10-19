@@ -17,6 +17,13 @@ class FavoriteSearchArgs(BaseModel):
     limit: int = Field(default=10, ge=1, le=20, description="最多返回的收藏数量")
 
 
+class PlaylistSearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: Optional[str] = Field(default=None, max_length=200, description="可选的歌单名称筛选词")
+    limit: int = Field(default=10, ge=1, le=20, description="最多返回的歌单数量")
+
+
 class RecommendSongsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -2319,7 +2319,7 @@ export default {
       return toolSummary || (item.plannedTool ? `模拟计划：${item.plannedTool}` : '') || item.stopReason || item.finishReason || '未调用工具'
     },
     agentStepLabel(agent) {
-      const toolLabels = { song_search: '歌曲检索', favorite_search: '收藏检索', recommend_songs: '推荐检索', vector_search: '向量检索', song_detail: '歌曲详情' }
+      const toolLabels = { song_search: '歌曲检索', favorite_search: '收藏检索', playlist_search: '歌单检索', recommend_songs: '推荐检索', vector_search: '向量检索', song_detail: '歌曲详情' }
       if ((agent || '').startsWith('tool_agent:')) {
         const tool = agent.substring('tool_agent:'.length)
         return toolLabels[tool] || `工具：${tool}`

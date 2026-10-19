@@ -225,9 +225,11 @@ def chat(payload: AgentChatRequest) -> AgentChatResponse:
             role="system",
             content=(
                 "需要确认 MusicHub 本地歌库内容时使用 song_search，查询单曲事实使用 song_detail；"
-                "查询当前用户收藏使用 favorite_search，获取推荐候选使用 recommend_songs，"
+                "查询当前用户收藏使用 favorite_search，查询已有歌单使用 playlist_search，获取推荐候选使用 recommend_songs，"
                 "只有模糊听感需要补充语义候选时才使用 vector_search。"
                 "这些工具返回的是只读结构化数据；只能把工具实际返回的歌曲说成本地已收录。"
+                "如果用户要求收藏、取消收藏或管理歌单，只说明已识别目标且系统将生成待确认计划，不能声称写操作已经完成；"
+                "此类写请求不得回答当前收藏列表或现有歌单列表。"
                 "工具失败或没有结果时，应明确说明本地歌库未找到，不得编造。"
                 "数量字段必须严格区分：count/returnedCount 是本次返回条数，availableCount 是筛选后可推荐数，"
                 "catalogMatchCount 才是歌库中满足明确类型条件的总数；绝不能把本次返回条数说成歌库总数。"

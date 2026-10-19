@@ -399,16 +399,27 @@ public class AssistantController {
         }
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
-        persistRecommendations(assistantMessage, replyResult.getRecommendations());
         AgentTaskPlan taskPlan = null;
         if (agentTaskService != null) {
             try {
-                taskPlan = agentTaskService.createPlaylistPlan(userId, conversationId, assistantMessage.getId(),
-                        message, replyResult.getRecommendations());
+                taskPlan = agentTaskService.createPlan(userId, conversationId, assistantMessage.getId(),
+                        message, replyResult.getRecommendations(), conversation.getCurrentAudioId());
                 assistantMessage.setTaskPlan(taskPlan);
             } catch (RuntimeException exception) {
                 LOGGER.log(Level.WARNING, "Could not create confirmed agent task plan", exception);
             }
+        }
+        List<Audio> visibleRecommendations = replyResult.getRecommendations();
+        if (taskPlan != null) {
+            // 写操作的模型回答只用于识别目标，最终展示统一由确认计划决定，避免把
+            // “收藏/取消收藏”误展示成收藏列表查询，也避免出现与任务卡矛盾的文案。
+            reply = pendingTaskReply(taskPlan);
+            assistantMessage.setContent(reply);
+            assistantConversationMapper.updateMessageContent(assistantMessage.getId(), reply);
+            visibleRecommendations = Collections.emptyList();
+            assistantMessage.setRecommendations(visibleRecommendations);
+        } else {
+            persistRecommendations(assistantMessage, visibleRecommendations);
         }
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
         assistantMessage.setPromptVersion(replyResult.getPromptVersion());
@@ -422,7 +433,7 @@ public class AssistantController {
         data.put("promptVersion", replyResult.getPromptVersion());
         data.put("userMessage", userMessage);
         data.put("assistantMessage", assistantMessage);
-        data.put("recommendations", replyResult.getRecommendations());
+        data.put("recommendations", visibleRecommendations);
         data.put("recommendationMeta", replyResult.getRecommendationMetadata());
         data.put("taskPlan", taskPlan);
         data.put("selectedModelId", selectedModel.getId());
@@ -439,6 +450,17 @@ public class AssistantController {
         data.put("requestedTraceId", memoryRequestId);
         data.put("fallbackTraceId", fallbackModel == null ? "" : effectiveMemoryRequestId);
         return result(200, "success", data);
+    }
+
+    private String pendingTaskReply(AgentTaskPlan plan) {
+        String action = plan.getActionType() == null ? "" : plan.getActionType();
+        if ("favorite_songs".equals(action)) {
+            return "已识别要收藏的歌曲，请在下方确认后执行收藏。";
+        }
+        if ("unfavorite_songs".equals(action)) {
+            return "已识别要取消收藏的歌曲，请在下方确认后执行。";
+        }
+        return "已生成“" + plan.getTitle() + "”任务，请在下方确认后执行。";
     }
 
     private static final class StreamCancelledException extends RuntimeException { }

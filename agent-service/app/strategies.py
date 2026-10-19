@@ -36,6 +36,11 @@ class DirectStrategy:
 
     _RECOMMEND_WORDS = ("推荐", "安利", "听什么", "听啥", "来几首", "来点", "换一批", "recommend")
     _FAVORITE_WORDS = ("收藏", "favorite")
+    _FAVORITE_WRITE_WORDS = (
+        "帮我收藏", "请收藏", "收藏一下", "收藏这首", "加入收藏", "添加收藏",
+        "取消收藏", "不再收藏", "移出收藏", "删除收藏",
+    )
+    _PLAYLIST_WORDS = ("歌单", "playlist")
     _MOOD_WORDS = (
         "轻快", "轻松", "治愈", "舒缓", "欢快", "热血", "伤感", "悲伤", "安静",
         "雨夜", "通勤", "学习", "睡前", "氛围", "感觉", "风格", "类似", "相似",
@@ -64,6 +69,12 @@ class DirectStrategy:
                 "recommend_songs",
                 {"query": message, "limit": limit, "exclude_audio_ids": []},
             )
+        # “收藏某首歌”是待确认的写操作，不是“查询我的收藏”。这里只检索目标歌曲，
+        # 真正的收藏/取消收藏仍由 Java 端生成确认计划后执行。
+        if self._is_favorite_write(normalized):
+            if self._has_explicit_song_target(normalized):
+                return DirectToolPlan("song_search", {"query": message, "limit": 5})
+            return None
         if self._contains(normalized, self._FAVORITE_WORDS):
             return DirectToolPlan(
                 "favorite_search",
@@ -71,6 +82,11 @@ class DirectStrategy:
                     "query": self._favorite_filter(normalized),
                     "limit": self._requested_count(normalized, 10),
                 },
+            )
+        if self._contains(normalized, self._PLAYLIST_WORDS):
+            return DirectToolPlan(
+                "playlist_search",
+                {"query": None, "limit": self._requested_count(normalized, 10)},
             )
         if self._contains(normalized, self._MOOD_WORDS) and self._contains(
             normalized, self._SEARCH_WORDS + self._RECOMMEND_WORDS
@@ -110,6 +126,22 @@ class DirectStrategy:
         return result or None
 
     @staticmethod
+    def _has_explicit_song_target(message: str) -> bool:
+        contextual = ("这首", "当前歌曲", "正在播放", "刚才那首", "上一首")
+        return not any(phrase in message for phrase in contextual)
+
+    @classmethod
+    def _is_favorite_write(cls, message: str) -> bool:
+        if cls._contains(message, cls._FAVORITE_WRITE_WORDS):
+            return True
+        read_only = (
+            "我的收藏", "我收藏了什么", "我收藏了哪些", "我收藏的", "收藏列表",
+            "查看收藏", "查询收藏", "收藏多少", "收藏几首", "收藏量", "收藏数",
+            "收藏最多", "收藏最高", "高收藏",
+        )
+        return "收藏" in message and not cls._contains(message, read_only)
+
+    @staticmethod
     def _contains(message: str, words) -> bool:
         return any(word in message for word in words)
 
@@ -126,6 +158,7 @@ class StrategyRouter:
     )
     _RECOMMEND_WORDS = DirectStrategy._RECOMMEND_WORDS
     _FAVORITE_WORDS = DirectStrategy._FAVORITE_WORDS
+    _PLAYLIST_WORDS = DirectStrategy._PLAYLIST_WORDS
     _SEMANTIC_WORDS = DirectStrategy._MOOD_WORDS
     _FACT_WORDS = DirectStrategy._DETAIL_WORDS
     _BUDGETS = {
@@ -180,6 +213,7 @@ class StrategyRouter:
         intent_groups = sum((
             DirectStrategy._contains(normalized_message, self._RECOMMEND_WORDS),
             DirectStrategy._contains(normalized_message, self._FAVORITE_WORDS),
+            DirectStrategy._contains(normalized_message, self._PLAYLIST_WORDS),
             DirectStrategy._contains(normalized_message, self._SEMANTIC_WORDS),
             DirectStrategy._contains(normalized_message, self._FACT_WORDS),
         ))
