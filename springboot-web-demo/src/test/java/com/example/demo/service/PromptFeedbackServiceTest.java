@@ -37,12 +37,13 @@ class PromptFeedbackServiceTest {
                     return Collections.singletonList(mapper.mapRow(row, 0));
                 });
 
-        Map<String, Object> result = service.save(42L, 7, "helpful", "inaccurate");
+        Map<String, Object> result = service.save(42L, 7, "helpful", "inaccurate", "不会保存");
 
         assertEquals("music_answer:v3", result.get("promptVersion"));
         assertEquals("helpful", result.get("rating"));
         assertEquals(null, result.get("reason"));
-        verify(jdbc).update(anyString(), eq(42L), eq("music_answer:v3"), eq("helpful"), eq(null));
+        assertEquals(null, result.get("detail"));
+        verify(jdbc).update(anyString(), eq(42L), eq("music_answer:v3"), eq("helpful"), eq(null), eq(null));
     }
 
     @Test
@@ -50,9 +51,30 @@ class PromptFeedbackServiceTest {
         JdbcTemplate jdbc = mock(JdbcTemplate.class);
         PromptFeedbackService service = new PromptFeedbackService(jdbc);
 
-        assertThrows(IllegalArgumentException.class, () -> service.save(42L, 7, "maybe", null));
+        assertThrows(IllegalArgumentException.class, () -> service.save(42L, 7, "maybe", null, null));
 
         verify(jdbc, never()).query(anyString(), any(RowMapper.class), any(), any());
+    }
+
+    @Test
+    void requiresAndStoresDetailForOtherReason() throws Exception {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        PromptFeedbackService service = new PromptFeedbackService(jdbc);
+        when(jdbc.query(anyString(), any(RowMapper.class), eq(42L), eq(7)))
+                .thenAnswer(invocation -> {
+                    RowMapper<?> mapper = invocation.getArgument(1);
+                    ResultSet row = mock(ResultSet.class);
+                    when(row.getString("prompt_version")).thenReturn("music_answer:v3");
+                    return Collections.singletonList(mapper.mapRow(row, 0));
+                });
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.save(42L, 7, "not_helpful", "other", "  "));
+        Map<String, Object> result = service.save(42L, 7, "not_helpful", "other", "播放按钮遮住了文字");
+
+        assertEquals("播放按钮遮住了文字", result.get("detail"));
+        verify(jdbc).update(anyString(), eq(42L), eq("music_answer:v3"), eq("not_helpful"),
+                eq("other"), eq("播放按钮遮住了文字"));
     }
 
     @Test

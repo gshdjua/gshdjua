@@ -2,6 +2,7 @@ package com.example.demo.controller;
 
 import com.example.demo.entity.AssistantConversation;
 import com.example.demo.entity.AssistantMessage;
+import com.example.demo.entity.AgentTaskPlan;
 import com.example.demo.entity.Audio;
 import com.example.demo.entity.User;
 import com.example.demo.mapper.AudioMapper;
@@ -16,6 +17,7 @@ import com.example.demo.service.MusicLibraryAgent;
 import com.example.demo.service.LlmModelCatalogService;
 import com.example.demo.service.ModelInvocationLogService;
 import com.example.demo.service.AgentServiceClient;
+import com.example.demo.service.AgentTaskService;
 import com.example.demo.service.UserLlmQuotaService;
 import com.example.demo.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -96,6 +98,9 @@ public class AssistantController {
 
     @Autowired
     private AgentServiceClient agentServiceClient;
+
+    @Autowired(required = false)
+    private AgentTaskService agentTaskService;
 
     @Autowired(required = false)
     private UserLlmQuotaService userLlmQuotaService;
@@ -395,6 +400,16 @@ public class AssistantController {
         AssistantMessage assistantMessage = message(conversationId, "assistant", reply);
         assistantConversationMapper.insertMessage(assistantMessage);
         persistRecommendations(assistantMessage, replyResult.getRecommendations());
+        AgentTaskPlan taskPlan = null;
+        if (agentTaskService != null) {
+            try {
+                taskPlan = agentTaskService.createPlaylistPlan(userId, conversationId, assistantMessage.getId(),
+                        message, replyResult.getRecommendations());
+                assistantMessage.setTaskPlan(taskPlan);
+            } catch (RuntimeException exception) {
+                LOGGER.log(Level.WARNING, "Could not create confirmed agent task plan", exception);
+            }
+        }
         promptVersionService.recordUsage(assistantMessage.getId(), replyResult.getPromptVersion());
         assistantMessage.setPromptVersion(replyResult.getPromptVersion());
         if ("新对话".equals(conversation.getTitle())) {
@@ -409,6 +424,7 @@ public class AssistantController {
         data.put("assistantMessage", assistantMessage);
         data.put("recommendations", replyResult.getRecommendations());
         data.put("recommendationMeta", replyResult.getRecommendationMetadata());
+        data.put("taskPlan", taskPlan);
         data.put("selectedModelId", selectedModel.getId());
         data.put("requestedProvider", replyResult.getRequestedProvider());
         data.put("requestedModel", replyResult.getRequestedModel());
@@ -570,7 +586,8 @@ public class AssistantController {
         try {
             Object data = promptFeedbackService.save(messageId, getUserId(request),
                     String.valueOf(payload.getOrDefault("rating", "")),
-                    payload.get("reason") == null ? null : String.valueOf(payload.get("reason")));
+                    payload.get("reason") == null ? null : String.valueOf(payload.get("reason")),
+                    payload.get("detail") == null ? null : String.valueOf(payload.get("detail")));
             return result(200, "Feedback saved", data);
         } catch (IllegalArgumentException exception) {
             return result(400, exception.getMessage(), null);
@@ -632,6 +649,7 @@ public class AssistantController {
         for (AssistantMessage item : messages) {
             if (item.getId() != null && "assistant".equals(item.getRole())) {
                 item.setRecommendations(assistantConversationMapper.selectRecommendationsByMessageId(item.getId()));
+                if (agentTaskService != null) item.setTaskPlan(agentTaskService.findForMessage(item.getId(), getUserId(request)));
             }
         }
         conversation.setMessages(messages);
@@ -647,6 +665,34 @@ public class AssistantController {
             assistantConversationMapper.insertMessageRecommendation(message.getId(), audio.getId(), sortOrder++);
         }
         message.setRecommendations(recommendations);
+    }
+
+    @PostMapping("/tasks/{taskId}/confirm")
+    public Map<String, Object> confirmTask(@PathVariable Long taskId,
+                                           @RequestBody Map<String, Object> payload,
+                                           HttpServletRequest request) {
+        if (agentTaskService == null) return result(503, "Agent task service unavailable", null);
+        try {
+            AgentTaskPlan plan = agentTaskService.confirm(taskId, getUserId(request),
+                    String.valueOf(payload.getOrDefault("confirmationToken", "")));
+            return result(200, "任务执行完成", plan);
+        } catch (IllegalArgumentException exception) {
+            return result(404, exception.getMessage(), null);
+        } catch (IllegalStateException exception) {
+            return result(409, exception.getMessage(), null);
+        }
+    }
+
+    @PostMapping("/tasks/{taskId}/cancel")
+    public Map<String, Object> cancelTask(@PathVariable Long taskId, HttpServletRequest request) {
+        if (agentTaskService == null) return result(503, "Agent task service unavailable", null);
+        try {
+            return result(200, "任务已取消", agentTaskService.cancel(taskId, getUserId(request)));
+        } catch (IllegalArgumentException exception) {
+            return result(404, exception.getMessage(), null);
+        } catch (IllegalStateException exception) {
+            return result(409, exception.getMessage(), null);
+        }
     }
 
     @DeleteMapping("/conversations/{conversationId}")

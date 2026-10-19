@@ -41,4 +41,13 @@ class AssistantQueryUnderstandingServiceTest {
         assertEquals(AssistantIntent.FAVORITES, service.classify("我收藏的摇滚歌曲有哪些"));
         assertEquals(AssistantIntent.GENRE_QUERY, service.classify("歌库中动漫类型的歌曲有几首"));
     }
+
+    @Test
+    void playlistCreationTakesPriorityOverFavoriteLookup() {
+        assertEquals(AssistantIntent.RECOMMENDATION,
+                service.classify("根据我的收藏创建一个“雨夜动漫”歌单，加入三首合适的歌曲"));
+        assertEquals(AssistantIntent.RECOMMENDATION,
+                service.classify("用我的收藏生成一个通勤歌单"));
+        assertEquals(AssistantIntent.FAVORITES, service.classify("我收藏了什么？"));
+    }
 }

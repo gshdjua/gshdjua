@@ -143,6 +143,42 @@ CREATE TABLE IF NOT EXISTS assistant_message_recommendation (
     FOREIGN KEY (audio_id) REFERENCES audio(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS agent_task_plan (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    conversation_id BIGINT NOT NULL,
+    assistant_message_id BIGINT NOT NULL,
+    action_type VARCHAR(40) NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    playlist_name VARCHAR(80) NOT NULL,
+    confirmation_token VARCHAR(64) NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    expires_at TIMESTAMP NOT NULL,
+    result_playlist_id INT NULL,
+    error_message VARCHAR(500) NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    executed_at TIMESTAMP NULL,
+    UNIQUE KEY uk_agent_task_confirmation_token (confirmation_token),
+    KEY idx_agent_task_user_status (user_id, status, created_at),
+    KEY idx_agent_task_message (assistant_message_id),
+    FOREIGN KEY (user_id) REFERENCES user(id) ON DELETE CASCADE,
+    FOREIGN KEY (conversation_id) REFERENCES assistant_conversation(id) ON DELETE CASCADE,
+    FOREIGN KEY (assistant_message_id) REFERENCES assistant_message(id) ON DELETE CASCADE,
+    FOREIGN KEY (result_playlist_id) REFERENCES user_playlist(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS agent_task_plan_song (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    audio_id INT NOT NULL,
+    sort_order INT NOT NULL,
+    UNIQUE KEY uk_agent_task_song (task_id, audio_id),
+    KEY idx_agent_task_song_order (task_id, sort_order),
+    FOREIGN KEY (task_id) REFERENCES agent_task_plan(id) ON DELETE CASCADE,
+    FOREIGN KEY (audio_id) REFERENCES audio(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS retrieval_regression_run (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     trigger_type VARCHAR(24) NOT NULL,
@@ -374,6 +410,7 @@ CREATE TABLE IF NOT EXISTS prompt_answer_feedback (
     prompt_version VARCHAR(120) NOT NULL,
     rating VARCHAR(20) NOT NULL,
     reason VARCHAR(40) NULL,
+    feedback_detail VARCHAR(300) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     KEY idx_prompt_feedback_version_time (prompt_version, updated_at),

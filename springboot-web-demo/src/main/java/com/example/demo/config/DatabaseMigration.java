@@ -27,6 +27,7 @@ public class DatabaseMigration {
             ensureColumn(connection, "audio", "lyric_path", "VARCHAR(500) DEFAULT ''");
             ensureColumn(connection, "audio", "source", "VARCHAR(255) DEFAULT ''");
             ensureColumn(connection, "audio", "introduction", "TEXT");
+            ensureColumn(connection, "prompt_answer_feedback", "feedback_detail", "VARCHAR(300) NULL");
         }
     }
 

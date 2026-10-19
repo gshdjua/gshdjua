@@ -48,7 +48,8 @@ public interface AssistantConversationMapper {
     void touchConversation(Long conversationId);
 
     @Select("SELECT m.id, m.conversation_id AS conversationId, m.role, m.content, m.create_time AS createTime, " +
-            "apu.prompt_version AS promptVersion, paf.rating AS feedbackRating, paf.reason AS feedbackReason " +
+            "apu.prompt_version AS promptVersion, paf.rating AS feedbackRating, paf.reason AS feedbackReason, " +
+            "paf.feedback_detail AS feedbackDetail " +
             "FROM assistant_message m " +
             "LEFT JOIN assistant_prompt_usage apu ON apu.assistant_message_id=m.id " +
             "LEFT JOIN prompt_answer_feedback paf ON paf.assistant_message_id=m.id " +
