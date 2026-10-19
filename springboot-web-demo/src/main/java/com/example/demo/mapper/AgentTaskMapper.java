@@ -26,7 +26,8 @@ public interface AgentTaskMapper {
     @Select("SELECT id, user_id AS userId, conversation_id AS conversationId, " +
             "assistant_message_id AS assistantMessageId, action_type AS actionType, title, " +
             "playlist_name AS playlistName, target_playlist_id AS targetPlaylistId, confirmation_token AS confirmationToken, status, " +
-            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, result_message AS resultMessage, error_message AS errorMessage, " +
+            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, result_message AS resultMessage, " +
+            "error_code AS errorCode, error_message AS errorMessage, retry_count AS retryCount, last_retry_at AS lastRetryAt, " +
             "created_at AS createdAt, updated_at AS updatedAt, executed_at AS executedAt " +
             "FROM agent_task_plan WHERE id=#{taskId} AND user_id=#{userId}")
     AgentTaskPlan selectOwned(@Param("taskId") Long taskId, @Param("userId") Integer userId);
@@ -34,11 +35,21 @@ public interface AgentTaskMapper {
     @Select("SELECT id, user_id AS userId, conversation_id AS conversationId, " +
             "assistant_message_id AS assistantMessageId, action_type AS actionType, title, " +
             "playlist_name AS playlistName, target_playlist_id AS targetPlaylistId, confirmation_token AS confirmationToken, status, " +
-            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, result_message AS resultMessage, error_message AS errorMessage, " +
+            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, result_message AS resultMessage, " +
+            "error_code AS errorCode, error_message AS errorMessage, retry_count AS retryCount, last_retry_at AS lastRetryAt, " +
             "created_at AS createdAt, updated_at AS updatedAt, executed_at AS executedAt " +
             "FROM agent_task_plan WHERE assistant_message_id=#{messageId} AND user_id=#{userId} " +
             "ORDER BY id DESC LIMIT 1")
     AgentTaskPlan selectByMessage(@Param("messageId") Long messageId, @Param("userId") Integer userId);
+
+    @Select("SELECT id, user_id AS userId, conversation_id AS conversationId, " +
+            "assistant_message_id AS assistantMessageId, action_type AS actionType, title, " +
+            "playlist_name AS playlistName, target_playlist_id AS targetPlaylistId, confirmation_token AS confirmationToken, status, " +
+            "expires_at AS expiresAt, result_playlist_id AS resultPlaylistId, result_message AS resultMessage, " +
+            "error_code AS errorCode, error_message AS errorMessage, retry_count AS retryCount, last_retry_at AS lastRetryAt, " +
+            "created_at AS createdAt, updated_at AS updatedAt, executed_at AS executedAt " +
+            "FROM agent_task_plan WHERE user_id=#{userId} ORDER BY created_at DESC, id DESC LIMIT 100")
+    List<AgentTaskPlan> selectByUserId(Integer userId);
 
     @Select("SELECT a.* FROM agent_task_plan_song s JOIN audio a ON a.id=s.audio_id " +
             "WHERE s.task_id=#{taskId} ORDER BY s.sort_order ASC, s.id ASC")
@@ -51,10 +62,20 @@ public interface AgentTaskMapper {
               @Param("token") String token);
 
     @Update("UPDATE agent_task_plan SET status='succeeded', result_playlist_id=#{playlistId}, result_message=#{resultMessage}, " +
-            "confirmation_token=NULL, error_message='', executed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP " +
+            "confirmation_token=NULL, error_code='', error_message='', executed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP " +
             "WHERE id=#{taskId} AND user_id=#{userId} AND status='executing'")
     int markSucceeded(@Param("taskId") Long taskId, @Param("userId") Integer userId,
                       @Param("playlistId") Integer playlistId, @Param("resultMessage") String resultMessage);
+
+    @Update("UPDATE agent_task_plan SET status='failed', error_code=#{errorCode}, error_message=#{errorMessage}, " +
+            "updated_at=CURRENT_TIMESTAMP WHERE id=#{taskId} AND user_id=#{userId} AND status='executing'")
+    int markFailed(@Param("taskId") Long taskId, @Param("userId") Integer userId,
+                   @Param("errorCode") String errorCode, @Param("errorMessage") String errorMessage);
+
+    @Update("UPDATE agent_task_plan SET status='executing', error_code='', error_message='', " +
+            "retry_count=retry_count+1, last_retry_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP " +
+            "WHERE id=#{taskId} AND user_id=#{userId} AND status='failed'")
+    int claimRetry(@Param("taskId") Long taskId, @Param("userId") Integer userId);
 
     @Update("UPDATE agent_task_plan SET status='cancelled', confirmation_token=NULL, " +
             "updated_at=CURRENT_TIMESTAMP WHERE id=#{taskId} AND user_id=#{userId} AND status='pending'")

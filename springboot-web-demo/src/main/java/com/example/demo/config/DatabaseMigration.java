@@ -30,6 +30,9 @@ public class DatabaseMigration {
             ensureColumn(connection, "prompt_answer_feedback", "feedback_detail", "VARCHAR(300) NULL");
             ensureColumn(connection, "agent_task_plan", "target_playlist_id", "INT NULL");
             ensureColumn(connection, "agent_task_plan", "result_message", "VARCHAR(500) NOT NULL DEFAULT ''");
+            ensureColumn(connection, "agent_task_plan", "error_code", "VARCHAR(50) NOT NULL DEFAULT ''");
+            ensureColumn(connection, "agent_task_plan", "retry_count", "INT NOT NULL DEFAULT 0");
+            ensureColumn(connection, "agent_task_plan", "last_retry_at", "TIMESTAMP NULL");
         }
     }
 

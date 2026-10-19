@@ -697,7 +697,41 @@ public class AssistantController {
         try {
             AgentTaskPlan plan = agentTaskService.confirm(taskId, getUserId(request),
                     String.valueOf(payload.getOrDefault("confirmationToken", "")));
-            return result(200, "任务执行完成", plan);
+            return "failed".equals(plan.getStatus())
+                    ? result(409, plan.getErrorMessage(), plan)
+                    : result(200, "任务执行完成", plan);
+        } catch (IllegalArgumentException exception) {
+            return result(404, exception.getMessage(), null);
+        } catch (IllegalStateException exception) {
+            return result(409, exception.getMessage(), null);
+        }
+    }
+
+    @GetMapping("/tasks")
+    public Map<String, Object> tasks(@RequestParam(required = false) String status,
+                                     HttpServletRequest request) {
+        if (agentTaskService == null) return result(503, "Agent task service unavailable", null);
+        return result(200, "success", agentTaskService.list(getUserId(request), status));
+    }
+
+    @GetMapping("/tasks/{taskId}")
+    public Map<String, Object> task(@PathVariable Long taskId, HttpServletRequest request) {
+        if (agentTaskService == null) return result(503, "Agent task service unavailable", null);
+        try {
+            return result(200, "success", agentTaskService.findOwned(taskId, getUserId(request)));
+        } catch (IllegalArgumentException exception) {
+            return result(404, exception.getMessage(), null);
+        }
+    }
+
+    @PostMapping("/tasks/{taskId}/retry")
+    public Map<String, Object> retryTask(@PathVariable Long taskId, HttpServletRequest request) {
+        if (agentTaskService == null) return result(503, "Agent task service unavailable", null);
+        try {
+            AgentTaskPlan plan = agentTaskService.retry(taskId, getUserId(request));
+            return "failed".equals(plan.getStatus())
+                    ? result(409, plan.getErrorMessage(), plan)
+                    : result(200, "任务重新执行完成", plan);
         } catch (IllegalArgumentException exception) {
             return result(404, exception.getMessage(), null);
         } catch (IllegalStateException exception) {

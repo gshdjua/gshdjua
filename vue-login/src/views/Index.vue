@@ -11,6 +11,7 @@
         <span class="nav-item" :class="{active: currentTab==='favorites'}" @click="loadFavorites(); currentTab='favorites'" v-if="role">收藏</span>
         <span class="nav-item" :class="{active: currentTab==='assistant'}" @click="openAssistant" v-if="role">AI 歌库助手</span>
         <span class="nav-item" :class="{active: currentTab==='playlists'}" @click="openPlaylists" v-if="role">自建歌单</span>
+        <span class="nav-item" :class="{active: currentTab==='tasks'}" @click="openAgentTasks" v-if="role">任务记录</span>
        </div>
        <div class="nav-center">
         <div class="search-box">
@@ -241,6 +242,28 @@
         </div>
         <div v-else class="playlist-workspace playlist-no-selection"><span>♫</span><h2>点击歌单开始播放</h2><p>点击右侧“管理”可添加歌曲、调整顺序或删除歌单。</p></div>
       </section>
+      <section v-if="currentTab==='tasks'" class="task-center-page">
+        <header class="task-center-header">
+          <div><span>AGENT TASKS</span><h1>任务记录</h1><p>查看任务结果；失败任务可以直接重新执行。</p></div>
+          <button type="button" :disabled="agentTasksLoading" @click="loadAgentTasks">{{ agentTasksLoading ? '刷新中…' : '刷新' }}</button>
+        </header>
+        <div class="task-center-filters">
+          <button v-for="filter in agentTaskFilters" :key="filter.value" type="button" :class="{ active: agentTaskFilter === filter.value }" @click="agentTaskFilter = filter.value">{{ filter.label }}</button>
+        </div>
+        <div v-if="agentTasksLoading && !agentTasks.length" class="task-center-empty">正在加载任务记录…</div>
+        <div v-else-if="!filteredAgentTasks.length" class="task-center-empty">当前没有符合条件的任务。</div>
+        <div v-else class="task-center-list">
+          <article v-for="task in filteredAgentTasks" :key="task.id" class="task-center-item" :class="'task-' + task.status">
+            <div class="task-center-main">
+              <div class="task-center-title"><strong>{{ task.title }}</strong><span>{{ agentTaskStatusLabel(task.status) }}</span></div>
+              <small>{{ formatAgentTaskDate(task.createdAt) }}<template v-if="task.retryCount"> · 已重试 {{ task.retryCount }} 次</template></small>
+              <p v-if="task.status === 'failed'" class="task-center-error">失败原因：{{ task.uiError || task.errorMessage || '任务执行失败，请稍后重试' }}</p>
+              <p v-else-if="task.status === 'succeeded'" class="task-center-result">{{ task.resultMessage || '任务已执行完成' }}</p>
+            </div>
+            <button v-if="task.status === 'failed'" type="button" class="task-retry-btn" :disabled="retryingTaskId === task.id" @click="retryAgentTask(task)">{{ retryingTaskId === task.id ? '重试中…' : '重新执行' }}</button>
+          </article>
+        </div>
+      </section>
       <section v-if="currentTab==='assistant'" class="assistant-page">
         <div class="assistant-intro">
           <div class="assistant-orb">✦</div>
@@ -312,12 +335,14 @@
                   <p v-else-if="message.taskPlan.status === 'succeeded'" class="agent-task-notice">{{ message.taskPlan.resultMessage || '任务已执行完成。' }}</p>
                   <p v-else-if="message.taskPlan.status === 'cancelled'" class="agent-task-notice">该任务已取消，没有修改你的收藏或歌单。</p>
                   <p v-else-if="message.taskPlan.status === 'expired'" class="agent-task-notice">确认已过期，请重新向助手发起操作请求。</p>
-                  <p v-if="message.taskPlan.uiError" class="agent-task-error">{{ message.taskPlan.uiError }}</p>
+                  <p v-else-if="message.taskPlan.status === 'failed'" class="agent-task-error">失败原因：{{ message.taskPlan.uiError || message.taskPlan.errorMessage || '任务执行失败，请稍后重试。' }}</p>
+                  <p v-if="message.taskPlan.uiError && message.taskPlan.status !== 'failed'" class="agent-task-error">{{ message.taskPlan.uiError }}</p>
                   <div class="agent-task-actions">
                     <template v-if="message.taskPlan.status === 'pending'">
                       <button type="button" class="task-confirm" :disabled="message.taskPlan.saving" @click.stop="confirmAgentTask(message)">{{ message.taskPlan.saving ? '执行中…' : '确认执行' }}</button>
                       <button type="button" class="task-cancel" :disabled="message.taskPlan.saving" @click.prevent.stop="cancelAgentTask(message)">{{ message.taskPlan.saving ? '取消中…' : '取消' }}</button>
                     </template>
+                    <button v-else-if="message.taskPlan.status === 'failed'" type="button" class="task-confirm" :disabled="retryingTaskId === message.taskPlan.id" @click.stop="retryAgentTask(message.taskPlan, message)">{{ retryingTaskId === message.taskPlan.id ? '重试中…' : '重新执行' }}</button>
                     <button v-else-if="message.taskPlan.status === 'succeeded' && message.taskPlan.resultPlaylistId" class="task-open" @click="openAgentTaskPlaylist(message.taskPlan)">打开歌单</button>
                   </div>
                 </section>
@@ -458,6 +483,17 @@ export default {
       memoryLoading: false,
       memorySaving: false,
       memories: [],
+      agentTasks: [],
+      agentTasksLoading: false,
+      agentTaskFilter: '',
+      retryingTaskId: null,
+      agentTaskFilters: [
+        { value: '', label: '全部' },
+        { value: 'pending', label: '等待确认' },
+        { value: 'executing', label: '执行中' },
+        { value: 'failed', label: '执行失败' },
+        { value: 'succeeded', label: '执行成功' }
+      ],
       showNicknameDialog: false,
       nicknameInput: '',
       nicknameSaving: false,
@@ -519,6 +555,10 @@ export default {
     },
     activePlaylistSong() {
       return this.playlistCurrentSong || this.playlistSongs[0] || null
+    },
+    filteredAgentTasks() {
+      if (!this.agentTaskFilter) return this.agentTasks
+      return this.agentTasks.filter(task => task.status === this.agentTaskFilter)
     }
   },
   mounted() {
@@ -529,6 +569,7 @@ export default {
     const requestedTab = this.$route.query.tab
     if (requestedTab === 'assistant') this.openAssistant(this.$route.query.audioId)
     else if (requestedTab === 'playlists') this.openPlaylists()
+    else if (requestedTab === 'tasks') this.openAgentTasks()
     else if (requestedTab === 'favorites') {
       this.currentTab = 'favorites'
       this.loadFavorites()
@@ -1088,6 +1129,55 @@ export default {
       this.assistantInput = question
       this.sendAssistantMessage()
     },
+    async openAgentTasks() {
+      this.currentTab = 'tasks'
+      await this.loadAgentTasks()
+    },
+    async loadAgentTasks() {
+      if (this.agentTasksLoading) return
+      this.agentTasksLoading = true
+      try {
+        const res = await request.get('/assistant/tasks')
+        if (res.data.code !== 200) throw new Error(res.data.msg || '任务记录加载失败')
+        this.agentTasks = Array.isArray(res.data.data) ? res.data.data : []
+      } catch (err) {
+        alert(err.response?.data?.msg || err.message || '任务记录加载失败，请稍后重试')
+      } finally {
+        this.agentTasksLoading = false
+      }
+    },
+    updateAgentTaskState(target, update) {
+      if (!target || !update) return
+      Object.keys(update).forEach(key => this.$set(target, key, update[key]))
+    },
+    async retryAgentTask(task, chatMessage) {
+      if (!task || task.status !== 'failed' || this.retryingTaskId) return
+      this.retryingTaskId = task.id
+      this.$set(task, 'uiError', '')
+      try {
+        const res = await request.post(`/assistant/tasks/${task.id}/retry`)
+        const updated = res.data.data
+        if (updated) {
+          this.updateAgentTaskState(task, updated)
+          if (chatMessage && chatMessage.taskPlan !== task) this.updateAgentTaskState(chatMessage.taskPlan, updated)
+          const centerTask = this.agentTasks.find(item => item.id === updated.id)
+          if (centerTask && centerTask !== task) this.updateAgentTaskState(centerTask, updated)
+        }
+        if (res.data.code === 200) {
+          await Promise.all([this.loadPlaylists(), this.loadFavorites()])
+        } else if (!updated || updated.status !== 'failed') {
+          throw new Error(res.data.msg || '任务重试失败')
+        }
+      } catch (err) {
+        this.$set(task, 'uiError', err.response?.data?.msg || err.message || '任务重试失败，请稍后重试')
+      } finally {
+        this.retryingTaskId = null
+      }
+    },
+    formatAgentTaskDate(value) {
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('zh-CN', { hour12: false })
+    },
     agentTaskStatusLabel(status) {
       return {
         pending: '等待确认',
@@ -1134,8 +1224,9 @@ export default {
       this.$set(plan, 'saving', true)
       try {
         const res = await request.post(`/assistant/tasks/${plan.id}/confirm`, { confirmationToken: plan.confirmationToken })
-        if (res.data.code !== 200) throw new Error(res.data.msg || '任务执行失败')
-        this.$set(message, 'taskPlan', res.data.data)
+        if (res.data.data) this.updateAgentTaskState(plan, res.data.data)
+        if (res.data.code !== 200 && plan.status !== 'failed') throw new Error(res.data.msg || '任务执行失败')
+        if (plan.status === 'failed') return
         await Promise.all([this.refreshConversationSummary(), this.loadPlaylists(), this.loadFavorites()])
       } catch (err) {
         alert(err.response?.data?.msg || err.message || '任务执行失败，请稍后重试')
@@ -1547,6 +1638,7 @@ export default {
 .music-section { animation: fadeInUp 0.5s ease-out; }
 .music-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 24px; }
 
+.task-center-page { width: 100%; min-height: calc(100vh - 128px); padding: 30px; box-sizing: border-box; border: 1px solid #e6e1f4; border-radius: 24px; background: #fff; box-shadow: 0 15px 38px rgba(48,38,91,.08); animation: fadeInUp .4s ease-out; }.task-center-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 25px 28px; border-radius: 19px; color: #fff; background: linear-gradient(135deg, #292355, #7545b0); }.task-center-header span { color: #c8b8ff; font-size: 10px; font-weight: 800; letter-spacing: 1.7px; }.task-center-header h1 { margin: 6px 0; font-size: 29px; }.task-center-header p { margin: 0; color: rgba(255,255,255,.72); font-size: 13px; }.task-center-header button { padding: 9px 14px; border: 1px solid rgba(255,255,255,.3); border-radius: 10px; color: #fff; background: rgba(255,255,255,.12); font: inherit; font-weight: 700; cursor: pointer; }.task-center-header button:disabled { cursor: wait; opacity: .6; }.task-center-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 15px; }.task-center-filters button { padding: 7px 12px; border: 1px solid #dfd9ef; border-radius: 999px; color: #74698a; background: #fff; font: inherit; font-size: 12px; cursor: pointer; }.task-center-filters button.active { border-color: #8062ce; color: #6849b3; background: #f0ebff; }.task-center-list { display: flex; flex-direction: column; gap: 10px; }.task-center-item { display: flex; align-items: center; gap: 18px; padding: 17px 19px; border: 1px solid #ebe7f4; border-radius: 15px; background: #fcfbff; }.task-center-main { min-width: 0; flex: 1; }.task-center-title { display: flex; align-items: center; gap: 10px; }.task-center-title strong { overflow: hidden; color: #352d51; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }.task-center-title span { padding: 4px 8px; border-radius: 999px; color: #7053b8; background: #eee8ff; font-size: 10px; font-weight: 800; }.task-center-main small { display: block; margin-top: 6px; color: #a098ac; font-size: 11px; }.task-center-error, .task-center-result { margin: 9px 0 0; font-size: 12px; line-height: 1.5; }.task-center-error { color: #b44759; }.task-center-result { color: #34745d; }.task-center-item.task-failed { border-color: #efd4d9; background: #fffafb; }.task-center-item.task-succeeded { border-color: #d7eadf; background: #fbfffd; }.task-retry-btn { flex: 0 0 auto; padding: 8px 13px; border: 0; border-radius: 9px; color: #fff; background: linear-gradient(135deg, #706fe1, #8250bb); font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }.task-retry-btn:disabled { cursor: wait; opacity: .55; }.task-center-empty { padding: 75px 20px; color: #958da5; text-align: center; }
 .assistant-page { width: 100%; min-height: calc(100vh - 128px); margin: 0; animation: fadeInUp 0.4s ease-out; }
 .playlist-page { display: grid; grid-template-columns: 270px minmax(0, 1fr); min-height: calc(100vh - 130px); overflow: hidden; border: 1px solid #e5e1f4; border-radius: 24px; background: #fff; box-shadow: 0 16px 38px rgba(50,39,108,.08); animation: fadeInUp .4s ease-out; }.playlist-sidebar { padding: 24px 15px; background: linear-gradient(160deg, #25204d, #453179); color: #fff; }.playlist-sidebar-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 0 8px 19px; border-bottom: 1px solid rgba(255,255,255,.15); }.playlist-sidebar-head span, .playlist-workspace-head span, .playlist-library span { color: #ad9cf8; font-size: 10px; font-weight: 800; letter-spacing: 1.6px; }.playlist-sidebar-head h2 { margin: 5px 0 0; font-size: 22px; }.create-playlist-btn { padding: 7px 9px; border: 1px solid rgba(255,255,255,.28); border-radius: 9px; color: #fff; background: rgba(255,255,255,.12); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.playlist-create-form { display: flex; gap: 6px; margin: 15px 7px; }.playlist-create-form input { min-width: 0; flex: 1; padding: 8px; border: 0; border-radius: 8px; outline: 0; color: #332860; font: inherit; font-size: 12px; }.playlist-create-form button { padding: 7px 8px; border: 0; border-radius: 8px; color: #4c3479; background: #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }.playlist-create-form button:disabled { opacity: .5; cursor: not-allowed; }.playlist-sidebar-empty { padding: 25px 9px; color: rgba(255,255,255,.58); font-size: 13px; line-height: 1.7; }.playlist-nav-item { display: flex; align-items: center; width: 100%; gap: 10px; margin-top: 7px; padding: 11px 10px; border: 1px solid transparent; border-radius: 12px; color: rgba(255,255,255,.8); background: transparent; text-align: left; cursor: pointer; transition: .2s ease; }.playlist-nav-item:hover, .playlist-nav-item.active { border-color: rgba(255,255,255,.18); color: #fff; background: rgba(255,255,255,.14); }.playlist-nav-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: rgba(255,255,255,.13); font-size: 17px; }.playlist-nav-item strong, .playlist-nav-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.playlist-nav-item strong { font-size: 13px; }.playlist-nav-item small { margin-top: 3px; color: rgba(255,255,255,.55); font-size: 11px; }.playlist-workspace { min-width: 0; padding: 34px; background: radial-gradient(circle at 85% 0, #f2edff, transparent 29%), #fff; }.playlist-workspace-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 25px; border-bottom: 1px solid #eeeaf7; }.playlist-workspace-head h1 { margin: 6px 0; color: #2c2548; font-size: 30px; }.playlist-workspace-head p { margin: 0; color: #8d869f; font-size: 14px; }.playlist-head-actions { display: flex; gap: 9px; }.playlist-play-all, .playlist-delete-btn { padding: 10px 13px; border-radius: 10px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }.playlist-play-all { border: 0; color: #fff; background: linear-gradient(135deg, #6e77e8, #8150b9); box-shadow: 0 7px 17px rgba(104,89,195,.23); }.playlist-play-all:disabled { cursor: not-allowed; opacity: .5; }.playlist-delete-btn { border: 1px solid #f0d7df; color: #cc6179; background: #fffafa; }.playlist-loading, .playlist-empty, .playlist-no-selection { display: grid; place-items: center; padding: 90px 20px; color: #958da8; text-align: center; }.playlist-empty span, .playlist-no-selection > span { color: #8062cd; font-size: 48px; }.playlist-empty h3, .playlist-no-selection h2 { margin: 14px 0 7px; color: #4a3c70; }.playlist-empty p, .playlist-no-selection p { margin: 0; font-size: 14px; }.playlist-song-list { display: flex; flex-direction: column; margin-top: 20px; }.playlist-song-row { display: flex; align-items: center; gap: 13px; padding: 10px 7px; border-bottom: 1px solid #f0edf7; }.playlist-order { width: 26px; color: #a6a0b2; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }.playlist-song-row img, .playlist-song-cover { width: 46px; height: 46px; border-radius: 11px; object-fit: cover; }.playlist-song-cover { display: grid; place-items: center; color: #fff; font-size: 20px; }.playlist-song-main { min-width: 0; flex: 1; }.playlist-song-main strong, .playlist-song-main small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.playlist-song-main strong { color: #332b53; font-size: 14px; }.playlist-song-main small { margin-top: 4px; color: #938ba4; font-size: 12px; }.playlist-song-controls { display: flex; gap: 5px; }.playlist-song-controls button { width: 29px; height: 29px; padding: 0; border: 1px solid #e5e0f1; border-radius: 8px; color: #7457bf; background: #fff; font: inherit; cursor: pointer; }.playlist-song-controls button:hover:not(:disabled) { color: #fff; background: #7659c3; border-color: #7659c3; }.playlist-song-controls button:disabled { cursor: not-allowed; opacity: .4; }.playlist-song-controls .remove-song-btn { color: #ce6881; }.playlist-library { margin-top: 30px; padding-top: 25px; border-top: 1px solid #eeeaf7; }.playlist-library h3 { margin: 5px 0 15px; color: #352a58; font-size: 18px; }.playlist-library-empty { padding: 20px; border: 1px dashed #ddd6ef; border-radius: 12px; color: #958ca4; font-size: 13px; text-align: center; }.playlist-library-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.playlist-library-song { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px; border: 1px solid #ebe7f6; border-radius: 12px; }.playlist-library-song img, .playlist-library-cover { width: 38px; height: 38px; border-radius: 9px; object-fit: cover; }.playlist-library-cover { display: grid; place-items: center; color: #fff; font-size: 16px; }.playlist-library-song strong, .playlist-library-song small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.playlist-library-song strong { color: #443761; font-size: 12px; }.playlist-library-song small { margin-top: 3px; color: #978fa7; font-size: 11px; }.playlist-library-song button { padding: 6px 8px; border: 0; border-radius: 8px; color: #7056bc; background: #f0edff; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }.playlist-library-song button:disabled { opacity: .5; cursor: not-allowed; }.playlist-no-selection { min-height: 400px; background: radial-gradient(circle at 85% 0, #f2edff, transparent 29%), #fff; }
 .assistant-intro { display: flex; align-items: center; gap: 20px; padding: 34px 42px; margin-bottom: 24px; color: #fff; border-radius: 24px; background: radial-gradient(circle at 85% 30%, rgba(147, 110, 255, .52), transparent 24%), linear-gradient(135deg, #1a2054, #66379a); box-shadow: 0 18px 42px rgba(83, 56, 151, .25); }
